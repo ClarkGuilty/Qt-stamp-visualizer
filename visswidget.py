@@ -7,6 +7,7 @@ import time
 import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
+#import random
 import glob
 import os
 import pandas as pd
@@ -39,6 +40,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.status_legacy_survey_panel = False
 
+        self.ds9_comm_backend = "xpa"
+        self.is_ds9_open = False
+        self.background_downloading = True
         self.scale = identity
         self.colormap = "gray"
 
@@ -58,7 +62,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.COUNTER_MAX = len(self.listimage)
         self.filename = self.stampspath + self.listimage[self.counter]
         self.status.showMessage(self.listimage[self.counter],)
-        self.figure = [Figure(figsize=(5,3)),Figure(figsize=(5,3))]
+
 
         self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
         pixmap = QPixmap()
@@ -80,8 +84,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.label_plot[i].setFont(font[i])
         self.label_layout.addWidget(self.label_plot[0])
 
+        self.plot_layout.setSpacing(0)
+        self.plot_layout.setContentsMargins(0,0,0,0)
+
+        self.figure = [Figure(figsize=(5,3),layout="constrained",facecolor='black'),
+            Figure(figsize=(5,3),layout="constrained",facecolor='black')]
+        #self.figure = [Figure(),Figure(figsize=(5,3))]
+#        self.figure[0].tight_layout()
 
         self.canvas = [FigureCanvas(self.figure[0]),FigureCanvas(self.figure[1])]
+        self.canvas[0].setStyleSheet('background-color: blue')
         self.plot_layout.addWidget(self.canvas[0])
 
         self.ax = [self.figure[0].subplots(),self.figure[1].subplots()]
@@ -149,7 +161,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(button_layout, 10)
 
 
-    def get_legacy_survey(self,pixscale = '0.06'):
+    def get_legacy_survey(self,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
             self.dec) + '&layer=dr8&pixscale='+str(pixscale)
         savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8.jpg'
