@@ -7,7 +7,6 @@ import time
 import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
-#import random
 import glob
 import os
 import pandas as pd
@@ -43,8 +42,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.background_downloading = True
-        self.scale = identity
         self.colormap = "gray"
+        self.buttoncolor = "darkRed"
+        self.scale = np.sqrt
+        self.status_legacy_survey_area = False
 
         self.stampspath = './Stamps_to_inspect/'
         self.legacy_survey_path = './Legacy_survey/'
@@ -98,6 +99,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.ax = [self.figure[0].subplots(),self.figure[1].subplots()]
 
+
+        self.label_layout.addWidget(self.label_plot[1])
+        self.plot_layout.addWidget(self.canvas[1])
+        self.canvas[1].hide()
+        self.label_plot[1].hide()
+
         self.plot()
 
         self.bds9 = QtWidgets.QPushButton('ds9')
@@ -109,8 +116,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
 
-        self.blegsur = QtWidgets.QPushButton('Legacy Survey')
-        self.blegsur.clicked.connect(self.set_legacy_survey)
+#        self.blegsur = QtWidgets.QPushButton('Legacy Survey')
+#        self.blegsur.clicked.connect(self.set_legacy_survey)
+        self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
+        self.blegsur.clicked.connect(self.checkbox_legacy_survey)
+
+        self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
+        self.blsarea.clicked.connect(self.checkbox_ls_change_area)
 
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
@@ -136,6 +148,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
+        self.bactivatedscale = self.bsqrt
+        self.bactivatedcolormap = self.bGray
+
+        self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+
+#        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+#        self.bactivatedscale = self.sender()
+
         button_row2_layout.addWidget(self.blinear)
         button_row2_layout.addWidget(self.bsqrt)
         button_row2_layout.addWidget(self.blog)
@@ -150,6 +171,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row1_layout.addWidget(self.bnext)
         button_row1_layout.addWidget(self.bds9)
         button_row1_layout.addWidget(self.blegsur)
+        button_row1_layout.addWidget(self.blsarea)
 
         button_layout.addLayout(button_row1_layout, 34)
         button_layout.addLayout(button_row2_layout, 33)
@@ -161,37 +183,56 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(button_layout, 10)
 
 
+
+
+
     def get_legacy_survey(self,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+        savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
+        savefile = os.path.join(self.legacy_survey_path, savename)
+        if os.path.exists(savefile):
+            return savefile
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
             self.dec) + '&layer=dr8&pixscale='+str(pixscale)
-        savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8.jpg'
-        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
+        urllib.request.urlretrieve(url, savefile)
 #        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
 #            self.dec) + '&layer=dr8-resid&pixscale=0.06'
 #        savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
 #        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
-        print(url)
-        #return savename
-        return os.path.join(self.legacy_survey_path, savename)
+        return savefile
 
-    def plot_legacy_survey(self, filepath, title='12x12', canvas_id = 1):
+    def plot_legacy_survey(self, title='12x12', canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(mpimg.imread(filepath))
+        self.ax[canvas_id].imshow(mpimg.imread(self.legacy_filename))
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
     @Slot()
     def set_legacy_survey(self):
-        if self.status_legacy_survey_panel:
-            legacy_filename = self.get_legacy_survey()
-            self.plot_legacy_survey(legacy_filename)
+        if self.status_legacy_survey_area == True:
+            self.legacy_filename = self.get_legacy_survey(pixscale='0.5')
+            self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
         else:
-            self.status_legacy_survey_panel = True
-            legacy_filename = self.get_legacy_survey()
-            self.label_layout.addWidget(self.label_plot[1])
-            self.plot_legacy_survey(legacy_filename)
-            self.plot_layout.addWidget(self.canvas[1])
+            self.legacy_filename = self.get_legacy_survey()
+            self.plot_legacy_survey(title='{0}x{0}'.format(12.56))
+
+    @Slot()
+    def checkbox_legacy_survey(self):
+        if self.status_legacy_survey_panel:
+                self.label_plot[1].hide()
+                self.canvas[1].hide()
+        else:
+                self.label_plot[1].show()
+                self.canvas[1].show()
+                self.set_legacy_survey()
+
+        self.status_legacy_survey_panel = not self.status_legacy_survey_panel
+
+    @Slot()
+    def checkbox_ls_change_area(self):
+        self.status_legacy_survey_area = not self.status_legacy_survey_area
+        if self.status_legacy_survey_panel:
+                    self.set_legacy_survey()
 
 
 
@@ -199,46 +240,70 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def open_ds9(self):
         subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
 
-
     @Slot()
     def set_scale_linear(self):
         self.scale = identity
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedscale = self.sender()
 
     @Slot()
     def set_scale_sqrt(self):
         self.scale = np.sqrt
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedscale = self.sender()
 
     @Slot()
     def set_scale_log(self):
         self.scale = np.log10
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedscale = self.sender()
 
     @Slot()
     def set_scale_asinh(self):
         self.scale = asinh2
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedscale = self.sender()
 
     @Slot()
     def set_colormap_Inverted(self):
         self.colormap = "gist_yarg"
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedcolormap = self.sender()
+
 
     @Slot()
     def set_colormap_Bb8(self):
         self.colormap = "hot"
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedcolormap = self.sender()
 
     @Slot()
     def set_colormap_Gray(self):
         self.colormap = "gray"
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedcolormap = self.sender()
 
     @Slot()
     def set_colormap_Viridis(self):
         self.colormap = "viridis"
         self.replot()
+        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
+        self.bactivatedcolormap = self.sender()
 
     def background_rms_image(self,cb, image):
         xg, yg = np.shape(image)
@@ -267,7 +332,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         xmin = int((xl) / 2. - (box_size / 2.))
         xmax = int((xl) / 2. + (box_size / 2.))
         vmax = np.max([image_array[i][xmin:xmax, xmin:xmax] for i in range(len(image_array))])
-        return vmin, vmax*2.0
+        return vmin, vmax*1.3
 
     def rescale_image(self, image):
             factor = self.scale(self.scale_max - self.scale_min)
@@ -363,6 +428,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #self.label_plot0 = QtWidgets.QLabel(self.listimage[self.counter], alignment=Qt.AlignCenter)
             self.filename = self.stampspath + self.listimage[self.counter]
             self.plot()
+            if self.status_legacy_survey_panel:
+                self.set_legacy_survey()
 
     @Slot()
     def prev(self):
@@ -376,7 +443,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #self.status.showMessage(self.listimage[self.counter])
             self.filename = self.stampspath + self.listimage[self.counter]
             self.plot()
-            
+            if self.status_legacy_survey_panel:
+                self.set_legacy_survey()
+
             
             
 if __name__ == "__main__":
