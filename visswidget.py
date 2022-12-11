@@ -23,6 +23,9 @@ from matplotlib import image as mpimg
 import urllib
 import concurrent.futures
 
+from functools import partial
+import threading
+
 def identity(x):
     return x
 
@@ -50,11 +53,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.stampspath = './Stamps_to_inspect/'
         self.legacy_survey_path = './Legacy_survey/'
         self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
-        self.classification = ['None'] * len(self.listimage)
-        self.subclassification = ['None'] * len(self.listimage)
-        self.ra = ['None'] * len(self.listimage)
-        self.dec = ['None'] * len(self.listimage)
-        self.comment = [' '] * len(self.listimage)
+
         self.df = self.obtain_df()
 
         self.counter = 0
@@ -73,6 +72,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_layout = QtWidgets.QHBoxLayout()
         self.plot_layout = QtWidgets.QHBoxLayout()
         button_layout = QtWidgets.QVBoxLayout()
+        button_row0_layout = QtWidgets.QHBoxLayout()
         button_row1_layout = QtWidgets.QHBoxLayout()
         button_row2_layout = QtWidgets.QHBoxLayout()
         button_row3_layout = QtWidgets.QHBoxLayout()
@@ -124,6 +124,21 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
 
+        self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
+        self.bprefetch.clicked.connect(self.checkbox_ls_change_area)
+
+        self.bsurelens = QtWidgets.QPushButton('Sure Lens')
+        self.bsurelens.clicked.connect(partial(self.classify, 'SL',1) )
+
+        self.bmaybelens = QtWidgets.QPushButton('Maybe Lens')
+        self.bmaybelens.clicked.connect(partial(self.classify, 'ML',1))
+
+        self.bflexion = QtWidgets.QPushButton('Flexion')
+        self.bflexion.clicked.connect(partial(self.classify, 'FL',1))
+
+        self.bnonlens = QtWidgets.QPushButton('Non Lens')
+        self.bnonlens.clicked.connect(partial(self.classify, 'NL',1))
+
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
 
@@ -157,6 +172,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
 #        self.bactivatedscale = self.sender()
 
+        button_row1_layout.addWidget(self.bsurelens)
+        button_row1_layout.addWidget(self.bmaybelens)
+        button_row1_layout.addWidget(self.bflexion)
+        button_row1_layout.addWidget(self.bnonlens)
+
+
         button_row2_layout.addWidget(self.blinear)
         button_row2_layout.addWidget(self.bsqrt)
         button_row2_layout.addWidget(self.blog)
@@ -167,15 +188,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row3_layout.addWidget(self.bViridis)
 
 
-        button_row1_layout.addWidget(self.bprev)
-        button_row1_layout.addWidget(self.bnext)
-        button_row1_layout.addWidget(self.bds9)
-        button_row1_layout.addWidget(self.blegsur)
-        button_row1_layout.addWidget(self.blsarea)
+        button_row0_layout.addWidget(self.bprev)
+        button_row0_layout.addWidget(self.bnext)
+        button_row0_layout.addWidget(self.bds9)
+        button_row0_layout.addWidget(self.blegsur)
+        button_row0_layout.addWidget(self.blsarea)
+        button_row0_layout.addWidget(self.bprefetch)
 
-        button_layout.addLayout(button_row1_layout, 34)
-        button_layout.addLayout(button_row2_layout, 33)
-        button_layout.addLayout(button_row3_layout, 33)
+        button_layout.addLayout(button_row0_layout, 25)
+        button_layout.addLayout(button_row1_layout, 25)
+        button_layout.addLayout(button_row2_layout, 25)
+        button_layout.addLayout(button_row3_layout, 25)
 
 
         main_layout.addLayout(self.label_layout, 2)
@@ -184,6 +207,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
 
+    def classify(self, grade, col):
+        cnt = self.counter# - 1
+#        self.df.at[cnt,'file_name'] = self.filename
+        assert self.df.at[cnt,'file_name'] == self.listimage[self.counter]
+        self.df.at[cnt,'classification'] = grade
+        self.df.at[cnt,'subclassification'] = grade
+        self.df.at[cnt,'ra'] = self.ra
+        self.df.at[cnt,'dec'] = self.dec
+        self.df.at[cnt,'comment'] = grade
+#        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
+        self.df.to_csv(os.path.join("Classifications",'classification_autosave'+str(self.nf)+'.csv'), index=False)
 
 
     def get_legacy_survey(self,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
@@ -394,24 +428,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print('reading '+str(class_file[len(class_file)-1]))
             df = pd.read_csv(class_file[len(class_file)-1])
             self.nf = len(class_file)
-#            self.classification = df['classification'].tolist()
-#            self.subclassification = df['subclassification'].tolist()
-#            self.comment = df['comment'].tolist()
-
-            firstnone=self.classification.index('None')
+            firstnone=df['classification'].tolist().index('None')
             self.counter =firstnone #Remembering last position
 
         else:
             df=[]
         if len(df) != len(self.listimage):
             print('creating classification_autosave'+str(len(class_file)+1)+'.csv')
-            dfc = ['file_name', 'classification', 'subclassification','comment']
+            dfc = ['file_name', 'classification', 'subclassification','ra','dec','comment']
             self.nf = len(class_file) + 1
             df = pd.DataFrame(columns=dfc)
             df['file_name'] = self.listimage
-            df['classification'] = self.classification
-            df['subclassification'] = self.subclassification
-            df['comment'] = self.comment
+            df['classification'] = ['None'] * len(self.listimage)
+            df['subclassification'] = ['None'] * len(self.listimage)
+            df['ra'] = np.full(len(self.listimage),np.nan)
+            df['dec'] = np.full(len(self.listimage),np.nan)
+            df['comment'] = ['None'] * len(self.listimage)
 
         return df
 
