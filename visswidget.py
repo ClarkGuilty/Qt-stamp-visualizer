@@ -11,6 +11,7 @@ import glob
 import os
 import pandas as pd
 import subprocess
+from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject,QThread
@@ -56,7 +57,12 @@ class FetchThread(QThread):
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=dr8&pixscale='+pixscale
         print(url)
-        urllib.request.urlretrieve(url, savefile)
+        try:
+            urllib.request.urlretrieve(url, savefile)
+        except urllib.error.HTTPError:
+            im = Image.fromarray(np.zeros((66,66)))
+            im.save(savefile)
+            return False
         return True
 
     def get_ra_dec(self,header):
@@ -368,7 +374,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Downloading legacy survey jpeg.")
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=dr8&pixscale='+str(pixscale)
-        urllib.request.urlretrieve(url, savefile)
+        try:
+            urllib.request.urlretrieve(url, savefile)
+        except urllib.error.HTTPError:
+            self.status.showMessage("No data for RA: {}, DEC: {}.".format(ra,dec))
+            raise
 #        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
 #            self.dec) + '&layer=dr8-resid&pixscale=0.06'
 #        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
@@ -382,14 +392,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
+    def plot_no_legacy_survey(self, title='No Legacy Survey data available', canvas_id = 1):
+        self.label_plot[canvas_id].setText(title)
+        self.ax[canvas_id].cla()
+        self.ax[canvas_id].imshow(np.zeros((66,66)))
+        self.ax[canvas_id].set_axis_off()
+        self.canvas[canvas_id].draw()
+
     @Slot()
     def set_legacy_survey(self):
         if self.config_dict['legacybigarea'] == True:
-            self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
-            self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
+            try:
+                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
+                self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
+            except urllib.error.HTTPError:
+                self.plot_no_legacy_survey()
         else:
-            self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
-            self.plot_legacy_survey(title='{0}x{0}'.format(12.56))
+            try:
+                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
+                self.plot_legacy_survey(title='{0}x{0}'.format(12.56))
+            except urllib.error.HTTPError:
+                self.plot_no_legacy_survey()
 
     @Slot()
     def checkbox_legacy_survey(self):
@@ -596,7 +619,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             df=[]
         if len(df) != len(self.listimage):
             print('creating classification_autosave'+str(len(class_file)+1)+'.csv')
-            dfc = ['file_name', 'classification', 'subclassification','ra','dec','comment']
+            dfc = ['file_name', 'classification', 'subclassification','ra','dec','comment','legacy_survey_data']
             self.nf = len(class_file) + 1
             df = pd.DataFrame(columns=dfc)
             df['file_name'] = self.listimage
@@ -605,6 +628,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             df['ra'] = np.full(len(self.listimage),np.nan)
             df['dec'] = np.full(len(self.listimage),np.nan)
             df['comment'] = ['None'] * len(self.listimage)
+            df['legacy_survey_data'] = ['None'] * len(self.listimage)
 
         return df
 
