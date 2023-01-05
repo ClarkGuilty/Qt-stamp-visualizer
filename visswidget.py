@@ -13,7 +13,7 @@ import pandas as pd
 import subprocess
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Slot, QObject,QThread
 from PySide6.QtGui import QPixmap
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
@@ -26,11 +26,55 @@ import concurrent.futures
 from functools import partial
 import threading
 
+import json
+from os.path import join
+
 def identity(x):
     return x
 
 def asinh2(x):
     return np.arcsinh(x/2)
+
+
+class FetchThread(QThread):
+    def __init__(self, df, initial_counter, parent=None):
+#            super().__init__(parent)
+            QThread.__init__(self, parent)
+
+            self.df = df
+            self.initial_counter = initial_counter
+            self.legacy_survey_path = './Legacy_survey/'
+            self.stampspath = './Stamps_to_inspect/'
+            self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
+
+    def download_legacy_survey(self, ra, dec, pixscale): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+ pixscale + 'dr8.jpg'
+        savefile = os.path.join(self.legacy_survey_path, savename)
+        if os.path.exists(savefile):
+            return True
+        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
+            dec) + '&layer=dr8&pixscale='+pixscale
+        print(url)
+        urllib.request.urlretrieve(url, savefile)
+        return True
+
+    def get_ra_dec(self,header):
+        w = WCS(header,fix=False)
+        sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
+        return sky[0][0], sky[1][0]
+
+    def run(self):
+        for index, stamp in self.df.iterrows():
+            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
+                f = join(self.stampspath,self.listimage[index])
+                ra,dec = self.get_ra_dec(fits.getheader(f))
+
+            else:
+                ra,dec = stamp[['ra','dec']]
+            self.download_legacy_survey(ra,dec,'0.048')
+            self.download_legacy_survey(ra,dec,pixscale='0.5')
+        return
 
 class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -39,16 +83,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Stamp Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
+        self.defaults = {
+                    'counter':0,
+                    'legacysurvey':False,
+                    'legacybigarea':False,
+                    'prefetch':False,
+                    'autonext':False,
+                    'prefetch':False,
+                    'colormap':'Gray',
+                    'scale':'log10',
+                        }
+        self.config_dict = self.load_dict()
+#        print(self.config_dict)
 
-        self.status_legacy_survey_panel = False
 
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
-        self.background_downloading = True
-        self.colormap = "gray"
+        self.background_downloading = self.config_dict['prefetch']
+        self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-        self.scale = np.sqrt
-        self.status_legacy_survey_area = False
+#        self.scale = getattr(np, self.config_dict['scale'])
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log10':np.log10, 'asinh2':asinh2}
+        print(self.scale2funct,self.config_dict['scale'])
+        self.scale = self.scale2funct[self.config_dict['scale']]
+
 
         self.stampspath = './Stamps_to_inspect/'
         self.legacy_survey_path = './Legacy_survey/'
@@ -56,12 +114,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.df = self.obtain_df()
 
-        self.counter = 0
         self.number_graded = 0
         self.COUNTER_MIN =0
         self.COUNTER_MAX = len(self.listimage)
-        self.filename = self.stampspath + self.listimage[self.counter]
-        self.status.showMessage(self.listimage[self.counter],)
+        self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
+        self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
         self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
@@ -77,7 +134,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row2_layout = QtWidgets.QHBoxLayout()
         button_row3_layout = QtWidgets.QHBoxLayout()
 
-        self.label_plot = [QtWidgets.QLabel(self.listimage[self.counter], alignment=Qt.AlignCenter),
+        self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX+1))
+        self.counter_widget.setStyleSheet("font-size: 14px")
+#        self.status.addPermanentWidget(self.counter_widget)
+
+
+        self.label_plot = [QtWidgets.QLabel(self.listimage[self.config_dict['counter']], alignment=Qt.AlignCenter),
                             QtWidgets.QLabel("Legacy Survey", alignment=Qt.AlignCenter)]
         font = [x.font() for x in self.label_plot]
         for i in range(len(font)):
@@ -102,10 +164,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.label_layout.addWidget(self.label_plot[1])
         self.plot_layout.addWidget(self.canvas[1])
-        self.canvas[1].hide()
-        self.label_plot[1].hide()
 
         self.plot()
+
+
+
+        self.bgoto = QtWidgets.QPushButton('Go to')
+        self.bgoto.clicked.connect(self.goto)
 
         self.bds9 = QtWidgets.QPushButton('ds9')
         self.bds9.clicked.connect(self.open_ds9)
@@ -121,23 +186,49 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
 
+        if not self.config_dict['legacysurvey']:
+                self.label_plot[1].hide()
+                self.canvas[1].hide()
+        else:
+                self.label_plot[1].show()
+                self.canvas[1].show()
+                self.blegsur.toggle()
+                self.set_legacy_survey()
+
+
         self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
 
+        if self.config_dict['legacybigarea']:
+            self.blsarea.toggle()
+            if self.config_dict['legacysurvey']:
+                self.set_legacy_survey()
+#            self.checkbox_ls_change_area()
+
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
-        self.bprefetch.clicked.connect(self.checkbox_ls_change_area)
+        self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
+
+        if self.config_dict['prefetch']:
+            self.bprefetch.toggle()
+#            self.checkbox_ls_change_area()
+
+        self.bautopass = QtWidgets.QCheckBox("Auto-next")
+        self.bautopass.clicked.connect(self.checkbox_auto_next)
+
+        if self.config_dict['autonext']:
+            self.bautopass.toggle()
 
         self.bsurelens = QtWidgets.QPushButton('Sure Lens')
-        self.bsurelens.clicked.connect(partial(self.classify, 'SL',1) )
+        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL',1) )
 
         self.bmaybelens = QtWidgets.QPushButton('Maybe Lens')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'ML',1))
+        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML',1))
 
         self.bflexion = QtWidgets.QPushButton('Flexion')
-        self.bflexion.clicked.connect(partial(self.classify, 'FL',1))
+        self.bflexion.clicked.connect(partial(self.classify, 'FL','FL',1))
 
         self.bnonlens = QtWidgets.QPushButton('Non Lens')
-        self.bnonlens.clicked.connect(partial(self.classify, 'NL',1))
+        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL',1))
 
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
@@ -163,7 +254,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.bactivatedscale = self.bsqrt
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log10':self.blog,
+                            'asinh2': self.basinh}
+        self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
+                            'Viridis': self.bViridis}
+
+        self.bactivatedscale = self.scale2button[self.config_dict['scale']]
         self.bactivatedcolormap = self.bGray
 
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
@@ -187,13 +283,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row3_layout.addWidget(self.bGray)
         button_row3_layout.addWidget(self.bViridis)
 
-
+        button_row0_layout.addWidget(self.bgoto)
         button_row0_layout.addWidget(self.bprev)
         button_row0_layout.addWidget(self.bnext)
         button_row0_layout.addWidget(self.bds9)
         button_row0_layout.addWidget(self.blegsur)
         button_row0_layout.addWidget(self.blsarea)
         button_row0_layout.addWidget(self.bprefetch)
+        button_row0_layout.addWidget(self.bautopass)
+        button_row0_layout.addWidget(self.counter_widget,alignment=Qt.AlignRight)
 
         button_layout.addLayout(button_row0_layout, 25)
         button_layout.addLayout(button_row1_layout, 25)
@@ -205,32 +303,75 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(self.plot_layout, 88)
         main_layout.addLayout(button_layout, 10)
 
+    @Slot()
+    def prefetch_legacysurvey(self):
+        if not self.config_dict['prefetch']:
+            self.fetchthread = FetchThread(self.df,self.config_dict['counter']) #Always store in an object.
+            self.fetchthread.finished.connect(self.fetchthread.deleteLater)
+            self.fetchthread.start()
+        else:
+            self.config_dict['prefetch'] = True
+
+    @Slot()
+    def goto(self):
+        i, ok = QtWidgets.QInputDialog.getInt(self, 'Visual inspection', '',self.config_dict['counter']+1,1,self.COUNTER_MAX+1)
+        if ok:
+            self.config_dict['counter'] = i
+            self.filename = join(self.stampspath,self.listimage[self.config_dict['counter']-1])
+            self.plot()
+            if self.config_dict['legacysurvey']:
+                self.set_legacy_survey()
+            self.update_counter()
+            self.save_dict()
 
 
-    def classify(self, grade, col):
-        cnt = self.counter# - 1
+    def save_dict(self):
+        with open('.config.json', 'w') as f:
+        # Write the dictionary to the file in JSON format
+#            json.dump(self.config_dict , f)
+            json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+
+    def load_dict(self):
+        try:
+            with open('.config.json', ) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return self.defaults
+
+
+    def update_counter(self):
+#        self.config_dict['counter']+1
+        self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX+1))
+
+    def classify(self, grade, subgrade, col):
+        cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
-        assert self.df.at[cnt,'file_name'] == self.listimage[self.counter]
+        assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
-        self.df.at[cnt,'subclassification'] = grade
+        self.df.at[cnt,'subclassification'] = subgrade
         self.df.at[cnt,'ra'] = self.ra
         self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(os.path.join("Classifications",'classification_autosave'+str(self.nf)+'.csv'), index=False)
+        if self.config_dict['autonext']:
+            self.next()
 
 
-    def get_legacy_survey(self,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
-        savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
+    def get_legacy_survey(self,ra,dec,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
+
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'dr8.jpg'
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
             return savefile
-        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
-            self.dec) + '&layer=dr8&pixscale='+str(pixscale)
+        self.status.showMessage("Downloading legacy survey jpeg.")
+        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
+            dec) + '&layer=dr8&pixscale='+str(pixscale)
         urllib.request.urlretrieve(url, savefile)
 #        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
 #            self.dec) + '&layer=dr8-resid&pixscale=0.06'
-#        savename = 'N' + str(self.counter)+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
+#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
 #        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
         return savefile
 
@@ -243,16 +384,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
-        if self.status_legacy_survey_area == True:
-            self.legacy_filename = self.get_legacy_survey(pixscale='0.5')
+        if self.config_dict['legacybigarea'] == True:
+            self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
             self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
         else:
-            self.legacy_filename = self.get_legacy_survey()
+            self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
             self.plot_legacy_survey(title='{0}x{0}'.format(12.56))
 
     @Slot()
     def checkbox_legacy_survey(self):
-        if self.status_legacy_survey_panel:
+        if self.config_dict['legacysurvey']:
                 self.label_plot[1].hide()
                 self.canvas[1].hide()
         else:
@@ -260,13 +401,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.canvas[1].show()
                 self.set_legacy_survey()
 
-        self.status_legacy_survey_panel = not self.status_legacy_survey_panel
+        self.config_dict['legacysurvey'] = not self.config_dict['legacysurvey']
 
     @Slot()
     def checkbox_ls_change_area(self):
-        self.status_legacy_survey_area = not self.status_legacy_survey_area
-        if self.status_legacy_survey_panel:
+        self.config_dict['legacybigarea'] = not self.config_dict['legacybigarea']
+        if self.config_dict['legacysurvey']:
                     self.set_legacy_survey()
+
+
+    @Slot()
+    def checkbox_auto_next(self):
+        self.config_dict['autonext'] = not self.config_dict['autonext']
 
 
 
@@ -281,6 +427,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedscale = self.sender()
+        self.config_dict['scale']='identity'
+        self.save_dict()
 
     @Slot()
     def set_scale_sqrt(self):
@@ -289,6 +437,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedscale = self.sender()
+        self.config_dict['scale']='sqrt'
+        self.save_dict()
 
     @Slot()
     def set_scale_log(self):
@@ -297,6 +447,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedscale = self.sender()
+        self.config_dict['scale']='log10'
+        self.save_dict()
 
     @Slot()
     def set_scale_asinh(self):
@@ -305,6 +457,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedscale = self.sender()
+        self.config_dict['scale']='asinh2'
+        self.save_dict()
 
     @Slot()
     def set_colormap_Inverted(self):
@@ -313,7 +467,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedcolormap = self.sender()
-
+        self.config_dict['colormap']='gist_yarg'
+        self.save_dict()
 
     @Slot()
     def set_colormap_Bb8(self):
@@ -322,6 +477,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedcolormap = self.sender()
+        self.config_dict['colormap']='hot'
+        self.save_dict()
 
     @Slot()
     def set_colormap_Gray(self):
@@ -330,6 +487,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedcolormap = self.sender()
+        self.config_dict['colormap']='gray'
+        self.save_dict()
 
     @Slot()
     def set_colormap_Viridis(self):
@@ -338,6 +497,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
         self.bactivatedcolormap = self.sender()
+        self.config_dict['colormap']='viridis'
+        self.save_dict()
 
     def background_rms_image(self,cb, image):
         xg, yg = np.shape(image)
@@ -391,7 +552,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return sky[0][0], sky[1][0]
 
     def plot(self, scale_min = None, scale_max = None, canvas_id = 0):
-        self.label_plot[canvas_id].setText(self.listimage[self.counter])
+        self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
 
         self.ax[canvas_id].cla()
         image = self.load_fits(self.filename)
@@ -409,7 +570,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.canvas[canvas_id].draw()
 
     def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
-        self.label_plot[canvas_id].setText(self.listimage[self.counter])
+        self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
 
         self.ax[canvas_id].cla()
 
@@ -428,8 +589,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print('reading '+str(class_file[len(class_file)-1]))
             df = pd.read_csv(class_file[len(class_file)-1])
             self.nf = len(class_file)
-            firstnone=df['classification'].tolist().index('None')
-            self.counter =firstnone #Remembering last position
+#            firstnone=df['classification'].tolist().index('None')
+#            self.config_dict['counter'] =firstnone #Remembering last position
 
         else:
             df=[]
@@ -449,34 +610,37 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def next(self):
-        self.counter = self.counter + 1
+        self.config_dict['counter'] = self.config_dict['counter'] + 1
 
-        if self.counter>self.COUNTER_MAX-1:
-            self.counter=self.COUNTER_MAX-1
+        if self.config_dict['counter']>self.COUNTER_MAX-1:
+            self.config_dict['counter']=self.COUNTER_MAX-1
             self.status.showMessage('Last image')
 
         else:
-            #self.status.showMessage(self.listimage[self.counter])
-            #self.label_plot0 = QtWidgets.QLabel(self.listimage[self.counter], alignment=Qt.AlignCenter)
-            self.filename = self.stampspath + self.listimage[self.counter]
+            self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
             self.plot()
-            if self.status_legacy_survey_panel:
+            if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            self.update_counter()
+            self.save_dict()
 
     @Slot()
     def prev(self):
-        self.counter = self.counter - 1
+        self.config_dict['counter'] = self.config_dict['counter'] - 1
 
-        if self.counter<self.COUNTER_MIN:
-            self.counter=self.COUNTER_MIN
+        if self.config_dict['counter']<self.COUNTER_MIN:
+            self.config_dict['counter']=self.COUNTER_MIN
             self.status.showMessage('First image')
 
         else:
-            #self.status.showMessage(self.listimage[self.counter])
-            self.filename = self.stampspath + self.listimage[self.counter]
+            #self.status.showMessage(self.listimage[self.config_dict['counter']])
+            self.filename = self.stampspath + self.listimage[self.config_dict['counter']]
             self.plot()
-            if self.status_legacy_survey_panel:
+            if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            self.update_counter()
+            self.save_dict()
+
 
             
             
