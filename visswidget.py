@@ -3,7 +3,7 @@ import sys
 #from PySide6.QtWidgets import QApplication, QWidget, QPushButton
 import PySide6
 
-import time
+#import time
 import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
@@ -14,19 +14,18 @@ import subprocess
 from PIL import Image
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, Slot, QObject,QThread
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Slot, QObject, QThread
+#from PySide6.QtGui import QPixmap
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib import image as mpimg
 
 import urllib
-import concurrent.futures
 
 from functools import partial
-import threading
 
+import webbrowser
 import json
 from os.path import join
 
@@ -47,7 +46,7 @@ class FetchThread(QThread):
             self.legacy_survey_path = './Legacy_survey/'
             self.stampspath = './Stamps_to_inspect/'
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
-
+            self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
     def download_legacy_survey(self, ra, dec, pixscale): #pixscale = 0.04787578125 is 66 pixels in CFIS.
 
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+ pixscale + 'dr8.jpg'
@@ -60,8 +59,8 @@ class FetchThread(QThread):
         try:
             urllib.request.urlretrieve(url, savefile)
         except urllib.error.HTTPError:
-            im = Image.fromarray(np.zeros((66,66)))
-            im.save(savefile)
+            with open(savefile,'w') as f:
+                self.im.save(f)
             return False
         return True
 
@@ -96,10 +95,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'prefetch':False,
                     'autonext':False,
                     'prefetch':False,
-                    'colormap':'Gray',
+                    'colormap':'gray',
                     'scale':'log10',
                         }
         self.config_dict = self.load_dict()
+        self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 #        print(self.config_dict)
 
 
@@ -108,9 +108,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-#        self.scale = getattr(np, self.config_dict['scale'])
         self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log10':np.log10, 'asinh2':asinh2}
-        print(self.scale2funct,self.config_dict['scale'])
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
@@ -128,7 +126,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
-        pixmap = QPixmap()
+#        pixmap = QPixmap()
         #self.figure.gca().set_facecolor('black')
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
@@ -178,14 +176,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bgoto = QtWidgets.QPushButton('Go to')
         self.bgoto.clicked.connect(self.goto)
 
-        self.bds9 = QtWidgets.QPushButton('ds9')
-        self.bds9.clicked.connect(self.open_ds9)
-
         self.bnext = QtWidgets.QPushButton('Next')
         self.bnext.clicked.connect(self.next)
 
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
+
+        self.bds9 = QtWidgets.QPushButton('ds9')
+        self.bds9.clicked.connect(self.open_ds9)
+
+        self.bviewls = QtWidgets.QPushButton('View LS')
+        self.bviewls.clicked.connect(self.viewls)
 
 #        self.blegsur = QtWidgets.QPushButton('Legacy Survey')
 #        self.blegsur.clicked.connect(self.set_legacy_survey)
@@ -293,6 +294,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row0_layout.addWidget(self.bprev)
         button_row0_layout.addWidget(self.bnext)
         button_row0_layout.addWidget(self.bds9)
+        button_row0_layout.addWidget(self.bviewls)
         button_row0_layout.addWidget(self.blegsur)
         button_row0_layout.addWidget(self.blsarea)
         button_row0_layout.addWidget(self.bprefetch)
@@ -322,8 +324,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def goto(self):
         i, ok = QtWidgets.QInputDialog.getInt(self, 'Visual inspection', '',self.config_dict['counter']+1,1,self.COUNTER_MAX+1)
         if ok:
-            self.config_dict['counter'] = i
-            self.filename = join(self.stampspath,self.listimage[self.config_dict['counter']-1])
+            self.config_dict['counter'] = i-1
+            self.filename = join(self.stampspath,self.listimage[self.config_dict['counter']])
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
@@ -444,84 +446,97 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
 
     @Slot()
+    def viewls(self):
+        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=16&spectra".format(self.ra,self.dec))
+        #subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
+
+    @Slot()
     def set_scale_linear(self):
-        self.scale = identity
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedscale = self.sender()
-        self.config_dict['scale']='identity'
-        self.save_dict()
+        if self.sender() != self.bactivatedscale:
+            self.scale = identity
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedscale = self.sender()
+            self.config_dict['scale']='identity'
+            self.save_dict()
 
     @Slot()
     def set_scale_sqrt(self):
-        self.scale = np.sqrt
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedscale = self.sender()
-        self.config_dict['scale']='sqrt'
-        self.save_dict()
+        if self.sender() != self.bactivatedscale:
+            self.scale = np.sqrt
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedscale = self.sender()
+            self.config_dict['scale']='sqrt'
+            self.save_dict()
 
     @Slot()
     def set_scale_log(self):
-        self.scale = np.log10
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedscale = self.sender()
-        self.config_dict['scale']='log10'
-        self.save_dict()
+        if self.sender() != self.bactivatedscale:
+            self.scale = np.log10
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedscale = self.sender()
+            self.config_dict['scale']='log10'
+            self.save_dict()
 
     @Slot()
     def set_scale_asinh(self):
-        self.scale = asinh2
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedscale = self.sender()
-        self.config_dict['scale']='asinh2'
-        self.save_dict()
+        if self.sender() != self.bactivatedscale:
+            self.scale = asinh2
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedscale = self.sender()
+            self.config_dict['scale']='asinh2'
+            self.save_dict()
 
     @Slot()
     def set_colormap_Inverted(self):
-        self.colormap = "gist_yarg"
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedcolormap = self.sender()
-        self.config_dict['colormap']='gist_yarg'
-        self.save_dict()
+        if self.sender() != self.bactivatedcolormap:
+            self.colormap = "gist_yarg"
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap = self.sender()
+            self.config_dict['colormap']='gist_yarg'
+            self.save_dict()
 
     @Slot()
     def set_colormap_Bb8(self):
-        self.colormap = "hot"
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedcolormap = self.sender()
-        self.config_dict['colormap']='hot'
-        self.save_dict()
+        if self.sender() != self.bactivatedcolormap:
+            self.colormap = "hot"
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap = self.sender()
+            self.config_dict['colormap']='hot'
+            self.save_dict()
 
     @Slot()
     def set_colormap_Gray(self):
-        self.colormap = "gray"
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedcolormap = self.sender()
-        self.config_dict['colormap']='gray'
-        self.save_dict()
+        if self.sender() != self.bactivatedcolormap:
+            self.colormap = "gray"
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap = self.sender()
+            self.config_dict['colormap']='gray'
+            self.save_dict()
 
     @Slot()
     def set_colormap_Viridis(self):
-        self.colormap = "viridis"
-        self.replot()
-        self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
-        self.bactivatedcolormap = self.sender()
-        self.config_dict['colormap']='viridis'
-        self.save_dict()
+        if self.sender() != self.bactivatedcolormap:
+            self.colormap = "viridis"
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap = self.sender()
+            self.config_dict['colormap']='viridis'
+            self.save_dict()
 
     def background_rms_image(self,cb, image):
         xg, yg = np.shape(image)
