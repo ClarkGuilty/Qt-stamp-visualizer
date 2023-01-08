@@ -497,45 +497,41 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_colormap_Inverted(self):
         if self.sender() != self.bactivatedcolormap:
-            self.colormap = "gist_yarg"
+            self.config_dict['colormap']
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
             self.bactivatedcolormap = self.sender()
-            self.config_dict['colormap']='gist_yarg'
             self.save_dict()
 
     @Slot()
     def set_colormap_Bb8(self):
         if self.sender() != self.bactivatedcolormap:
-            self.colormap = "hot"
+            self.config_dict['colormap'] = "hot"
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
             self.bactivatedcolormap = self.sender()
-            self.config_dict['colormap']='hot'
             self.save_dict()
 
     @Slot()
     def set_colormap_Gray(self):
         if self.sender() != self.bactivatedcolormap:
-            self.colormap = "gray"
+            self.config_dict['colormap'] = "gray"
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
             self.bactivatedcolormap = self.sender()
-            self.config_dict['colormap']='gray'
             self.save_dict()
 
     @Slot()
     def set_colormap_Viridis(self):
         if self.sender() != self.bactivatedcolormap:
-            self.colormap = "viridis"
+            self.config_dict['colormap'] = "viridis"
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
             self.bactivatedcolormap = self.sender()
-            self.config_dict['colormap']='viridis'
             self.save_dict()
 
     def background_rms_image(self,cb, image):
@@ -603,7 +599,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         image = self.rescale_image(image)
 
-        self.ax[canvas_id].imshow(image,cmap=self.colormap, origin='lower')
+        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
@@ -615,7 +611,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         image = np.copy(self.image)
         image = self.rescale_image(image)
 
-        self.ax[canvas_id].imshow(image,cmap=self.colormap, origin='lower')
+        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
