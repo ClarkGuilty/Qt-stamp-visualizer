@@ -497,7 +497,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_colormap_Inverted(self):
         if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap']
+            self.config_dict['colormap'] = "gist_yarg"
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
