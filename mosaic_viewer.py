@@ -93,7 +93,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.defaults = {
                     'counter':0,
-                    'page':1,
+                    'page':0,
                     'colormap':'gray',
                     'scale':'log10',
                         }
@@ -121,7 +121,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                        QtWidgets.QSizePolicy.Ignored)
             button.setScaledContents(True)
             button.setPixmap(QPixmap(filepath))
-            main_layout.addWidget(button,i % self.gridsize, i // self.gridsize)
+            main_layout.addWidget(button,i // self.gridsize, i % self.gridsize)
             self.buttons.append(button)
             button.adjustSize()
 
@@ -140,7 +140,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                  self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
 
             self.df.to_csv(
-                './Classifications/classification_mosaic_autosave_' + str(self.random_seed)+'.csv', index=False)
+                './Classifications/classification_mosaic_autosave_'+
+                '{}_{}'.format(self.random_seed,len(self.df))+'.csv', index=False)
 
 
     def filepath(self,i,page):
@@ -161,7 +162,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.config_dict['counter'] = self.config_dict['page'] * self.gridarea
 
     def obtain_df(self):
-        class_file = np.sort(glob.glob('./Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'.csv'))
+        class_file = np.sort(glob.glob(
+            './Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'*.csv'))
         print (class_file, len(class_file))
         if len(class_file) >= 1:
             print('reading ' + str(class_file[len(class_file) - 1]))
