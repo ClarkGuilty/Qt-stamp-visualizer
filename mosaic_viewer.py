@@ -14,8 +14,8 @@ import subprocess
 from PIL import Image
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, Slot, QObject, QThread
-from PySide6.QtGui import QPixmap, QFont
+from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent
+from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -39,17 +39,64 @@ def identity(x):
 def asinh2(x):
     return np.arcsinh(x/2)
 
-#https://stackoverflow.com/a/54262963/10555034
+class LabelledIntField(QtWidgets.QWidget):
+    "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
+    def __init__(self, title, initial_value=None):
+        QtWidgets.QWidget.__init__(self)
+        layout = QtWidgets.QVBoxLayout()
+        self.setLayout(layout)
+        
+        self.label = QtWidgets.QLabel()
+        self.label.setText(title)
+        self.label.setFixedWidth(100)
+        self.label.setFont(QFont("Arial",weight=QFont.Bold))
+        layout.addWidget(self.label)
+        
+        self.lineEdit = QtWidgets.QLineEdit(self)
+        self.lineEdit.setFixedWidth(40)
+        self.lineEdit.setValidator(QIntValidator())
+        if initial_value != None:
+            self.lineEdit.setText(str(initial_value))
+        layout.addWidget(self.lineEdit)
+        layout.addStretch()
+        
+    def setLabelWidth(self, width):
+        self.label.setFixedWidth(width)
+        
+    def setInputWidth(self, width):
+        self.lineEdit.setFixedWidth(width)
+        
+    def getValue(self):
+        return int(self.lineEdit.text())
+
+
+def clickable(widget):
+        "https://wiki.python.org/moin/PyQt/Making%20non-clickable%20widgets%20clickable"
+        class Filter(QObject):
+            clicked = Signal()
+            def eventFilter(self, obj, event):
+                if obj == widget:
+                    if event.type() == QEvent.MouseButtonRelease:
+                        if obj.rect().contains(event.pos()):
+                            self.clicked.emit()
+                            # The developer can opt for .emit(obj) to get the object within the slot.
+                            return True
+                return False
+        filter = Filter(widget)
+        widget.installEventFilter(filter)
+        return filter.clicked
+
 class AlignDelegate(QtWidgets.QStyledItemDelegate):
+    "https://stackoverflow.com/a/54262963/10555034"
     def initStyleOption(self, option, index):
         super(AlignDelegate, self).initStyleOption(option, index)
         option.displayAlignment = Qt.AlignCenter
 
 class ClickableLabel(QtWidgets.QLabel):
-    def __init__(self, filepath, backgroundpath, i, status, is_activated, update_df_func, parent=None):
+    def __init__(self, filepath, backgroundpath, i, status, update_df_func, parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepath = filepath
-        self.is_activate = is_activated
+        self.is_activate = True
         # self._whenClicked = whenClicked
         self.backgroundpath = backgroundpath
         self.is_a_candidate = status
@@ -63,19 +110,17 @@ class ClickableLabel(QtWidgets.QLabel):
         else:
             self._pixmap = QPixmap(self.filepath)
 
+        self.paint_pixmap()
+
     def set_candidate_status(self, status):
         if self.is_activate:
             self.is_a_candidate = status
+            return True
+        return False
 
     def toggle_candidate_status(self):
         if self.is_activate:
             self.is_a_candidate = not self.is_a_candidate
-
-    def paint_it_black(self):
-        if not self.is_activate:
-            self.setPixmap(self._pixmap.scaled(
-                self.width(), self.height(),
-                Qt.KeepAspectRatio))
 
     def change_and_paint_pixmap(self, filepath):
         self.filepath = filepath
@@ -84,6 +129,17 @@ class ClickableLabel(QtWidgets.QLabel):
             self.setPixmap(self._pixmap.scaled(
                 self.width(), self.height(),
                 Qt.KeepAspectRatio))
+
+    def paint_pixmap(self):
+        if self.is_activate:
+            # print(self.filepath)
+            self.setPixmap(self._pixmap)
+
+    def paint_background_pixmap(self):
+        self._pixmap = QPixmap(self.backgroundpath)
+        self.setPixmap(self._pixmap.scaled(
+            self.width(), self.height(),
+            Qt.KeepAspectRatio))
 
     def change_pixmap(self, filepath):
         self.filepath = filepath
@@ -138,7 +194,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             'sqrt': np.sqrt, 'log10': np.log10, 'asinh': asinh2}
 
         self.defaults = {
-            'counter': 0,
+            # 'counter': 0,
             'page': 0,
             'colormap': 'gray',
             'scale': 'log10',
@@ -160,39 +216,58 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.setItemDelegate(delegate)
         # self.cbscale.setEditable(True)
         self.cbscale.setFont(QFont("Arial",20))
+        clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
         self.cbscale.addItems(['linear','sqrt', 'log10', 'asinh'])
         self.cbscale.setStyleSheet('background-color: gray')
         self.cbscale.currentIndexChanged.connect(self.change_scale)
 
+
         self.cbcolormap = QtWidgets.QComboBox()
         delegate = AlignDelegate(self.cbcolormap)
         self.cbcolormap.setItemDelegate(delegate)
-        self.cbcolormap.setEditable(True)
+        # self.cbcolormap.setEditable(True)
         self.cbcolormap.setFont(QFont("Arial",20))
         line_edit = self.cbcolormap.lineEdit()
-        line_edit.setAlignment(Qt.AlignCenter)
-        line_edit.setReadOnly(True)
+        # line_edit.setAlignment(Qt.AlignCenter)
+        # line_edit.setReadOnly(True)
         self.cbcolormap.addItems(['gray','viridis','gist_yarg','hot'])
         self.cbcolormap.setStyleSheet('background-color: gray')
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
-        self.bnext = QtWidgets.QPushButton('Next')
-        self.bnext.clicked.connect(self.next)
-        self.bnext.setStyleSheet('background-color: gray')
-
 
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
+        self.bprev.setStyleSheet('background-color: gray')
+        self.bprev.setFont(QFont("Arial",20))
 
+        self.bnext = QtWidgets.QPushButton('Next')
+        self.bnext.clicked.connect(self.next)
+        self.bnext.setStyleSheet('background-color: gray')
+        self.bnext.setFont(QFont("Arial",20))
+
+        self.bcounter = LabelledIntField('asd', 4)
+        self.bnext.setStyleSheet('background-color: gray')
+
+
+
+        ##### Keyboard shortcuts
+        self.knext = QShortcut(QKeySequence('f'), self)
+        self.knext.activated.connect(self.next)
+
+        self.kprev = QShortcut(QKeySequence('d'), self)
+        self.kprev.activated.connect(self.prev)
 
 
         # self.blinear.clicked.connect(self.set_scale_linear)
 
         button_bar_layout.addWidget(self.cbscale)
         button_bar_layout.addWidget(self.cbcolormap)
-        button_bar_layout.addWidget(self.bnext)
         button_bar_layout.addWidget(self.bprev)
+        button_bar_layout.addWidget(self.bnext)
+        button_bar_layout.addWidget(self.bcounter)
+
+
 
         self.buttons = []
 
@@ -203,9 +278,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.df = self.obtain_df()
 
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
-        for i in range(self.gridarea):
+        start = self.config_dict['page']*self.gridarea
+
+        for i in range(start,start+self.gridarea):
             filepath = self.filepath(i, self.config_dict['page'])
-            button = ClickableLabel(filepath, self.path_background, i,
+            button = ClickableLabel(filepath, self.path_background, i-start,
                                     self.df.iloc[self.gridarea*self.config_dict['page']+i,
                                                  self.df.columns.get_loc('classification')],
                                     self.my_label_clicked)
@@ -219,33 +296,26 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     @Slot()
     def next(self):
-        print("page before next",self.config_dict['page'] )
+        self.clean_scratch(self.scratchpath)
         self.config_dict['page'] = self.config_dict['page'] + 1
-        print("page after next",self.config_dict['page'])
-        print("page max",self.PAGE_MAX)
-        print(self.config_dict['page']>self.PAGE_MAX)
-
         if self.config_dict['page']>self.PAGE_MAX:
-            self.config_dict['counter']=self.PAGE_MAX
+            # self.config_dict['counter']=self.PAGE_MAX
+            self.config_dict['page']=self.PAGE_MAX
             self.status.showMessage('Last page')
         else:
-            self.clean_scratch(self.scratchpath)
             self.update_grid()
-            # self.update_counter()
-            # self.save_dict()
+            self.save_dict()
 
     @Slot()
     def prev(self):
-        self.config_dict['page'] = self.config_dict['page'] + 1
-
-        if self.config_dict['page']>self.PAGE_MAX-1:
-            self.config_dict['counter']=self.PAGE_MAX-1
-            self.status.showMessage('Last page')
-
+        self.clean_scratch(self.scratchpath)
+        self.config_dict['page'] = self.config_dict['page'] - 1
+        if self.config_dict['page'] < 0:
+            self.config_dict['page'] = 0
+            self.status.showMessage('First page')
         else:
             self.update_grid()
-            # self.update_counter()
-            # self.save_dict()
+            self.save_dict()
 
     def change_scale(self,i):
         self.config_dict['scale'] = self.cbscale.currentText()
@@ -275,24 +345,26 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def filepath(self, i, page):
         return join(self.scratchpath, str(i+1)+self.config_dict['scale'] + self.config_dict['colormap'] + str(page)+'.png')
 
+    def save_dict(self):
+        with open('.config_mosaic.json', 'w') as f:
+            json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+
     def load_dict(self):
         try:
             with open('.config_mosaic.json', ) as f:
                 return json.load(f)
         except FileNotFoundError:
+            print("Loaded default configuration.")
             return self.defaults
 
     @Slot()
     def open_ds9(self):
         subprocess.Popen(["ds9",])
 
-    def set_start_number(self):
-        self.config_dict['counter'] = self.config_dict['page'] * self.gridarea
-
     def obtain_df(self):
         class_file = np.sort(glob.glob(
             './Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'*.csv'))
-        print(class_file, len(class_file))
+        # print(class_file, len(class_file))
         if len(class_file) >= 1:
             print('reading ' + str(class_file[len(class_file) - 1]))
             df = pd.read_csv(class_file[len(class_file) - 1])
@@ -306,30 +378,31 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return df
 
     def update_grid(self):
-        self.set_start_number()
         start = self.config_dict['page']*self.gridarea
         # self.textnumber.text = str(self.config_dict['page'])
 
         # self.clean_scratch(self.scratchpath)
-        n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
-        print("page,pageMAX,nimages:",self.config_dict['page'],self.PAGE_MAX,n_images)
+        # n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
+        n_images = self.gridarea
+        # print("page,pageMAX,nimages:",self.config_dict['page'],self.PAGE_MAX,n_images)
         self.prepare_png(n_images)
 
         i = start
         j = 0
         for button in self.buttons:
             try:
-                if self.df.iloc[self.gridarea*self.config_dict['page'] + j,self.df.columns.get_loc('classification')] == 0:
-                    button.change_pixmap(self.filepath(j,self.config_dict['page']))
+                if self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('classification')] == 0:
+                    button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
                     button.set_candidate_status(False)
                 else:
-                    # button.set_source(self.path_background)
+                    button.change_pixmap(self.filepath(i,self.config_dict['page']))
+                    button.paint_background_pixmap()
                     button.set_candidate_status(True)
             except KeyError:
-                print("fuck")
+                print("Out of bounds in the dataframe.")
                 raise
 
-            self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')] = j + 1
+            self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')]=j+1
             j = j+1
             i = i+1
 
@@ -340,11 +413,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         for i in np.arange(start, start + number + 1):
             # print(i)
             # img = self.draw_image(i, self.scale_state)
-            image = self.read_fits(i)
+            try:
+                image = self.read_fits(i)
+            except:
+                image = np.ones((44, 44)) * 0.0000001
+
             scale_min, scale_max = self.scale_val(image)
             image = self.rescale_image(image, scale_min, scale_max)
-            plt.imsave(join(self.scratchpath, str(i+1)+self.config_dict['scale'] +
-                            self.config_dict['colormap']+str(start)+'.png'),
+            plt.imsave(self.filepath(i, self.config_dict['page']),
                        image, cmap=self.config_dict['colormap'], origin="lower")
 
             # self.config_dict['counter'] = self.config_dict['counter'] + 1
@@ -383,7 +459,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         xmax = int((xl) / 2. + (box_size / 2.))
         vmax = np.max([image_array[i][xmin:xmax, xmin:xmax]
                       for i in range(len(image_array))])
-        return vmin, vmax*1.3
+        return vmin, vmax*1.5
 
     def background_rms_image(self, cb, image):
         xg, yg = np.shape(image)
