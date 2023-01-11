@@ -17,7 +17,7 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent
 from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
 
-from matplotlib.backends.backend_qtagg import FigureCanvas
+# from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib import image as mpimg
 import matplotlib.pyplot as plt
@@ -43,7 +43,7 @@ class LabelledIntField(QtWidgets.QWidget):
     "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
     def __init__(self, title, initial_value=None):
         QtWidgets.QWidget.__init__(self)
-        layout = QtWidgets.QVBoxLayout()
+        layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
         
         self.label = QtWidgets.QLabel()
@@ -93,24 +93,34 @@ class AlignDelegate(QtWidgets.QStyledItemDelegate):
         option.displayAlignment = Qt.AlignCenter
 
 class ClickableLabel(QtWidgets.QLabel):
-    def __init__(self, filepath, backgroundpath, i, status, update_df_func, parent=None):
+    def __init__(self, filepath, backgroundpath, deactivatedpath, i, status, activation, update_df_func, parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepath = filepath
-        self.is_activate = True
+        self.is_activate = activation
         # self._whenClicked = whenClicked
         self.backgroundpath = backgroundpath
+        self.deactivatedpath = deactivatedpath
         self.is_a_candidate = status
         self.update_df_func = update_df_func
         self.i = i
         self.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding,
                            QtWidgets.QSizePolicy.MinimumExpanding)
         # self.setScaledContents(True)
-        if self.is_a_candidate:
-            self._pixmap = QPixmap(self.backgroundpath)
+        if self.is_activate:
+            if self.is_a_candidate:
+                self._pixmap = QPixmap(self.backgroundpath)
+            else:
+                self._pixmap = QPixmap(self.filepath)
         else:
-            self._pixmap = QPixmap(self.filepath)
+            self._pixmap = QPixmap(self.deactivatedpath)
+        self.setPixmap(self._pixmap)
 
-        self.paint_pixmap()
+    def activate(self):
+        self.is_activate = True
+
+    def deactivate(self):
+        self.change_and_paint_pixmap(self.deactivatedpath)
+        self.is_activate = False
 
     def set_candidate_status(self, status):
         if self.is_activate:
@@ -123,41 +133,48 @@ class ClickableLabel(QtWidgets.QLabel):
             self.is_a_candidate = not self.is_a_candidate
 
     def change_and_paint_pixmap(self, filepath):
-        self.filepath = filepath
-        self._pixmap = QPixmap(self.filepath)
         if self.is_activate:
+            self.filepath = filepath
+            self._pixmap = QPixmap(self.filepath)
+            # print(self.filepath)
+            # if self.is_activate:
             self.setPixmap(self._pixmap.scaled(
                 self.width(), self.height(),
                 Qt.KeepAspectRatio))
 
     def paint_pixmap(self):
         if self.is_activate:
-            # print(self.filepath)
             self.setPixmap(self._pixmap)
 
     def paint_background_pixmap(self):
-        self._pixmap = QPixmap(self.backgroundpath)
-        self.setPixmap(self._pixmap.scaled(
-            self.width(), self.height(),
-            Qt.KeepAspectRatio))
+        if self.is_activate:
+            self._pixmap = QPixmap(self.backgroundpath)
+            self.setPixmap(self._pixmap.scaled(
+                self.width(), self.height(),
+                Qt.KeepAspectRatio))
 
     def change_pixmap(self, filepath):
         self.filepath = filepath
         self._pixmap = QPixmap(self.filepath)
 
     def mousePressEvent(self, event):
+        print(self.is_activate)
         if self.is_activate:
             self.is_a_candidate = not self.is_a_candidate
             if self.is_a_candidate:
-                self.setPixmap(QPixmap(self.backgroundpath).scaled(
-                    self.width(), self.height(),
-                    Qt.KeepAspectRatio))
+                self.paint_background_pixmap()
+                # self.setPixmap(QPixmap(self.backgroundpath).scaled(
+                #     self.width(), self.height(),
+                #     Qt.KeepAspectRatio))
             else:
-                self.setPixmap(QPixmap(self.filepath).scaled(
-                    self.width(), self.height(),
-                    Qt.KeepAspectRatio))
+                # self.setPixmap(QPixmap(self.filepath).scaled(
+                #     self.width(), self.height(),
+                #     Qt.KeepAspectRatio))
+                self.change_and_paint_pixmap(self.filepath)
 
             self.update_df_func(event, self.i)
+        else:
+            print('Inactive button')
 
 
     def resizeEvent(self, event):
@@ -181,8 +198,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.stampspath = './Stamps_to_inspect/'
         self.scratchpath = './.temp'
+        self.deactivatedpath = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
-
+        self.clean_scratch(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(self.stampspath + '*.fits')])
 
@@ -202,6 +220,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.config_dict = self.load_dict()
         self.scale = self.scale2funct[self.config_dict['scale']]
         self.path_background = '.background.png'
+        self.deactivatedpath = '.backgrounddark.png'
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         stamp_grid_layout = QtWidgets.QGridLayout()
@@ -231,7 +250,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         line_edit = self.cbcolormap.lineEdit()
         # line_edit.setAlignment(Qt.AlignCenter)
         # line_edit.setReadOnly(True)
-        self.cbcolormap.addItems(['gray','viridis','gist_yarg','hot'])
+        self.listscales = ['gray','viridis','gist_yarg','hot']
+        self.cbcolormap.addItems(self.listscales)
+        self.cbcolormap.setCurrentIndex(self.listscales.index(self.config_dict['colormap']))
         self.cbcolormap.setStyleSheet('background-color: gray')
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
@@ -247,7 +268,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bnext.setFont(QFont("Arial",20))
 
         self.bcounter = LabelledIntField('asd', 4)
-        self.bnext.setStyleSheet('background-color: gray')
+        self.bcounter.setStyleSheet('background-color: white')
 
 
 
@@ -265,7 +286,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         button_bar_layout.addWidget(self.cbcolormap)
         button_bar_layout.addWidget(self.bprev)
         button_bar_layout.addWidget(self.bnext)
-        button_bar_layout.addWidget(self.bcounter)
+        # button_bar_layout.addWidget(self.bcounter)
 
 
 
@@ -276,18 +297,27 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.prepare_png(self.gridsize**2)
 
         self.df = self.obtain_df()
-
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
         start = self.config_dict['page']*self.gridarea
+        print("Page: ",self.config_dict['page'])
+        # n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
 
         for i in range(start,start+self.gridarea):
             filepath = self.filepath(i, self.config_dict['page'])
-            button = ClickableLabel(filepath, self.path_background, i-start,
-                                    self.df.iloc[self.gridarea*self.config_dict['page']+i,
-                                                 self.df.columns.get_loc('classification')],
+            try:
+                classification = self.df.iloc[i,
+                                                 self.df.columns.get_loc('classification')]
+                activation = True
+            except IndexError:
+                classification = False
+                activation = False
+
+            button = ClickableLabel(filepath, self.path_background, self.deactivatedpath,
+                                    i-start, classification, activation,
                                     self.my_label_clicked)
             stamp_grid_layout.addWidget(
-                button, i // self.gridsize, i % self.gridsize)
+                # button, i // self.gridsize, i % self.gridsize)
+                button, i % self.gridsize, i // self.gridsize)
             self.buttons.append(button)
             button.setAlignment(Qt.AlignCenter)
             # button.adjustSize()
@@ -301,7 +331,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if self.config_dict['page']>self.PAGE_MAX:
             # self.config_dict['counter']=self.PAGE_MAX
             self.config_dict['page']=self.PAGE_MAX
-            self.status.showMessage('Last page')
+            self.status.showMessage('Last page',500)
         else:
             self.update_grid()
             self.save_dict()
@@ -357,10 +387,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print("Loaded default configuration.")
             return self.defaults
 
-    @Slot()
-    def open_ds9(self):
-        subprocess.Popen(["ds9",])
-
     def obtain_df(self):
         class_file = np.sort(glob.glob(
             './Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'*.csv'))
@@ -392,26 +418,30 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         for button in self.buttons:
             try:
                 if self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('classification')] == 0:
+                    button.activate()
                     button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
                     button.set_candidate_status(False)
                 else:
+                    button.activate()
                     button.change_pixmap(self.filepath(i,self.config_dict['page']))
                     button.paint_background_pixmap()
                     button.set_candidate_status(True)
-            except KeyError:
-                print("Out of bounds in the dataframe.")
-                raise
 
-            self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')]=j+1
+                self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')]=j+1
+
+            except (KeyError,IndexError) as e:
+                print("Out of bounds in the dataframe.")
+                button.deactivate()
+                # button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
+                # raise
+
             j = j+1
             i = i+1
 
     def prepare_png(self, number):
 
         start = self.config_dict['page']*self.gridarea
-        # print(start)
         for i in np.arange(start, start + number + 1):
-            # print(i)
             # img = self.draw_image(i, self.scale_state)
             try:
                 image = self.read_fits(i)
