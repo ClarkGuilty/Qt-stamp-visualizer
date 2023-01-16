@@ -12,12 +12,13 @@ import pandas as pd
 from os.path import join
 #%%
 classification_path = "Classifications"
-classification_csv = "classification_autosave1_early_test.csv"
+#classification_csv = "classification_autosave1_early_test.csv"
+classification_csv = "classification_mosaic_autosave_99_33107.csv"
 
 df = pd.read_csv(join(classification_path,classification_csv))
 
 
-selected_df = df[df.classification != "None"]
+selected_df = df[df.classification > 0]
 for index, row in selected_df.iterrows():
     # print(row)
 # /home/alejandro/imported/inferences

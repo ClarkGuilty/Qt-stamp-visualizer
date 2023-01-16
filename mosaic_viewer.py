@@ -41,30 +41,35 @@ def asinh2(x):
 
 class LabelledIntField(QtWidgets.QWidget):
     "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
-    def __init__(self, title, initial_value=None):
+    def __init__(self, title, initial_value,  total_pages):
         QtWidgets.QWidget.__init__(self)
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
         
         self.label = QtWidgets.QLabel()
         self.label.setText(title)
-        self.label.setFixedWidth(100)
-        self.label.setFont(QFont("Arial",weight=QFont.Bold))
+        # self.label.setFixedWidth(100)
+        self.label.setFont(QFont("Arial",20,weight=QFont.Bold))
         layout.addWidget(self.label)
         
         self.lineEdit = QtWidgets.QLineEdit(self)
-        self.lineEdit.setFixedWidth(40)
-        self.lineEdit.setValidator(QIntValidator())
-        if initial_value != None:
-            self.lineEdit.setText(str(initial_value))
+        self.lineEdit.setFixedWidth(50)
+        self.lineEdit.setValidator(QIntValidator(0,total_pages))
+        self.lineEdit.setText(str(initial_value))
+        self.lineEdit.setFont(QFont("Arial",20))
+        self.lineEdit.setStyleSheet('background-color: black; color: gray')
+        self.lineEdit.setAlignment(Qt.AlignRight)
         layout.addWidget(self.lineEdit)
-        layout.addStretch()
-        
-    def setLabelWidth(self, width):
-        self.label.setFixedWidth(width)
-        
-    def setInputWidth(self, width):
-        self.lineEdit.setFixedWidth(width)
+
+        self.total_pages = QtWidgets.QLabel()
+        self.total_pages.setText("/ "+str(total_pages))
+        self.total_pages.setFont(QFont("Arial",20))
+        layout.addWidget(self.total_pages)
+
+        # layout.addStretch()
+
+    def setInputText(self, input):
+        self.lineEdit.setText(str(input))
         
     def getValue(self):
         return int(self.lineEdit.text())
@@ -158,7 +163,7 @@ class ClickableLabel(QtWidgets.QLabel):
         self._pixmap = QPixmap(self.filepath)
 
     def mousePressEvent(self, event):
-        print(self.is_activate)
+        # print(self.is_activate)
         if self.is_activate:
             self.is_a_candidate = not self.is_a_candidate
             if self.is_a_candidate:
@@ -203,7 +208,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.clean_scratch(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(self.stampspath + '*.fits')])
-
         self.gridsize = 10
         self.gridarea = self.gridsize**2
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
@@ -214,6 +218,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.defaults = {
             # 'counter': 0,
             'page': 0,
+            # 'total': -1,
             'colormap': 'gray',
             'scale': 'log10',
         }
@@ -224,10 +229,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         stamp_grid_layout = QtWidgets.QGridLayout()
+        bottom_bar_layout = QtWidgets.QHBoxLayout()
         button_bar_layout = QtWidgets.QHBoxLayout()
+        page_counter_layout = QtWidgets.QHBoxLayout()
 
+
+        bottom_bar_layout.addLayout(button_bar_layout,10)
+        bottom_bar_layout.addLayout(page_counter_layout,1)
         main_layout.addLayout(stamp_grid_layout, 8)
-        main_layout.addLayout(button_bar_layout, )
+        main_layout.addLayout(bottom_bar_layout, )
 
         #### Buttons
         self.cbscale = QtWidgets.QComboBox()
@@ -267,9 +277,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bnext.setStyleSheet('background-color: gray')
         self.bnext.setFont(QFont("Arial",20))
 
-        self.bcounter = LabelledIntField('asd', 4)
-        self.bcounter.setStyleSheet('background-color: white')
-
+        self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
+        self.bcounter.setStyleSheet('background-color: black; color: gray')
+        self.bcounter.lineEdit.returnPressed.connect(self.goto)
+        # button.clicked.connect(line_edit.clear)
 
 
         ##### Keyboard shortcuts
@@ -286,7 +297,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         button_bar_layout.addWidget(self.cbcolormap)
         button_bar_layout.addWidget(self.bprev)
         button_bar_layout.addWidget(self.bnext)
-        # button_bar_layout.addWidget(self.bcounter)
+        page_counter_layout.addWidget(self.bcounter)
 
 
 
@@ -325,26 +336,42 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 #
 
     @Slot()
+    def goto(self):
+        if self.bcounter.getValue()>self.PAGE_MAX:
+            self.status.showMessage('There are only {} pages.'.format(
+                self.PAGE_MAX),500)
+        elif self.bcounter.getValue()<0:
+            self.status.showMessage('Pages go from 0 to {}.'.format(
+                self.PAGE_MAX),500)
+        else:
+            self.config_dict['page'] = self.bcounter.getValue()
+            self.update_grid()
+            # self.bcounter.setInputText(self.config_dict['page'])
+            self.save_dict()
+
+    @Slot()
     def next(self):
-        self.clean_scratch(self.scratchpath)
         self.config_dict['page'] = self.config_dict['page'] + 1
         if self.config_dict['page']>self.PAGE_MAX:
             # self.config_dict['counter']=self.PAGE_MAX
             self.config_dict['page']=self.PAGE_MAX
             self.status.showMessage('Last page',500)
         else:
+            self.clean_scratch(self.scratchpath)
             self.update_grid()
+            self.bcounter.setInputText(self.config_dict['page'])
             self.save_dict()
 
     @Slot()
     def prev(self):
-        self.clean_scratch(self.scratchpath)
         self.config_dict['page'] = self.config_dict['page'] - 1
         if self.config_dict['page'] < 0:
             self.config_dict['page'] = 0
             self.status.showMessage('First page')
         else:
+            self.clean_scratch(self.scratchpath)
             self.update_grid()
+            self.bcounter.setInputText(self.config_dict['page'])
             self.save_dict()
 
     def change_scale(self,i):
@@ -392,15 +419,22 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             './Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'*.csv'))
         # print(class_file, len(class_file))
         if len(class_file) >= 1:
-            print('reading ' + str(class_file[len(class_file) - 1]))
+            print('Reading '+str(class_file[len(class_file)-1]))
             df = pd.read_csv(class_file[len(class_file) - 1])
-        else:
-            print('creating dataframe')
-            self.dfc = ['file_name', 'classification', 'grid_pos']
-            df = pd.DataFrame(columns=self.dfc)
-            df['file_name'] = self.listimage
-            df['classification'] = np.zeros(np.shape(self.listimage))
-            df['grid_pos'] = np.zeros(np.shape(self.listimage))
+            if len(self.listimage) == len(df):
+                print("csv file has the same number of rows as there are images.")
+                self.listimage = df['file_name'].values
+                return df
+            else:
+                print("csv file has a number of rows different from the number of images.")
+        
+        print('Creating dataframe')
+        self.dfc = ['file_name', 'classification', 'grid_pos']
+        df = pd.DataFrame(columns=self.dfc)
+        df['file_name'] = self.listimage
+        df['classification'] = np.zeros(np.shape(self.listimage))
+        df['grid_pos'] = np.zeros(np.shape(self.listimage))
+        self.config_dict['page'] = 0
         return df
 
     def update_grid(self):
@@ -430,7 +464,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')]=j+1
 
             except (KeyError,IndexError) as e:
-                print("Out of bounds in the dataframe.")
+                # print("Out of bounds in the dataframe.")
                 button.deactivate()
                 # button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
                 # raise
