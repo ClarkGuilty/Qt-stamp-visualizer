@@ -138,7 +138,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row2_layout = QtWidgets.QHBoxLayout()
         button_row3_layout = QtWidgets.QHBoxLayout()
 
-        self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX+1))
+        self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
         self.counter_widget.setStyleSheet("font-size: 14px")
 #        self.status.addPermanentWidget(self.counter_widget)
 
@@ -349,7 +349,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def update_counter(self):
 #        self.config_dict['counter']+1
-        self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX+1))
+        self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
 
     def classify(self, grade, subgrade, col):
         cnt = self.config_dict['counter']# - 1
