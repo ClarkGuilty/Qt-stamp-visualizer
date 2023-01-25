@@ -13,6 +13,8 @@ import pandas as pd
 import subprocess
 from PIL import Image
 
+import argparse
+
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent
 from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
@@ -30,6 +32,12 @@ from functools import partial
 import webbrowser
 import json
 from os.path import join
+
+parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
+parser.add_argument('-p',"--path", help="Path to the images to inspect",
+                    default="Stamps_to_inspect")
+
+args = parser.parse_args()
 
 
 def identity(x):
@@ -191,7 +199,7 @@ class ClickableLabel(QtWidgets.QLabel):
 
 
 class MosaicVisualizer(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, path_to_the_stamps= './Stamps_to_inspect/'):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
@@ -201,7 +209,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.random_seed = 99
 
-        self.stampspath = './Stamps_to_inspect/'
+        self.stampspath = path_to_the_stamps
         self.scratchpath = './.temp'
         self.deactivatedpath = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
