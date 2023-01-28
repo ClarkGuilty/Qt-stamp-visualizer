@@ -199,11 +199,11 @@ class ClickableLabel(QtWidgets.QLabel):
 
 
 class MosaicVisualizer(QtWidgets.QMainWindow):
-    def __init__(self, path_to_the_stamps= './Stamps_to_inspect/'):
+    def __init__(self, path_to_the_stamps= args.path):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
-
+        #print(path_to_the_stamps)
         self.setWindowTitle("Mosaic Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
@@ -215,7 +215,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_scratch(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
-                                for x in glob.glob(self.stampspath + '*.fits')])
+                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+        print(join(self.stampspath, '*.fits'))
+        print(glob.glob(self.stampspath + '*.fits'))
         self.gridsize = 10
         self.gridarea = self.gridsize**2
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
