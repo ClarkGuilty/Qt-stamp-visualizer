@@ -36,6 +36,10 @@ from os.path import join
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
+parser.add_argument('-N',"--name", help="Name of the classifying session.",
+                    default="")
+parser.add_argument('-l',"--pagesize", help="Number of stamps per side.",type=int,
+                    default=10)
 
 args = parser.parse_args()
 
@@ -218,7 +222,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
         print(join(self.stampspath, '*.fits'))
         print(glob.glob(self.stampspath + '*.fits'))
-        self.gridsize = 10
+        self.gridsize = args.pagesize
         self.gridarea = self.gridsize**2
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
 
@@ -426,7 +430,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     def obtain_df(self):
         class_file = np.sort(glob.glob(
-            './Classifications/classification_mosaic_autosave_'+str(self.random_seed)+'*.csv'))
+            './Classifications/classification_mosaic_autosave_{}_{}*.csv'.format(args.name,str(self.random_seed))))
         # print(class_file, len(class_file))
         if len(class_file) >= 1:
             print('Reading '+str(class_file[len(class_file)-1]))
