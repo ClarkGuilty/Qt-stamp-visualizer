@@ -227,7 +227,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
 
         self.scale2funct = {'linear': identity,
-                            'sqrt': np.sqrt, 'log10': np.log10, 'asinh': asinh2}
+                            'sqrt': np.sqrt,
+                            'log10': np.log10,
+                            'asinh': asinh2}
 
         self.defaults = {
             # 'counter': 0,
@@ -236,6 +238,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             'colormap': 'gray',
             'scale': 'log10',
         }
+
         self.config_dict = self.load_dict()
         self.scale = self.scale2funct[self.config_dict['scale']]
         self.path_background = '.background.png'
@@ -319,9 +322,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
 
         self.clean_scratch(self.scratchpath)
+        self.df = self.obtain_df()
         self.prepare_png(self.gridsize**2)
 
-        self.df = self.obtain_df()
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
         start = self.config_dict['page']*self.gridarea
         print("Page: ",self.config_dict['page'])
@@ -410,8 +413,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
 
                 self.df.to_csv(
-                    './Classifications/classification_mosaic_autosave_' +
-                    '{}_{}'.format(self.random_seed, len(self.df))+'.csv', index=False)
+                    self.df_name, index=False)
 
     def filepath(self, i, page):
         return join(self.scratchpath, str(i+1)+self.config_dict['scale'] + self.config_dict['colormap'] + str(page)+'.png')
@@ -429,36 +431,41 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             return self.defaults
 
     def obtain_df(self):
+        string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}*.csv'.format(
+                                    args.name,len(self.listimage),str(self.random_seed))
         class_file = np.sort(glob.glob(
-            './Classifications/classification_mosaic_autosave_{}_{}*.csv'.format(args.name,str(self.random_seed))))
+            string_to_glob))
+        print("Globing for", string_to_glob)
+
         # print(class_file, len(class_file))
         if len(class_file) >= 1:
             print('Reading '+str(class_file[len(class_file)-1]))
-            df = pd.read_csv(class_file[len(class_file) - 1])
+            self.df_name = class_file[len(class_file) - 1]
+            df = pd.read_csv(self.df_name)
             if len(self.listimage) == len(df):
                 print("csv file has the same number of rows as there are images.")
                 self.listimage = df['file_name'].values
+                df['page'] = np.zeros(np.shape(self.listimage))
+
                 return df
             else:
                 print("csv file has a number of rows different from the number of images.")
-        
         print('Creating dataframe')
-        self.dfc = ['file_name', 'classification', 'grid_pos']
+        self.dfc = ['file_name', 'classification', 'grid_pos',' page']
+        self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}.csv'.format(
+                                    args.name,len(self.listimage),str(self.random_seed))
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
         df['classification'] = np.zeros(np.shape(self.listimage))
+        df['page'] = np.zeros(np.shape(self.listimage))
         df['grid_pos'] = np.zeros(np.shape(self.listimage))
         self.config_dict['page'] = 0
+        self.bcounter.setInputText(self.config_dict['page'])
         return df
 
     def update_grid(self):
         start = self.config_dict['page']*self.gridarea
-        # self.textnumber.text = str(self.config_dict['page'])
-
-        # self.clean_scratch(self.scratchpath)
-        # n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
         n_images = self.gridarea
-        # print("page,pageMAX,nimages:",self.config_dict['page'],self.PAGE_MAX,n_images)
         self.prepare_png(n_images)
 
         i = start
@@ -475,7 +482,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     button.paint_background_pixmap()
                     button.set_candidate_status(True)
 
-                self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('grid_pos')]=j+1
+                self.df.iloc[self.gridarea*self.config_dict['page']+j,
+                             self.df.columns.get_loc('grid_pos')] = j+1
+
+                self.df.iloc[self.gridarea*self.config_dict['page']+j,
+                             self.df.columns.get_loc('page')] = self.config_dict['page']
 
             except (KeyError,IndexError) as e:
                 # print("Out of bounds in the dataframe.")
@@ -487,7 +498,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             i = i+1
 
     def prepare_png(self, number):
-
+        "Generates the png files from the fits."
         start = self.config_dict['page']*self.gridarea
         for i in np.arange(start, start + number + 1):
             # img = self.draw_image(i, self.scale_state)
@@ -504,6 +515,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             # self.config_dict['counter'] = self.config_dict['counter'] + 1
 
     def clean_scratch(self, path_dir):
+        "Removes everything in the scratch folder."
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
 
