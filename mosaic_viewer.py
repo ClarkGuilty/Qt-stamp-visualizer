@@ -38,8 +38,10 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
-parser.add_argument('-l',"--pagesize", help="Number of stamps per side.",type=int,
+parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
+parser.add_argument("--page", help="Initial page",type=int,
+                    default=0)
 
 args = parser.parse_args()
 
@@ -66,25 +68,25 @@ class LabelledIntField(QtWidgets.QWidget):
         
         self.lineEdit = QtWidgets.QLineEdit(self)
         self.lineEdit.setFixedWidth(50)
-        self.lineEdit.setValidator(QIntValidator(0,total_pages))
-        self.lineEdit.setText(str(initial_value))
+        self.lineEdit.setValidator(QIntValidator(1,total_pages+1))
+        self.lineEdit.setText(str(initial_value+1))
         self.lineEdit.setFont(QFont("Arial",20))
         self.lineEdit.setStyleSheet('background-color: black; color: gray')
         self.lineEdit.setAlignment(Qt.AlignRight)
         layout.addWidget(self.lineEdit)
 
         self.total_pages = QtWidgets.QLabel()
-        self.total_pages.setText("/ "+str(total_pages))
+        self.total_pages.setText("/ "+str(total_pages+1))
         self.total_pages.setFont(QFont("Arial",20))
         layout.addWidget(self.total_pages)
 
         # layout.addStretch()
 
     def setInputText(self, input):
-        self.lineEdit.setText(str(input))
+        self.lineEdit.setText(str(input+1))
         
     def getValue(self):
-        return int(self.lineEdit.text())
+        return int(self.lineEdit.text())-1
 
 
 def clickable(widget):
@@ -222,7 +224,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
         print(join(self.stampspath, '*.fits'))
         print(glob.glob(self.stampspath + '*.fits'))
-        self.gridsize = args.pagesize
+        self.gridsize = args.gridsize
         self.gridarea = self.gridsize**2
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
 
@@ -233,12 +235,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.defaults = {
             # 'counter': 0,
-            'page': 0,
+            'page': args.page,
             # 'total': -1,
             'colormap': 'gray',
-            'scale': 'log10',
+            'scale': 'asinh',
+            'name': args.name,
+            'gridsize': args.gridsize
         }
-
         self.config_dict = self.load_dict()
         self.scale = self.scale2funct[self.config_dict['scale']]
         self.path_background = '.background.png'
@@ -355,11 +358,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     @Slot()
     def goto(self):
         if self.bcounter.getValue()>self.PAGE_MAX:
+            print(self.PAGE_MAX)
             self.status.showMessage('There are only {} pages.'.format(
-                self.PAGE_MAX),500)
+                self.PAGE_MAX+1),500)
         elif self.bcounter.getValue()<0:
-            self.status.showMessage('Pages go from 0 to {}.'.format(
-                self.PAGE_MAX),500)
+            self.status.showMessage('Pages go from 1 to {}.'.format(
+                self.PAGE_MAX+1),500)
         else:
             self.config_dict['page'] = self.bcounter.getValue()
             self.update_grid()
@@ -430,9 +434,24 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print("Loaded default configuration.")
             return self.defaults
 
+    def load_dict(self):
+        try:
+            with open('.config_mosaic.json', ) as f:
+                temp_dict = json.load(f)
+                if ((temp_dict['name'] != args.name) or
+                    (temp_dict['gridsize'] != args.gridsize)):
+                    temp_dict['name'] = args.name
+                    temp_dict['name'] = args.gridsize
+                if args.page is not None:
+                    temp_dict['page'] = args.page
+                return temp_dict
+        except FileNotFoundError:
+            print("Loaded default configuration.")
+            return self.defaults
+
     def obtain_df(self):
-        string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}*.csv'.format(
-                                    args.name,len(self.listimage),str(self.random_seed))
+        string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
+                                    args.name,len(self.listimage),self.gridsize, str(self.random_seed))
         class_file = np.sort(glob.glob(
             string_to_glob))
         print("Globing for", string_to_glob)
@@ -449,8 +468,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             else:
                 print("csv file has a number of rows different from the number of images.")
         self.dfc = ['file_name', 'classification', 'grid_pos',' page']
-        self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}.csv'.format(
-                                    args.name,len(self.listimage),str(self.random_seed))
+        self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}.csv'.format(
+                                    args.name,len(self.listimage),self.gridsize,str(self.random_seed))
         print('Creating dataframe', self.df_name)
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
