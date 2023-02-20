@@ -15,7 +15,7 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread
-#from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QKeySequence, QShortcut
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -28,6 +28,19 @@ from functools import partial
 import webbrowser
 import json
 from os.path import join
+
+import argparse
+
+
+parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
+parser.add_argument('-p',"--path", help="Path to the images to inspect",
+                    default="Stamps_to_inspect")
+parser.add_argument('-N',"--name", help="Name of the classifying session.",
+                    default="")
+
+
+args = parser.parse_args()
+
 
 def identity(x):
     return x
@@ -47,14 +60,15 @@ class FetchThread(QThread):
             self.stampspath = './Stamps_to_inspect/'
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-    def download_legacy_survey(self, ra, dec, pixscale): #pixscale = 0.04787578125 is 66 pixels in CFIS.
-
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+ pixscale + 'dr8.jpg'
+    def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+        residual = (residual and pixscale == '0.048')
+        res = '-resid' if residual else ''
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
             return True
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=dr8&pixscale='+pixscale
+            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         print(url)
         try:
             urllib.request.urlretrieve(url, savefile)
@@ -69,8 +83,15 @@ class FetchThread(QThread):
         sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
         return sky[0][0], sky[1][0]
 
+    def interrupt(self):
+        self._active = False
+
     def run(self):
-        for index, stamp in self.df.iterrows():
+        index = self.initial_counter
+        self._active = True
+        while self._active:
+            # for index, stamp in self.df.iterrows():
+            stamp = self.df.iloc[index]
             if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
                 f = join(self.stampspath,self.listimage[index])
                 ra,dec = self.get_ra_dec(fits.getheader(f))
@@ -79,7 +100,8 @@ class FetchThread(QThread):
                 ra,dec = stamp[['ra','dec']]
             self.download_legacy_survey(ra,dec,'0.048')
             self.download_legacy_survey(ra,dec,pixscale='0.5')
-        return
+        # self.interrupt()
+        return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -92,11 +114,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'counter':0,
                     'legacysurvey':False,
                     'legacybigarea':False,
+                    'legacyresiduals':False,
                     'prefetch':False,
                     'autonext':False,
                     'prefetch':False,
                     'colormap':'gray',
                     'scale':'log10',
+                    'keyboardshortcuts':False,
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -112,10 +136,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
-        self.stampspath = './Stamps_to_inspect/'
+        self.stampspath = args.path
         self.legacy_survey_path = './Legacy_survey/'
-        self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
-
+        self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
         self.df = self.obtain_df()
 
         self.number_graded = 0
@@ -134,7 +157,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.plot_layout = QtWidgets.QHBoxLayout()
         button_layout = QtWidgets.QVBoxLayout()
         button_row0_layout = QtWidgets.QHBoxLayout()
-        button_row1_layout = QtWidgets.QHBoxLayout()
+        button_row10_layout = QtWidgets.QHBoxLayout()
+        button_row11_layout = QtWidgets.QHBoxLayout()
         button_row2_layout = QtWidgets.QHBoxLayout()
         button_row3_layout = QtWidgets.QHBoxLayout()
 
@@ -188,11 +212,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bviewls = QtWidgets.QPushButton('View LS')
         self.bviewls.clicked.connect(self.viewls)
 
-#        self.blegsur = QtWidgets.QPushButton('Legacy Survey')
-#        self.blegsur.clicked.connect(self.set_legacy_survey)
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-
         if not self.config_dict['legacysurvey']:
                 self.label_plot[1].hide()
                 self.canvas[1].hide()
@@ -205,37 +226,64 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-
         if self.config_dict['legacybigarea']:
             self.blsarea.toggle()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
 #            self.checkbox_ls_change_area()
 
+        self.blsresidual = QtWidgets.QCheckBox("Residuals")
+        self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
+        if self.config_dict['legacyresiduals']:
+            self.blsresidual.toggle()
+            if self.config_dict['legacysurvey']:
+                self.set_legacy_survey()
+
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
         self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-
         if self.config_dict['prefetch']:
             self.bprefetch.toggle()
 #            self.checkbox_ls_change_area()
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
-
         if self.config_dict['autonext']:
             self.bautopass.toggle()
 
+        self.bkeyboardshortcuts = QtWidgets.QCheckBox("Keyboard shortcuts")
+        self.bkeyboardshortcuts.clicked.connect(self.checkbox_keyboard_shortcuts)
+        if self.config_dict['keyboardshortcuts']:
+            self.bkeyboardshortcuts.toggle()
+
         self.bsurelens = QtWidgets.QPushButton('Sure Lens')
-        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL',1) )
+        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL') )
 
         self.bmaybelens = QtWidgets.QPushButton('Maybe Lens')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML',1))
+        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML'))
 
         self.bflexion = QtWidgets.QPushButton('Flexion')
-        self.bflexion.clicked.connect(partial(self.classify, 'FL','FL',1))
+        self.bflexion.clicked.connect(partial(self.classify, 'FL','FL'))
 
         self.bnonlens = QtWidgets.QPushButton('Non Lens')
-        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL',1))
+        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL'))
+
+        self.bMerger = QtWidgets.QPushButton('Merger')
+        self.bMerger.clicked.connect(partial(self.classify, 'NL','Merger') )
+
+        self.bSpiral = QtWidgets.QPushButton('Spiral')
+        self.bSpiral.clicked.connect(partial(self.classify, 'NL','Spiral'))
+
+        self.bRing = QtWidgets.QPushButton('Ring')
+        self.bRing.clicked.connect(partial(self.classify, 'NL','Ring'))
+
+        self.bElliptical = QtWidgets.QPushButton('Elliptical')
+        self.bElliptical.clicked.connect(partial(self.classify, 'NL','Elliptical'))
+
+        self.bDisc = QtWidgets.QPushButton('Disc')
+        self.bDisc.clicked.connect(partial(self.classify, 'NL','Disc'))
+
+        self.bEdgeon = QtWidgets.QPushButton('Edge-on')
+        self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
 
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
@@ -275,11 +323,64 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        self.bactivatedscale.setStyleSheet("background-color : white;color : black;".format(self.buttoncolor))
 #        self.bactivatedscale = self.sender()
 
-        button_row1_layout.addWidget(self.bsurelens)
-        button_row1_layout.addWidget(self.bmaybelens)
-        button_row1_layout.addWidget(self.bflexion)
-        button_row1_layout.addWidget(self.bnonlens)
+        #Keyboard shortcuts
+        self.ksurelens = QShortcut(QKeySequence('q'), self)
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'SL','SL'))
 
+        self.kmaybelens = QShortcut(QKeySequence('w'), self)
+        self.kmaybelens.activated.connect(partial(self.keyClassify, 'ML','ML'))
+
+        self.kflexion = QShortcut(QKeySequence('e'), self)
+        self.kflexion.activated.connect(partial(self.keyClassify, 'FL','FL'))
+
+        self.knonlens = QShortcut(QKeySequence('r'), self)
+        self.knonlens.activated.connect(partial(self.keyClassify, 'NL','NL'))
+
+        self.kMerger = QShortcut(QKeySequence('a'), self)
+        self.kMerger.activated.connect(partial(self.keyClassify, 'NL','Merger'))
+
+        self.kSpiral = QShortcut(QKeySequence('s'), self)
+        self.kSpiral.activated.connect(partial(self.keyClassify, 'NL','Spiral'))
+
+        self.kRing = QShortcut(QKeySequence('d'), self)
+        self.kRing.activated.connect(partial(self.keyClassify, 'NL','Ring'))
+
+        self.kElliptical = QShortcut(QKeySequence('f'), self)
+        self.kElliptical.activated.connect(partial(self.keyClassify, 'NL','Elliptical'))
+
+        self.kDisc = QShortcut(QKeySequence('g'), self)
+        self.kDisc.activated.connect(partial(self.keyClassify, 'NL','Disc'))
+
+        self.kEdgeon = QShortcut(QKeySequence('h'), self)
+        self.kEdgeon.activated.connect(partial(self.keyClassify, 'NL','Edge-on'))
+
+
+        #Buttons
+        button_row0_layout.addWidget(self.bgoto)
+        button_row0_layout.addWidget(self.bprev)
+        button_row0_layout.addWidget(self.bnext)
+        button_row0_layout.addWidget(self.bds9)
+        button_row0_layout.addWidget(self.bviewls)
+        button_row0_layout.addWidget(self.blegsur)
+        button_row0_layout.addWidget(self.blsarea)
+        button_row0_layout.addWidget(self.blsresidual)
+        button_row0_layout.addWidget(self.bprefetch)
+        button_row0_layout.addWidget(self.bautopass)
+        button_row0_layout.addWidget(self.bkeyboardshortcuts)
+        button_row0_layout.addWidget(self.counter_widget,alignment=Qt.AlignRight)
+
+        button_row10_layout.addWidget(self.bsurelens)
+        button_row10_layout.addWidget(self.bmaybelens)
+        button_row10_layout.addWidget(self.bflexion)
+        button_row10_layout.addWidget(self.bnonlens)
+
+
+        button_row11_layout.addWidget(self.bMerger)
+        button_row11_layout.addWidget(self.bSpiral)
+        button_row11_layout.addWidget(self.bRing)
+        button_row11_layout.addWidget(self.bElliptical)
+        button_row11_layout.addWidget(self.bDisc)
+        button_row11_layout.addWidget(self.bEdgeon)
 
         button_row2_layout.addWidget(self.blinear)
         button_row2_layout.addWidget(self.bsqrt)
@@ -290,19 +391,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row3_layout.addWidget(self.bGray)
         button_row3_layout.addWidget(self.bViridis)
 
-        button_row0_layout.addWidget(self.bgoto)
-        button_row0_layout.addWidget(self.bprev)
-        button_row0_layout.addWidget(self.bnext)
-        button_row0_layout.addWidget(self.bds9)
-        button_row0_layout.addWidget(self.bviewls)
-        button_row0_layout.addWidget(self.blegsur)
-        button_row0_layout.addWidget(self.blsarea)
-        button_row0_layout.addWidget(self.bprefetch)
-        button_row0_layout.addWidget(self.bautopass)
-        button_row0_layout.addWidget(self.counter_widget,alignment=Qt.AlignRight)
-
         button_layout.addLayout(button_row0_layout, 25)
-        button_layout.addLayout(button_row1_layout, 25)
+        button_layout.addLayout(button_row10_layout, 25)
+        button_layout.addLayout(button_row11_layout, 25)
         button_layout.addLayout(button_row2_layout, 25)
         button_layout.addLayout(button_row3_layout, 25)
 
@@ -313,12 +404,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def prefetch_legacysurvey(self):
-        if not self.config_dict['prefetch']:
+        if self.config_dict['prefetch']:
+            self.fetchthread.quit()
+            self.config_dict['prefetch'] = False
+        else:
             self.fetchthread = FetchThread(self.df,self.config_dict['counter']) #Always store in an object.
             self.fetchthread.finished.connect(self.fetchthread.deleteLater)
             self.fetchthread.start()
-        else:
-            self.config_dict['prefetch'] = True
 
     @Slot()
     def goto(self):
@@ -351,7 +443,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        self.config_dict['counter']+1
         self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
 
-    def classify(self, grade, subgrade, col):
+    def keyClassify(self, grade, subgrade):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.classify(grade, subgrade)
+        
+
+    def classify(self, grade, subgrade):
         cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
@@ -361,21 +458,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
-        self.df.to_csv(os.path.join("Classifications",'classification_autosave'+str(self.nf)+'.csv'), index=False)
+        self.df.to_csv(self.df_name)
         if self.config_dict['autonext']:
             self.next()
 
 
-    def get_legacy_survey(self,ra,dec,pixscale = '0.048'): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+    def get_legacy_survey(self,ra,dec,pixscale = '0.048',residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
 #        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
-
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'dr8.jpg'
+        residual = (residual and pixscale == '0.048')
+        res = '-resid' if residual else ''
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
             return savefile
         self.status.showMessage("Downloading legacy survey jpeg.")
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=dr8&pixscale='+str(pixscale)
+            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         try:
             urllib.request.urlretrieve(url, savefile)
         except urllib.error.HTTPError:
@@ -403,7 +501,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
-        if self.config_dict['legacybigarea'] == True:
+        if self.config_dict['legacyresiduals'] == True:
+            try:
+                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
+                print(self.legacy_filename)
+                self.plot_legacy_survey(title='Residuals {0}x{0}'.format(0.5))
+            except urllib.error.HTTPError:
+                self.plot_no_legacy_survey()
+
+        elif self.config_dict['legacybigarea'] == True:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
                 self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
@@ -434,11 +540,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['legacysurvey']:
                     self.set_legacy_survey()
 
+    @Slot()
+    def checkbox_ls_use_residuals(self):
+        self.config_dict['legacyresiduals'] = not self.config_dict['legacyresiduals']
+        if self.config_dict['legacysurvey']:
+                    self.set_legacy_survey()
+
 
     @Slot()
     def checkbox_auto_next(self):
         self.config_dict['autonext'] = not self.config_dict['autonext']
 
+    @Slot()
+    def checkbox_keyboard_shortcuts(self):
+        self.config_dict['keyboardshortcuts'] = not self.config_dict['keyboardshortcuts']
 
 
     @Slot()
@@ -616,31 +731,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.canvas[canvas_id].draw()
 
     def obtain_df(self):
-        class_file = np.sort(glob.glob('./Classifications/classification_autosave*.csv'))
-        print (class_file, len(class_file))
+        string_to_glob = './Classifications/classification_single_{}_{}*.csv'.format(
+                                    args.name,len(self.listimage))
+        class_file = np.sort(glob.glob(string_to_glob))
+        print("Globing for", string_to_glob)
         if len(class_file) >=1:
-            print ('loop')
-            print('reading '+str(class_file[len(class_file)-1]))
-            df = pd.read_csv(class_file[len(class_file)-1])
-            self.nf = len(class_file)
-#            firstnone=df['classification'].tolist().index('None')
-#            self.config_dict['counter'] =firstnone #Remembering last position
+            self.df_name = class_file[len(class_file)-1]
+            print('reading',self.df_name)
+            df = pd.read_csv(self.df_name)
+            if len(df) == len(self.listimage):
+                self.listimage = df['file_name'].values
+                return df
+            else:
+                print("csv file has a number of rows different from the number of images.")
 
-        else:
-            df=[]
-        if len(df) != len(self.listimage):
-            print('creating classification_autosave'+str(len(class_file)+1)+'.csv')
-            dfc = ['file_name', 'classification', 'subclassification','ra','dec','comment','legacy_survey_data']
-            self.nf = len(class_file) + 1
-            df = pd.DataFrame(columns=dfc)
-            df['file_name'] = self.listimage
-            df['classification'] = ['None'] * len(self.listimage)
-            df['subclassification'] = ['None'] * len(self.listimage)
-            df['ra'] = np.full(len(self.listimage),np.nan)
-            df['dec'] = np.full(len(self.listimage),np.nan)
-            df['comment'] = ['None'] * len(self.listimage)
-            df['legacy_survey_data'] = ['None'] * len(self.listimage)
-
+        self.df_name = './Classifications/classification_single_{}_{}.csv'.format(
+                                    args.name,len(self.listimage))
+        print('Creating dataframe', self.df_name)        
+        dfc = ['file_name', 'classification', 'subclassification',
+                'ra','dec','comment','legacy_survey_data']
+        df = pd.DataFrame(columns=dfc)
+        df['file_name'] = self.listimage
+        df['classification'] = ['None'] * len(self.listimage)
+        df['subclassification'] = ['None'] * len(self.listimage)
+        df['ra'] = np.full(len(self.listimage),np.nan)
+        df['dec'] = np.full(len(self.listimage),np.nan)
+        df['comment'] = ['None'] * len(self.listimage)
+        df['legacy_survey_data'] = ['None'] * len(self.listimage)
         return df
 
     @Slot()
@@ -669,7 +786,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         else:
             #self.status.showMessage(self.listimage[self.config_dict['counter']])
-            self.filename = self.stampspath + self.listimage[self.config_dict['counter']]
+            self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()

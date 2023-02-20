@@ -443,17 +443,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.df_name = class_file[len(class_file) - 1]
             df = pd.read_csv(self.df_name)
             if len(self.listimage) == len(df):
-                print("csv file has the same number of rows as there are images.")
+                # print("saved classification has the same number of rows as there are images.")
                 self.listimage = df['file_name'].values
-                df['page'] = np.zeros(np.shape(self.listimage))
-
                 return df
             else:
                 print("csv file has a number of rows different from the number of images.")
-        print('Creating dataframe')
         self.dfc = ['file_name', 'classification', 'grid_pos',' page']
         self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}.csv'.format(
                                     args.name,len(self.listimage),str(self.random_seed))
+        print('Creating dataframe', self.df_name)
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
         df['classification'] = np.zeros(np.shape(self.listimage))
