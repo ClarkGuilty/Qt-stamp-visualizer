@@ -57,15 +57,16 @@ class FetchThread(QThread):
             self.df = df
             self.initial_counter = initial_counter
             self.legacy_survey_path = './Legacy_survey/'
-            self.stampspath = './Stamps_to_inspect/'
-            self.listimage = sorted([os.path.basename(x) for x in glob.glob(self.stampspath+ '*.fits')])
+            self.stampspath = args.path
+            self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-    def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
+    def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
         residual = (residual and pixscale == '0.048')
         res = '-resid' if residual else ''
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
+            print('already exists:', savefile)
             return True
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
@@ -94,12 +95,13 @@ class FetchThread(QThread):
             stamp = self.df.iloc[index]
             if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
                 f = join(self.stampspath,self.listimage[index])
-                ra,dec = self.get_ra_dec(fits.getheader(f))
+                ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
 
             else:
                 ra,dec = stamp[['ra','dec']]
             self.download_legacy_survey(ra,dec,'0.048')
             self.download_legacy_survey(ra,dec,pixscale='0.5')
+            index+=1
         # self.interrupt()
         return 0
 
@@ -408,7 +410,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.fetchthread.quit()
             self.config_dict['prefetch'] = False
         else:
-            self.fetchthread = FetchThread(self.df,self.config_dict['counter']) #Always store in an object.
+            self.fetchthread = FetchThread(self.df,self.config_dict['counter'],) #Always store in an object.
             self.fetchthread.finished.connect(self.fetchthread.deleteLater)
             self.fetchthread.start()
 
