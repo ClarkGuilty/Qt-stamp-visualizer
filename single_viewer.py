@@ -92,16 +92,17 @@ class FetchThread(QThread):
         self._active = True
         while self._active:
             # for index, stamp in self.df.iterrows():
-            stamp = self.df.iloc[index]
-            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
-                f = join(self.stampspath,self.listimage[index])
-                ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
+            while index < len(self.df): 
+                stamp = self.df.iloc[index] #TODO: Check that this is not crashing when it reaches the end.
+                if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
+                    f = join(self.stampspath,self.listimage[index])
+                    ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
 
-            else:
-                ra,dec = stamp[['ra','dec']]
-            self.download_legacy_survey(ra,dec,'0.048')
-            self.download_legacy_survey(ra,dec,pixscale='0.5')
-            index+=1
+                else:
+                    ra,dec = stamp[['ra','dec']]
+                self.download_legacy_survey(ra,dec,'0.048')
+                self.download_legacy_survey(ra,dec,pixscale='0.5')
+                index+=1
         # self.interrupt()
         return 0
 
