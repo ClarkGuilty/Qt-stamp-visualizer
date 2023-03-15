@@ -245,6 +245,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
         self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
         if self.config_dict['prefetch']:
+            self.config_dict['prefetch'] = False
+            self.prefetch_legacysurvey()
             self.bprefetch.toggle()
 #            self.checkbox_ls_change_area()
 
@@ -408,12 +410,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
-            self.fetchthread.quit()
+            # self.fetchthread.quit()
+            self.fetchthread.terminate()
+            # self.fetchthread.interrupt()
+            # print(self.fetchthread._active)
             self.config_dict['prefetch'] = False
         else:
             self.fetchthread = FetchThread(self.df,self.config_dict['counter'],) #Always store in an object.
             self.fetchthread.finished.connect(self.fetchthread.deleteLater)
+            self.fetchthread.setTerminationEnabled(True)
             self.fetchthread.start()
+            self.config_dict['prefetch'] = True
+
 
     @Slot()
     def goto(self):

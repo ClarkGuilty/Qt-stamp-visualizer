@@ -359,11 +359,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def goto(self):
         if self.bcounter.getValue()>self.PAGE_MAX:
             print(self.PAGE_MAX)
-            self.status.showMessage('There are only {} pages.'.format(
-                self.PAGE_MAX+1),500)
+            self.status.showMessage('WARNING: There are only {} pages.'.format(
+                self.PAGE_MAX+1),10000)
         elif self.bcounter.getValue()<0:
-            self.status.showMessage('Pages go from 1 to {}.'.format(
-                self.PAGE_MAX+1),500)
+            self.status.showMessage('WARNING: Pages go from 1 to {}.'.format(
+                self.PAGE_MAX+1),10000)
         else:
             self.config_dict['page'] = self.bcounter.getValue()
             self.update_grid()
@@ -376,7 +376,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if self.config_dict['page']>self.PAGE_MAX:
             # self.config_dict['counter']=self.PAGE_MAX
             self.config_dict['page']=self.PAGE_MAX
-            self.status.showMessage('Last page',500)
+            self.status.showMessage('You are already at the last page',10000)
         else:
             self.clean_scratch(self.scratchpath)
             self.update_grid()
@@ -388,7 +388,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.config_dict['page'] = self.config_dict['page'] - 1
         if self.config_dict['page'] < 0:
             self.config_dict['page'] = 0
-            self.status.showMessage('First page')
+            self.status.showMessage('You are already at the first page',10000)
         else:
             self.clean_scratch(self.scratchpath)
             self.update_grid()
@@ -398,10 +398,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def change_scale(self,i):
         self.config_dict['scale'] = self.cbscale.currentText()
         self.update_grid()
+        self.save_dict()
 
     def change_colormap(self,i):
         self.config_dict['colormap'] = self.cbcolormap.currentText()
         self.update_grid()
+        self.save_dict()
 
     def my_label_clicked(self, event, i):
         button = event.button()
