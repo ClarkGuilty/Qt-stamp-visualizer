@@ -222,8 +222,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.clean_scratch(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
-        print(join(self.stampspath, '*.fits'))
-        print(glob.glob(self.stampspath + '*.fits'))
+        # print(join(self.stampspath, '*.fits'))
+        # print(glob.glob(self.stampspath + '*.fits'))
         self.gridsize = args.gridsize
         self.gridarea = self.gridsize**2
         self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
@@ -601,5 +601,5 @@ if __name__ == "__main__":
     app = MosaicVisualizer()
     app.show()
     app.activateWindow()
-    app.raise_()
+    # app.raise_()
     qapp.exec()
