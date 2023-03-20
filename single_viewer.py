@@ -53,15 +53,26 @@ def asinh2(x):
     return np.arcsinh(x/2)
 
 
-class SingleFetchWorker(QThread):
-    output = pyqtSignal(QRect, QImage)
-    def __init__(self, parent = None):
-        QThread.__init__(self, parent)
-        self.exiting = False
-        self.size = QSize(0, 0)
-        self.stars = 0
+class SingleFetchWorker(QObject):
+    successful_download = Signal(str)
+    failed_download = Signal(str)
 
-class singleFetchThread(QThread):
+    def __init__(self, url, savefile):
+        # super.__init__(self)
+        super(SingleFetchWorker, self).__init__()
+        self.url = url
+        self.savefile = savefile
+    def run(self):
+        try:
+            urllib.request.urlretrieve(self.url, self.savefile)
+            print('Success!!!!')
+            self.successful_download.emit('Heh')
+        except urllib.error.HTTPError:
+            with open(self.savefile,'w') as f:
+                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+            self.failed_download.emit('No Legacy Survey data available.')
+
+class SingleFetchThread(QThread):
     successful_download = Signal(str)
     failed_download = Signal(str)
     def __init__(self, url, savefile, parent=None):
@@ -160,7 +171,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 #        print(self.config_dict)
 
-
+        self.workerThread = QThread()
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
@@ -520,13 +531,21 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         try:
+            #No thread version
             # urllib.request.urlretrieve(url, savefile)
-            self.singlefetchthread = singleFetchThread(url,savefile) #Always store in an object.
-            self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
-            self.singlefetchthread.setTerminationEnabled(True)
-            self.singlefetchthread.start()
-            self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
-            self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
+            #Thread version. This is broken, too many threads instantiated.
+            # self.singlefetchthread = SingleFetchThread(url,savefile) #Always store in an object.
+            # self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
+            # self.singlefetchthread.setTerminationEnabled(True)
+            # self.singlefetchthread.start()
+            # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
+            # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
+            self.singleFetchWorker = SingleFetchWorker(url, savefile)
+            self.singleFetchWorker.moveToThread(self.workerThread)
+            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            # self.operate.connect(self.singleFetchWorker.doWork)
+            # self.singleFetchWorker.resultReady.connect(self.handleResults)
+            self.workerThread.start()
 
             # self.singlefetchthread_active = True
         except urllib.error.HTTPError:
