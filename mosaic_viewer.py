@@ -41,7 +41,7 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
 parser.add_argument("--page", help="Initial page",type=int,
-                    default=0)
+                    default=None)
 
 args = parser.parse_args()
 
@@ -230,12 +230,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.scale2funct = {'linear': identity,
                             'sqrt': np.sqrt,
+                            'cbrt': np.cbrt,
                             'log10': np.log10,
                             'asinh': asinh2}
 
         self.defaults = {
             # 'counter': 0,
-            'page': args.page,
+            'page': 0, #Defaults to 0. Gets overwritten by --page argument.
             # 'total': -1,
             'colormap': 'gray',
             'scale': 'asinh',
@@ -267,7 +268,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.setFont(QFont("Arial",20))
         clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
-        self.cbscale.addItems(['linear','sqrt', 'log10', 'asinh'])
+        # self.cbscale.addItems(['linear','sqrt','' 'log10', 'asinh'])
+        self.cbscale.addItems(self.scale2funct.keys())
         self.cbscale.setStyleSheet('background-color: gray')
         self.cbscale.currentIndexChanged.connect(self.change_scale)
 
@@ -297,6 +299,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bnext.setStyleSheet('background-color: gray')
         self.bnext.setFont(QFont("Arial",20))
 
+        # self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
         self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
         self.bcounter.setStyleSheet('background-color: black; color: gray')
         self.bcounter.lineEdit.returnPressed.connect(self.goto)
@@ -325,6 +328,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
 
         self.clean_scratch(self.scratchpath)
+
         self.df = self.obtain_df()
         self.prepare_png(self.gridsize**2)
 
@@ -468,11 +472,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 self.listimage = df['file_name'].values
                 return df
             else:
-                print("csv file has a number of rows different from the number of images.")
-        self.dfc = ['file_name', 'classification', 'grid_pos',' page']
+                print("The number of rows in the csv and the number of images must be equal.")
+        self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}.csv'.format(
                                     args.name,len(self.listimage),self.gridsize,str(self.random_seed))
-        print('Creating dataframe', self.df_name)
+        print('Creating new csv', self.df_name)
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
         df['classification'] = np.zeros(np.shape(self.listimage))

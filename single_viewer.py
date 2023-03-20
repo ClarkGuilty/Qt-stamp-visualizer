@@ -14,7 +14,7 @@ import subprocess
 from PIL import Image
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, Slot, QObject, QThread
+from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
 from PySide6.QtGui import QPixmap, QKeySequence, QShortcut
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
@@ -37,16 +37,47 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
+parser.add_argument("--clean", help="Removes the configuration dictionary during startup.",
+                    default=False)
 
 
 args = parser.parse_args()
 
+if args.clean:
+    os.remove('.config.json')
 
 def identity(x):
     return x
 
 def asinh2(x):
     return np.arcsinh(x/2)
+
+
+class SingleFetchWorker(QThread):
+    output = pyqtSignal(QRect, QImage)
+    def __init__(self, parent = None):
+        QThread.__init__(self, parent)
+        self.exiting = False
+        self.size = QSize(0, 0)
+        self.stars = 0
+
+class singleFetchThread(QThread):
+    successful_download = Signal(str)
+    failed_download = Signal(str)
+    def __init__(self, url, savefile, parent=None):
+        QThread.__init__(self, parent)
+        self.url = url
+        self.savefile = savefile
+
+    def run(self):
+        try:
+            urllib.request.urlretrieve(self.url, self.savefile)
+            print('Success!!!!')
+            self.successful_download.emit('Heh')
+        except urllib.error.HTTPError:
+            with open(self.savefile,'w') as f:
+                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+            self.failed_download.emit('eHe')
 
 
 class FetchThread(QThread):
@@ -119,7 +150,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'legacybigarea':False,
                     'legacyresiduals':False,
                     'prefetch':False,
-                    'autonext':False,
+                    'autonext':True,
                     'prefetch':False,
                     'colormap':'gray',
                     'scale':'log10',
@@ -132,6 +163,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
+        self.singlefetchthread_active = False
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
@@ -148,7 +180,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.COUNTER_MIN =0
         self.COUNTER_MAX = len(self.listimage)
         self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
-        self.status.showMessage(self.listimage[self.config_dict['counter']],)
+        # self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
         self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
@@ -429,6 +461,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if ok:
             self.config_dict['counter'] = i-1
             self.filename = join(self.stampspath,self.listimage[self.config_dict['counter']])
+            # if self.singlefetchthread_active:
+            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
@@ -486,14 +520,23 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         try:
-            urllib.request.urlretrieve(url, savefile)
+            # urllib.request.urlretrieve(url, savefile)
+            self.singlefetchthread = singleFetchThread(url,savefile) #Always store in an object.
+            self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
+            self.singlefetchthread.setTerminationEnabled(True)
+            self.singlefetchthread.start()
+            self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
+            self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
+
+            # self.singlefetchthread_active = True
         except urllib.error.HTTPError:
-            self.status.showMessage("No data for RA: {}, DEC: {}.".format(ra,dec))
+            self.status.showMessage("Download failed: no data for RA: {}, DEC: {}.".format(ra,dec),10000)
             raise
 #        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
 #            self.dec) + '&layer=dr8-resid&pixscale=0.06'
 #        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
 #        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
+        # self.status.showMessage("Downloading legacy survey jpeg. Success!")
         return savefile
 
     def plot_legacy_survey(self, title='12x12', canvas_id = 1):
@@ -503,10 +546,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
-    def plot_no_legacy_survey(self, title='No Legacy Survey data available', canvas_id = 1):
+    def plot_no_legacy_survey(self, title='No Legacy Survey data available locally', canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(np.zeros((66,66)))
+        self.ax[canvas_id].imshow(np.zeros((66,66)), cmap='Greys_r')
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
@@ -515,23 +558,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['legacyresiduals'] == True:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
-                print(self.legacy_filename)
-                self.plot_legacy_survey(title='Residuals {0}x{0}'.format(0.5))
+                # print(self.legacy_filename)
+                title='Residuals {0}x{0}'.format(0.5)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
 
         elif self.config_dict['legacybigarea'] == True:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
-                self.plot_legacy_survey(title='{0}x{0}'.format(0.5))
+                title='{0}x{0}'.format(0.5)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
         else:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
-                self.plot_legacy_survey(title='{0}x{0}'.format(12.56))
+                title='{0}x{0}'.format(12.56)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
+
+        self.plot_no_legacy_survey()
+        # self.plot_legacy_survey(title=title)
+
 
     @Slot()
     def checkbox_legacy_survey(self):
@@ -754,11 +801,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.listimage = df['file_name'].values
                 return df
             else:
-                print("csv file has a number of rows different from the number of images.")
+                print("The number of rows in the csv and the number of images must be equal.")
 
         self.df_name = './Classifications/classification_single_{}_{}.csv'.format(
                                     args.name,len(self.listimage))
         print('Creating dataframe', self.df_name)        
+        self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification', 'subclassification',
                 'ra','dec','comment','legacy_survey_data']
         df = pd.DataFrame(columns=dfc)
@@ -781,6 +829,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         else:
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
+            # if self.singlefetchthread_active:
+            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
@@ -798,6 +848,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             #self.status.showMessage(self.listimage[self.config_dict['counter']])
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
+            # if self.singlefetchthread_active:
+            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
