@@ -540,6 +540,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # self.singlefetchthread.start()
             # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
             # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
+            #Worker+Thread
             self.singleFetchWorker = SingleFetchWorker(url, savefile)
             self.singleFetchWorker.moveToThread(self.workerThread)
             self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
