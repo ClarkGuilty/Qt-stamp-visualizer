@@ -580,6 +580,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
                 # print(self.legacy_filename)
                 title='Residuals {0}x{0}'.format(0.5)
+                self.plot_legacy_survey(title=title)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
 
@@ -587,17 +588,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
                 title='{0}x{0}'.format(0.5)
+                self.plot_legacy_survey(title=title)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
         else:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
                 title='{0}x{0}'.format(12.56)
+                self.plot_legacy_survey(title=title)
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
 
         # self.plot_no_legacy_survey()
-        self.plot_legacy_survey(title=title)
+        # self.plot_legacy_survey(title=title)
 
 
     @Slot()
