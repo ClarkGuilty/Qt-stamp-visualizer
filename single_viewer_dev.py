@@ -171,7 +171,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 #        print(self.config_dict)
 
-        # self.workerThread = QThread()
+        self.workerThread = QThread()
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
@@ -532,7 +532,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         try:
             #No thread version
-            urllib.request.urlretrieve(url, savefile)
+            # urllib.request.urlretrieve(url, savefile)
             #Thread version. This is broken, too many threads instantiated.
             # self.singlefetchthread = SingleFetchThread(url,savefile) #Always store in an object.
             # self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
@@ -540,13 +540,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # self.singlefetchthread.start()
             # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
             # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
-            #Thread+worker version.
-            # self.singleFetchWorker = SingleFetchWorker(url, savefile)
-            # self.singleFetchWorker.moveToThread(self.workerThread)
-            # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            self.singleFetchWorker = SingleFetchWorker(url, savefile)
+            self.singleFetchWorker.moveToThread(self.workerThread)
+            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
             # self.operate.connect(self.singleFetchWorker.doWork)
             # self.singleFetchWorker.resultReady.connect(self.handleResults)
-            # self.workerThread.start()
+            self.workerThread.start()
 
             # self.singlefetchthread_active = True
         except urllib.error.HTTPError:
@@ -596,8 +595,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
 
-        # self.plot_no_legacy_survey()
-        self.plot_legacy_survey(title=title)
+        self.plot_no_legacy_survey()
+        # self.plot_legacy_survey(title=title)
 
 
     @Slot()
