@@ -61,18 +61,19 @@ class SingleFetchWorker(QObject):
     failed_download = Signal(str)
     has_finished = Signal()
 
-    def __init__(self, url, savefile):
+    def __init__(self, url, savefile, title):
         # super.__init__(self)
         super(SingleFetchWorker, self).__init__()
         self.url = url
         self.savefile = savefile
+        self.title = title
     
     @Slot()
     def run(self):
         print(f'Running file worker: {self.savefile}')
         if self.url == '':
             print('There is already a file')
-            self.successful_download.emit('Heh')
+            self.successful_download.emit(self.title)
         else:
             try:
                 urllib.request.urlretrieve(self.url, self.savefile)
@@ -162,7 +163,7 @@ class FetchThread(QThread):
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
-    workerThread = QThread()
+    # workerThread = QThread()
     def __init__(self):
         super().__init__()
         self._main = QtWidgets.QWidget()
@@ -178,7 +179,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'autonext':True,
                     'prefetch':False,
                     'colormap':'gray',
-                    'scale':'log10',
+                    'scale':'log',
                     'keyboardshortcuts':False,
                         }
         self.config_dict = self.load_dict()
@@ -201,7 +202,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log10':np.log10, 'asinh2':asinh2}
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
@@ -380,7 +381,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log10':self.blog,
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,
                             'asinh2': self.basinh}
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
@@ -554,6 +555,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         return savefile, url
 
+    def generate_title(self):
+        if self.config_dict['legacyresiduals'] == True:
+            return "{0}''x{0}''".format(12.56)
+        if self.config_dict['legacybigarea'] == True:
+            return '{0}deg x {0}deg'.format(0.5)
+        return "{0}''x{0}''".format(12.56)
+
     def get_legacy_survey(self,ra,dec,pixscale = '0.048',residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
 #        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
         residual = (residual and pixscale == '0.048')
@@ -616,21 +624,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         try:
             savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
                                         residual=self.config_dict['legacyresiduals'])
+            title = self.generate_title()
             print('setting ls')
+            if url == '':
+                print('There is already a file')
+                self.legacy_filename = savefile
+                self.plot_legacy_survey(title = 'There is already an image')
+
             self.legacy_filename = savefile
-            
-            # self.workerThread = QThread()
-            self.singleFetchWorker = SingleFetchWorker(url, savefile)
-            # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            self.workerThread = QThread(parent=self)
+            self.singleFetchWorker = SingleFetchWorker(url, savefile, title)
+            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
             self.workerThread.started.connect(self.singleFetchWorker.run)
             self.singleFetchWorker.moveToThread(self.workerThread)
 
             self.workerThread.start()
             self.singleFetchWorker.successful_download.connect(self.plot_legacy_survey)
             self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
-            self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
-
-            self.plot_legacy_survey(title="ad")
+            # self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
+            self.workerThread.finished.connect(self.workerThread.deleteLater)
+            # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
+        
+            # self.plot_legacy_survey(title="ad")
         except FileNotFoundError as E:
             # print(E)
             self.plot_no_legacy_survey()
@@ -737,12 +752,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_scale_log(self):
         if self.sender() != self.bactivatedscale:
-            self.scale = np.log10
+            self.scale = log
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
             self.bactivatedscale = self.sender()
-            self.config_dict['scale']='log10'
+            self.config_dict['scale']='log'
             self.save_dict()
 
     @Slot()
