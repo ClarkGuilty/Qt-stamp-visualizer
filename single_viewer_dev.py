@@ -56,21 +56,31 @@ def asinh2(x):
 class SingleFetchWorker(QObject):
     successful_download = Signal(str)
     failed_download = Signal(str)
+    has_finished = Signal()
 
     def __init__(self, url, savefile):
         # super.__init__(self)
         super(SingleFetchWorker, self).__init__()
         self.url = url
         self.savefile = savefile
+    
+    @Slot()
     def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
+        print(f'Running file worker: {self.savefile}')
+        if self.url == '':
+            print('There is already a file')
             self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('No Legacy Survey data available.')
+        else:
+            try:
+                urllib.request.urlretrieve(self.url, self.savefile)
+                print('Success!!!!')
+                self.successful_download.emit('Legacy survey')
+            except urllib.error.HTTPError:
+                with open(self.savefile,'w') as f:
+                    Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+                self.failed_download.emit('No Legacy Survey data available.')
+        self.has_finished.emit()
+        # self.deleteLater()
 
 class SingleFetchThread(QThread):
     successful_download = Signal(str)
@@ -149,6 +159,7 @@ class FetchThread(QThread):
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
+    workerThread = QThread()
     def __init__(self):
         super().__init__()
         self._main = QtWidgets.QWidget()
@@ -171,7 +182,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 #        print(self.config_dict)
 
-        self.workerThread = QThread()
+        # self.workerThread = QThread()
+        # self.singleFetchWorker = SingleFetchWorker('url', 'el')
+        # self.singleFetchWorker.moveToThread(self.workerThread)
+        # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+        # self.workerThread.started.connect(self.singleFetchWorker.run)
+        # self.
+        # self.singlefetchthread.start()
+        # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
+        # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
+
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
@@ -519,6 +539,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.next()
 
 
+    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False):
+        residual = (residual and pixscale == '0.048')
+        res = '-resid' if residual else ''
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
+        savefile = os.path.join(self.legacy_survey_path, savename)        
+        if os.path.exists(savefile):
+            return savefile, ''
+        self.status.showMessage("Downloading legacy survey jpeg.")
+        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
+            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
+        return savefile, url
+
     def get_legacy_survey(self,ra,dec,pixscale = '0.048',residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
 #        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
         residual = (residual and pixscale == '0.048')
@@ -541,14 +573,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
             # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
             #Worker+Thread
-            self.singleFetchWorker = SingleFetchWorker(url, savefile)
-            self.singleFetchWorker.moveToThread(self.workerThread)
-            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            # self.singleFetchWorker = SingleFetchWorker(url, savefile)
+            # self.singleFetchWorker.moveToThread(self.workerThread)
+            # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            # self.workerThread.started.connect(self.singleFetchWorker.run)
+
             # self.operate.connect(self.singleFetchWorker.doWork)
             # self.singleFetchWorker.resultReady.connect(self.handleResults)
-            self.workerThread.start()
+            # self.workerThread.start()
 
             # self.singlefetchthread_active = True
+            pass
         except urllib.error.HTTPError:
             self.status.showMessage("Download failed: no data for RA: {}, DEC: {}.".format(ra,dec),10000)
             raise
@@ -566,7 +601,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
-    def plot_no_legacy_survey(self, title='No Legacy Survey data available locally', canvas_id = 1):
+    def plot_no_legacy_survey(self, title='Waiting for data', canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
         self.ax[canvas_id].imshow(np.zeros((66,66)), cmap='Greys_r')
@@ -575,6 +610,37 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
+        try:
+            savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
+                                        residual=self.config_dict['legacyresiduals'])
+            print('setting ls')
+            self.legacy_filename = savefile
+            
+            # self.workerThread = QThread()
+            self.singleFetchWorker = SingleFetchWorker(url, savefile)
+            # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            self.workerThread.started.connect(self.singleFetchWorker.run)
+            self.singleFetchWorker.moveToThread(self.workerThread)
+
+            self.workerThread.start()
+            self.singleFetchWorker.successful_download.connect(self.plot_legacy_survey)
+            self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
+            self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
+
+            self.plot_legacy_survey(title="ad")
+        except FileNotFoundError as E:
+            # print(E)
+            self.plot_no_legacy_survey()
+            # print(E.args)
+            # print(type(E))
+            # raise
+        except Exception as E:
+            print(E.args)
+            print(type(E))
+
+
+    @Slot()
+    def set_legacy_survey_orig(self):
         if self.config_dict['legacyresiduals'] == True:
             try:
                 self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
@@ -596,8 +662,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             except urllib.error.HTTPError:
                 self.plot_no_legacy_survey()
 
-        self.plot_no_legacy_survey()
-        # self.plot_legacy_survey(title=title)
+        # self.plot_no_legacy_survey()
+        self.plot_legacy_survey(title=title)
 
 
     @Slot()
