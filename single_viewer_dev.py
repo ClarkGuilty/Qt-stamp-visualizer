@@ -49,6 +49,9 @@ if args.clean:
 def identity(x):
     return x
 
+def log(x):
+    return np.emath.logn(x,1000) #base 1000 like ds9
+
 def asinh2(x):
     return np.arcsinh(x/2)
 

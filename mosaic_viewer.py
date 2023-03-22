@@ -49,6 +49,8 @@ args = parser.parse_args()
 def identity(x):
     return x
 
+def log(x):
+    return np.emath.logn(1000,x) #base 1000 like ds9
 
 def asinh2(x):
     return np.arcsinh(x/2)
@@ -231,7 +233,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.scale2funct = {'linear': identity,
                             'sqrt': np.sqrt,
                             'cbrt': np.cbrt,
-                            'log10': np.log10,
+                            'log': log,
                             'asinh': asinh2}
 
         self.defaults = {
@@ -268,7 +270,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.setFont(QFont("Arial",20))
         clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
-        # self.cbscale.addItems(['linear','sqrt','' 'log10', 'asinh'])
+        # self.cbscale.addItems(['linear','sqrt','' 'log', 'asinh'])
         self.cbscale.addItems(self.scale2funct.keys())
         self.cbscale.setStyleSheet('background-color: gray')
         self.cbscale.currentIndexChanged.connect(self.change_scale)
