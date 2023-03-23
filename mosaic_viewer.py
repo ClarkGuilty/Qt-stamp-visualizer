@@ -40,6 +40,7 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
+parser.add_argument("--printname", help="Whether to print the name when you click",type=bool,default=True)
 parser.add_argument("--page", help="Initial page",type=int,
                     default=None)
 
@@ -418,7 +419,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             else:
                 self.df.iloc[self.gridarea*self.config_dict['page']+i,
                             self.df.columns.get_loc('grid_pos')] = i+1
-
+                print(self.df.iloc[self.gridarea*self.config_dict['page']+i,
+                            self.df.columns.get_loc('file_name')]) if args.printname else True
                 self.df.iloc[self.gridarea*self.config_dict['page']+i,
                             self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
 
