@@ -135,19 +135,16 @@ class FetchThread(QThread):
     def run(self):
         index = self.initial_counter
         self._active = True
-        while self._active:
-            # for index, stamp in self.df.iterrows():
-            while index < len(self.df): 
-                stamp = self.df.iloc[index] #TODO: Check that this is not crashing when it reaches the end.
-                if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
-                    f = join(self.stampspath,self.listimage[index])
-                    ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
-
-                else:
-                    ra,dec = stamp[['ra','dec']]
-                self.download_legacy_survey(ra,dec,'0.048')
-                self.download_legacy_survey(ra,dec,pixscale='0.5')
-                index+=1
+        while self._active and index < len(self.df): 
+            stamp = self.df.iloc[index]
+            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
+                f = join(self.stampspath,self.listimage[index])
+                ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
+            else:
+                ra,dec = stamp[['ra','dec']]
+            self.download_legacy_survey(ra,dec,'0.048')
+            self.download_legacy_survey(ra,dec,pixscale='0.5')
+            index+=1
         # self.interrupt()
         return 0
 
@@ -457,8 +454,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
             # self.fetchthread.quit()
-            self.fetchthread.terminate()
-            # self.fetchthread.interrupt()
+            # self.fetchthread.terminate()
+            # self.fetchthread.deleteLater()
+            self.fetchthread.interrupt()
             # print(self.fetchthread._active)
             self.config_dict['prefetch'] = False
         else:
