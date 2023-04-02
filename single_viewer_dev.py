@@ -78,9 +78,9 @@ class SingleFetchWorker(QObject):
     
     @Slot()
     def run(self):
-        print(f'Running file worker: {self.savefile}')
+        # print(f'Running file worker: {self.savefile}')
         if self.url == '':
-            print('There is already a file')
+            # print('There is already a file')
             self.successful_download.emit()
         else:
             try:
@@ -921,7 +921,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def update_classification_buttoms(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
-        print(grade)
+        # print(grade)
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
 
@@ -930,7 +930,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedclassification = buttom
 
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
-        print(subgrade)
+        # print(subgrade)
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
 
@@ -939,11 +939,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
             self.bactivatedsubclassification = buttom
 
-        # if subgrade != 'None':
-        #     self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
-        #     self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-
-            
             
 if __name__ == "__main__":
     # Check whether there is already a running QApplication (e.g., if running
