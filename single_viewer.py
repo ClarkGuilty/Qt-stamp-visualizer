@@ -820,7 +820,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(class_file) >=1:
             self.df_name = class_file[len(class_file)-1]
             print('reading',self.df_name)
-            df = pd.read_csv(self.df_name)
+            df = pd.read_csv(self.df_name,index_col=0)
             if len(df) == len(self.listimage):
                 self.listimage = df['file_name'].values
                 return df
