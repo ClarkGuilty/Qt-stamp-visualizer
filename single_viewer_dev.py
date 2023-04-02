@@ -102,7 +102,7 @@ class FetchThread(QThread):
 
             self.df = df
             self.initial_counter = initial_counter
-            self.legacy_survey_path = './Legacy_survey/'
+            self.legacy_survey_path = LEGACY_SURVEY_PATH
             self.stampspath = args.path
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -179,12 +179,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
+        self.buttonclasscolor = "darkRed"
         self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
         self.stampspath = args.path
-        self.legacy_survey_path = './Legacy_survey/'
+        self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
         self.df = self.obtain_df()
 
@@ -334,6 +335,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
         self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
 
+        self.dict_class2buttom = {'SL':self.bsurelens,
+                                  'ML':self.bmaybelens,
+                                  'FL':self.bflexion,
+                                  'NL':self.bnonlens}
+
+        self.dict_subclass2buttom = {'Merger':self.bMerger,
+                                  'Spiral':self.bSpiral,
+                                  'Ring':self.bRing,
+                                  'Elliptical':self.bElliptical,
+                                  'Disc':self.bDisc,
+                                  'Edge-on':self.bEdgeon,
+                                  'SL':None,
+                                  'ML':None,
+                                  'FL':None,
+                                  'NL':None}
+
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
 
@@ -363,8 +380,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
 
+        self.bactivatedclassification = None
+        self.bactivatedsubclassification = None
         self.bactivatedscale = self.scale2button[self.config_dict['scale']]
         self.bactivatedcolormap = self.bGray
+
+        grade = self.df.at[self.config_dict['counter'],'classification']
+        if grade != 'None':
+            self.bactivatedclassification = self.dict_class2buttom[grade]
+            self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+ 
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        if subgrade != 'None':
+            self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+
 
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
@@ -451,6 +482,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(self.plot_layout, 88)
         main_layout.addLayout(button_layout, 10)
 
+
     @Slot()
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
@@ -478,6 +510,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
@@ -504,7 +538,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts'] == True:
             self.classify(grade, subgrade)
         
-
+    @Slot()
     def classify(self, grade, subgrade):
         cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
@@ -516,9 +550,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
+
+        buttom = self.dict_class2buttom[grade]
+        # if self.sender() != buttom:
+        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        if self.bactivatedclassification is not None:
+            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+        self.bactivatedclassification = buttom
+        
+
         if self.config_dict['autonext']:
             self.next()
-
+        
 
     def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False):
         residual = (residual and pixscale == '0.048')
@@ -854,6 +897,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
@@ -870,9 +915,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
+    def update_classification_buttoms(self):
+        grade = self.df.at[self.config_dict['counter'],'classification']
+        print(grade)
+        if self.bactivatedclassification is not None:
+            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+
+        buttom = self.dict_class2buttom[grade]
+        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedclassification = buttom
+
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        print(subgrade)
+        if self.bactivatedsubclassification is not None:
+            self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+
+        buttom = self.dict_subclass2buttom[subgrade]
+        if buttom is not None:
+            buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+            self.bactivatedsubclassification = buttom
+
+        # if subgrade != 'None':
+        #     self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
+        #     self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
             
             
