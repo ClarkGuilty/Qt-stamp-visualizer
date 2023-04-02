@@ -77,7 +77,7 @@ class SingleFetchWorker(QObject):
         else:
             try:
                 urllib.request.urlretrieve(self.url, self.savefile)
-                print('Success!!!!')
+                # print('Success!!!!')
                 self.successful_download.emit('Legacy survey')
             except urllib.error.HTTPError:
                 with open(self.savefile,'w') as f:
@@ -85,25 +85,6 @@ class SingleFetchWorker(QObject):
                 self.failed_download.emit('No Legacy Survey data available.')
         self.has_finished.emit()
         # self.deleteLater()
-
-class SingleFetchThread(QThread):
-    successful_download = Signal(str)
-    failed_download = Signal(str)
-    def __init__(self, url, savefile, parent=None):
-        QThread.__init__(self, parent)
-        self.url = url
-        self.savefile = savefile
-
-    def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
-            self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('eHe')
-
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
@@ -122,7 +103,7 @@ class FetchThread(QThread):
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
-            print('already exists:', savefile)
+            print('File already exists:', savefile)
             return True
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
@@ -146,20 +127,17 @@ class FetchThread(QThread):
     def run(self):
         index = self.initial_counter
         self._active = True
-        while self._active:
-            # for index, stamp in self.df.iterrows():
-            while index < len(self.df): 
-                stamp = self.df.iloc[index] #TODO: Check that this is not crashing when it reaches the end.
-                if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
-                    f = join(self.stampspath,self.listimage[index])
-                    ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
-
-                else:
-                    ra,dec = stamp[['ra','dec']]
-                self.download_legacy_survey(ra,dec,'0.048')
-                self.download_legacy_survey(ra,dec,pixscale='0.5')
-                index+=1
-        # self.interrupt()
+        while self._active and index < len(self.df): 
+            stamp = self.df.iloc[index]
+            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
+                f = join(self.stampspath,self.listimage[index])
+                ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
+            else:
+                ra,dec = stamp[['ra','dec']]
+            self.download_legacy_survey(ra,dec,'0.048')
+            self.download_legacy_survey(ra,dec,pixscale='0.5')
+            # self.download_legacy_survey(ra,dec,pixscale='0.048',residual=True)
+            index+=1
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
@@ -555,10 +533,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
         return savefile, url
 
-    def generate_title(self):
-        if self.config_dict['legacyresiduals'] == True:
+    def generate_title(self, residuals=False, bigarea=False):
+        if residuals:
             return "{0}''x{0}''".format(12.56)
-        if self.config_dict['legacybigarea'] == True:
+        if bigarea:
             return '{0}deg x {0}deg'.format(0.5)
         return "{0}''x{0}''".format(12.56)
 
@@ -621,33 +599,41 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
+        pixscale = '0.5' if self.config_dict['legacybigarea'] else '0.048'
         try:
             savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
+                                        pixscale=pixscale,
                                         residual=self.config_dict['legacyresiduals'])
-            title = self.generate_title()
-            print('setting ls')
+            title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
+                                        bigarea=self.config_dict['legacybigarea'])
+            # print('setting ls')
             if url == '':
-                print('There is already a file')
+                # print('There is already a file')
                 self.legacy_filename = savefile
-                self.plot_legacy_survey(title = 'There is already an image')
-
+                # self.plot_legacy_survey(title = 'There is already an image')
+                self.plot_legacy_survey(title = title)
+                return
+            self.plot_no_legacy_survey()
             self.legacy_filename = savefile
             self.workerThread = QThread(parent=self)
             self.singleFetchWorker = SingleFetchWorker(url, savefile, title)
             self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
             self.workerThread.started.connect(self.singleFetchWorker.run)
+        
             self.singleFetchWorker.moveToThread(self.workerThread)
 
-            self.workerThread.start()
             self.singleFetchWorker.successful_download.connect(self.plot_legacy_survey)
             self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
-            # self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
             self.workerThread.finished.connect(self.workerThread.deleteLater)
+            self.workerThread.setTerminationEnabled(True)
+
+            self.workerThread.start()
+            self.workerThread.quit()
+            # self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
             # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
         
             # self.plot_legacy_survey(title="ad")
         except FileNotFoundError as E:
-            # print(E)
             self.plot_no_legacy_survey()
             # print(E.args)
             # print(type(E))
@@ -900,7 +886,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(class_file) >=1:
             self.df_name = class_file[len(class_file)-1]
             print('reading',self.df_name)
-            df = pd.read_csv(self.df_name)
+            df = pd.read_csv(self.df_name,index_col=0)
             if len(df) == len(self.listimage):
                 self.listimage = df['file_name'].values
                 return df
@@ -950,10 +936,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.status.showMessage('First image')
 
         else:
-            #self.status.showMessage(self.listimage[self.config_dict['counter']])
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
-            # if self.singlefetchthread_active:
-            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
