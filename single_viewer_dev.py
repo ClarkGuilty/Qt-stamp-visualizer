@@ -37,59 +37,63 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
-parser.add_argument("--clean", help="Removes the configuration dictionary during startup.",
-                    default=False)
+parser.add_argument("--reset-config", help="Removes the configuration dictionary during startup.",
+                    action="store_true", default=False)
+parser.add_argument("--clean", help="Cleans the legacy survey folder.",
+                    action="store_true")
 
 
 args = parser.parse_args()
 
-if args.clean:
+LEGACY_SURVEY_PATH = './Legacy_survey/'
+
+if args.reset_config:
     os.remove('.config.json')
+
+if args.clean:
+    for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
+        os.remove(f)
 
 def identity(x):
     return x
+
+def log(x):
+    return np.emath.logn(1000,x) #base 1000 like ds9
 
 def asinh2(x):
     return np.arcsinh(x/2)
 
 
 class SingleFetchWorker(QObject):
-    successful_download = Signal(str)
-    failed_download = Signal(str)
+    successful_download = Signal()
+    failed_download = Signal()
+    has_finished = Signal()
 
-    def __init__(self, url, savefile):
+    def __init__(self, url, savefile, title):
         # super.__init__(self)
         super(SingleFetchWorker, self).__init__()
         self.url = url
         self.savefile = savefile
+        self.title = title
+    
+    @Slot()
     def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
-            self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('No Legacy Survey data available.')
-
-class SingleFetchThread(QThread):
-    successful_download = Signal(str)
-    failed_download = Signal(str)
-    def __init__(self, url, savefile, parent=None):
-        QThread.__init__(self, parent)
-        self.url = url
-        self.savefile = savefile
-
-    def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
-            self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('eHe')
-
+        print(f'Running file worker: {self.savefile}')
+        if self.url == '':
+            print('There is already a file')
+            self.successful_download.emit()
+        else:
+            try:
+                urllib.request.urlretrieve(self.url, self.savefile)
+                # print('Success!!!!')
+                self.successful_download.emit()
+            except urllib.error.HTTPError:
+                with open(self.savefile,'w') as f:
+                    Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+                # self.failed_download.emit('No Legacy Survey data available.')
+                self.failed_download.emit()
+        self.has_finished.emit()
+        # self.deleteLater()
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
@@ -98,7 +102,7 @@ class FetchThread(QThread):
 
             self.df = df
             self.initial_counter = initial_counter
-            self.legacy_survey_path = './Legacy_survey/'
+            self.legacy_survey_path = LEGACY_SURVEY_PATH
             self.stampspath = args.path
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -108,7 +112,7 @@ class FetchThread(QThread):
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
-            print('already exists:', savefile)
+            print('File already exists:', savefile)
             return True
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
@@ -132,23 +136,21 @@ class FetchThread(QThread):
     def run(self):
         index = self.initial_counter
         self._active = True
-        while self._active:
-            # for index, stamp in self.df.iterrows():
-            while index < len(self.df): 
-                stamp = self.df.iloc[index] #TODO: Check that this is not crashing when it reaches the end.
-                if np.isnan(stamp['ra']) or np.isnan(stamp['dec']):
-                    f = join(self.stampspath,self.listimage[index])
-                    ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
-
-                else:
-                    ra,dec = stamp[['ra','dec']]
-                self.download_legacy_survey(ra,dec,'0.048')
-                self.download_legacy_survey(ra,dec,pixscale='0.5')
-                index+=1
-        # self.interrupt()
+        while self._active and index < len(self.df): 
+            stamp = self.df.iloc[index]
+            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
+                f = join(self.stampspath,self.listimage[index])
+                ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
+            else:
+                ra,dec = stamp[['ra','dec']]
+            self.download_legacy_survey(ra,dec,'0.048')
+            self.download_legacy_survey(ra,dec,pixscale='0.5')
+            # self.download_legacy_survey(ra,dec,pixscale='0.048',residual=True)
+            index+=1
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
+    # workerThread = QThread()
     def __init__(self):
         super().__init__()
         self._main = QtWidgets.QWidget()
@@ -164,26 +166,26 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'autonext':True,
                     'prefetch':False,
                     'colormap':'gray',
-                    'scale':'log10',
+                    'scale':'log',
                     'keyboardshortcuts':False,
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 #        print(self.config_dict)
 
-        self.workerThread = QThread()
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log10':np.log10, 'asinh2':asinh2}
+        self.buttonclasscolor = "darkRed"
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
         self.stampspath = args.path
-        self.legacy_survey_path = './Legacy_survey/'
+        self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
         self.df = self.obtain_df()
 
@@ -333,6 +335,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
         self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
 
+        self.dict_class2buttom = {'SL':self.bsurelens,
+                                  'ML':self.bmaybelens,
+                                  'FL':self.bflexion,
+                                  'NL':self.bnonlens}
+
+        self.dict_subclass2buttom = {'Merger':self.bMerger,
+                                  'Spiral':self.bSpiral,
+                                  'Ring':self.bRing,
+                                  'Elliptical':self.bElliptical,
+                                  'Disc':self.bDisc,
+                                  'Edge-on':self.bEdgeon,
+                                  'SL':None,
+                                  'ML':None,
+                                  'FL':None,
+                                  'NL':None}
+
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
 
@@ -357,13 +375,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log10':self.blog,
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,
                             'asinh2': self.basinh}
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
 
+        self.bactivatedclassification = None
+        self.bactivatedsubclassification = None
         self.bactivatedscale = self.scale2button[self.config_dict['scale']]
         self.bactivatedcolormap = self.bGray
+
+        grade = self.df.at[self.config_dict['counter'],'classification']
+        if grade != 'None':
+            self.bactivatedclassification = self.dict_class2buttom[grade]
+            self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+ 
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        if subgrade != 'None':
+            self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+
 
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
@@ -450,6 +482,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(self.plot_layout, 88)
         main_layout.addLayout(button_layout, 10)
 
+
     @Slot()
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
@@ -477,6 +510,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
@@ -503,7 +538,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts'] == True:
             self.classify(grade, subgrade)
         
-
+    @Slot()
     def classify(self, grade, subgrade):
         cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
@@ -515,57 +550,48 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
+
+        buttom = self.dict_class2buttom[grade]
+        # if self.sender() != buttom:
+        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        if self.bactivatedclassification is not None:
+            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+        self.bactivatedclassification = buttom
+        
+
         if self.config_dict['autonext']:
             self.next()
+        
 
-
-    def get_legacy_survey(self,ra,dec,pixscale = '0.048',residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
-#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
+    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False):
         residual = (residual and pixscale == '0.048')
         res = '-resid' if residual else ''
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
-        savefile = os.path.join(self.legacy_survey_path, savename)
+        savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
-            return savefile
+            return savefile, ''
         self.status.showMessage("Downloading legacy survey jpeg.")
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
             dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
-        try:
-            #No thread version
-            # urllib.request.urlretrieve(url, savefile)
-            #Thread version. This is broken, too many threads instantiated.
-            # self.singlefetchthread = SingleFetchThread(url,savefile) #Always store in an object.
-            # self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
-            # self.singlefetchthread.setTerminationEnabled(True)
-            # self.singlefetchthread.start()
-            # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
-            # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
-            self.singleFetchWorker = SingleFetchWorker(url, savefile)
-            self.singleFetchWorker.moveToThread(self.workerThread)
-            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
-            # self.operate.connect(self.singleFetchWorker.doWork)
-            # self.singleFetchWorker.resultReady.connect(self.handleResults)
-            self.workerThread.start()
+        return savefile, url
 
-            # self.singlefetchthread_active = True
-        except urllib.error.HTTPError:
-            self.status.showMessage("Download failed: no data for RA: {}, DEC: {}.".format(ra,dec),10000)
-            raise
-#        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
-#            self.dec) + '&layer=dr8-resid&pixscale=0.06'
-#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
-#        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
-        # self.status.showMessage("Downloading legacy survey jpeg. Success!")
-        return savefile
+    def generate_title(self, residuals=False, bigarea=False):
+        if residuals:
+            return "Residuals, {0} arcsec x {0} arcsec".format(12.56)
+        if bigarea:
+            return '{0} arcmin x {0} arcmin'.format(2.13)
+        return "{0}''x{0}''".format(12.56)
 
-    def plot_legacy_survey(self, title='12x12', canvas_id = 1):
+    def plot_legacy_survey(self, savefile, title, canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(mpimg.imread(self.legacy_filename))
+        if savefile != self.legacy_filename:
+            return
+        self.ax[canvas_id].imshow(mpimg.imread(savefile))
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
-    def plot_no_legacy_survey(self, title='No Legacy Survey data available locally', canvas_id = 1):
+    def plot_no_legacy_survey(self, title='Waiting for data', canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
         self.ax[canvas_id].imshow(np.zeros((66,66)), cmap='Greys_r')
@@ -574,29 +600,47 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
-        if self.config_dict['legacyresiduals'] == True:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
-                # print(self.legacy_filename)
-                title='Residuals {0}x{0}'.format(0.5)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
+        pixscale = '0.5' if self.config_dict['legacybigarea'] else '0.048'
+        try:
+            savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
+                                        pixscale=pixscale,
+                                        residual=self.config_dict['legacyresiduals'])
+            title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
+                                        bigarea=self.config_dict['legacybigarea'])
+            # print('setting ls')
+            if url == '':
+                # print('There is already a file')
+                self.legacy_filename = savefile
+                # self.plot_legacy_survey(title = 'There is already an image')
+                self.plot_legacy_survey(savefile, title)
+                return
+            self.plot_no_legacy_survey()
+            self.legacy_filename = savefile
+            self.workerThread = QThread(parent=self)
+            self.singleFetchWorker = SingleFetchWorker(url, savefile, title)
+            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            self.workerThread.started.connect(self.singleFetchWorker.run)
+        
+            self.singleFetchWorker.moveToThread(self.workerThread)
 
-        elif self.config_dict['legacybigarea'] == True:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
-                title='{0}x{0}'.format(0.5)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
-        else:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
-                title='{0}x{0}'.format(12.56)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
+            self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
+            self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
+            self.workerThread.finished.connect(self.workerThread.deleteLater)
+            self.workerThread.setTerminationEnabled(True)
 
-        self.plot_no_legacy_survey()
-        # self.plot_legacy_survey(title=title)
+            self.workerThread.start()
+            self.workerThread.quit()
+            # self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
+            # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
+        
+        except FileNotFoundError as E:
+            self.plot_no_legacy_survey()
+            # print(E.args)
+            # print(type(E))
+            # raise
+        except Exception as E:
+            print(E.args)
+            print(type(E))
 
 
     @Slot()
@@ -667,12 +711,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_scale_log(self):
         if self.sender() != self.bactivatedscale:
-            self.scale = np.log10
+            self.scale = log
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
             self.bactivatedscale = self.sender()
-            self.config_dict['scale']='log10'
+            self.config_dict['scale']='log'
             self.save_dict()
 
     @Slot()
@@ -815,7 +859,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(class_file) >=1:
             self.df_name = class_file[len(class_file)-1]
             print('reading',self.df_name)
-            df = pd.read_csv(self.df_name)
+            df = pd.read_csv(self.df_name,index_col=0)
             if len(df) == len(self.listimage):
                 self.listimage = df['file_name'].values
                 return df
@@ -853,6 +897,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
@@ -865,16 +911,37 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.status.showMessage('First image')
 
         else:
-            #self.status.showMessage(self.listimage[self.config_dict['counter']])
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
-            # if self.singlefetchthread_active:
-            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
+    def update_classification_buttoms(self):
+        grade = self.df.at[self.config_dict['counter'],'classification']
+        print(grade)
+        if self.bactivatedclassification is not None:
+            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+
+        buttom = self.dict_class2buttom[grade]
+        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedclassification = buttom
+
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        print(subgrade)
+        if self.bactivatedsubclassification is not None:
+            self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+
+        buttom = self.dict_subclass2buttom[subgrade]
+        if buttom is not None:
+            buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+            self.bactivatedsubclassification = buttom
+
+        # if subgrade != 'None':
+        #     self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
+        #     self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
             
             

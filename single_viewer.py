@@ -49,6 +49,9 @@ if args.clean:
 def identity(x):
     return x
 
+def log(x):
+    return np.emath.logn(1000,x) #base 1000 like ds9
+
 def asinh2(x):
     return np.arcsinh(x/2)
 
@@ -161,7 +164,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'autonext':True,
                     'prefetch':False,
                     'colormap':'gray',
-                    'scale':'log10',
+                    'scale':'log',
                     'keyboardshortcuts':False,
                         }
         self.config_dict = self.load_dict()
@@ -175,7 +178,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log10':np.log10, 'asinh2':asinh2}
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
@@ -354,7 +357,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log10':self.blog,
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,
                             'asinh2': self.basinh}
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
@@ -669,12 +672,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_scale_log(self):
         if self.sender() != self.bactivatedscale:
-            self.scale = np.log10
+            self.scale = log
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
             self.bactivatedscale = self.sender()
-            self.config_dict['scale']='log10'
+            self.config_dict['scale']='log'
             self.save_dict()
 
     @Slot()
