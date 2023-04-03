@@ -180,7 +180,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'log10':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
@@ -375,7 +375,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,'log10':self.blog,
                             'asinh2': self.basinh}
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
@@ -565,7 +565,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False):
         residual = (residual and pixscale == '0.048')
-        res = '-resid' if residual else ''
+        res = '-resid' if residual else '-grz'
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
