@@ -553,13 +553,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
 
-        buttom = self.dict_class2button[grade]
-        # if self.sender() != buttom:
-        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+        buttom = self.dict_class2button[grade]
+        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
         self.bactivatedclassification = buttom
-        
+
+
+        if self.dict_subclass2button[subgrade] is not None:
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+            buttom = self.dict_subclass2button[grade]
+            buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+            self.bactivatedsubclassification = buttom        
+        else:
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
 
         if self.config_dict['autonext']:
             self.next()
@@ -925,14 +934,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def update_classification_buttoms(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
         button = self.dict_class2button[grade]
-
-        if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap'] = "viridis"
-            self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = self.sender()
-            self.save_dict()
 
         # print(grade)
         if self.bactivatedclassification is not None:
