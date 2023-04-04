@@ -335,12 +335,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
         self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
 
-        self.dict_class2buttom = {'SL':self.bsurelens,
+        self.dict_class2button = {'SL':self.bsurelens,
                                   'ML':self.bmaybelens,
                                   'FL':self.bflexion,
-                                  'NL':self.bnonlens}
+                                  'NL':self.bnonlens,
+                                  'None':None}
 
-        self.dict_subclass2buttom = {'Merger':self.bMerger,
+        self.dict_subclass2button = {'Merger':self.bMerger,
                                   'Spiral':self.bSpiral,
                                   'Ring':self.bRing,
                                   'Elliptical':self.bElliptical,
@@ -349,7 +350,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                   'SL':None,
                                   'ML':None,
                                   'FL':None,
-                                  'NL':None}
+                                  'NL':None,
+                                  'None':None}
 
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
@@ -387,12 +389,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         grade = self.df.at[self.config_dict['counter'],'classification']
         if grade != 'None':
-            self.bactivatedclassification = self.dict_class2buttom[grade]
+            self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
         if subgrade != 'None':
-            self.bactivatedsubclassification = self.dict_subclass2buttom[subgrade]
+            self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
             if self.bactivatedsubclassification is not None:
                 self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
@@ -551,7 +553,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
 
-        buttom = self.dict_class2buttom[grade]
+        buttom = self.dict_class2button[grade]
         # if self.sender() != buttom:
         buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
         if self.bactivatedclassification is not None:
@@ -898,9 +900,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
             
+            self.save_dict()
             self.update_classification_buttoms()
             self.update_counter()
-            self.save_dict()
 
     @Slot()
     def prev(self):
@@ -915,29 +917,43 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot()
             if self.config_dict['legacysurvey']:
                 self.set_legacy_survey()
-            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
+            self.update_classification_buttoms()
+
 
     def update_classification_buttoms(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
+        button = self.dict_class2button[grade]
+
+        if self.sender() != self.bactivatedcolormap:
+            self.config_dict['colormap'] = "viridis"
+            self.replot()
+            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap = self.sender()
+            self.save_dict()
+
         # print(grade)
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
 
-        buttom = self.dict_class2buttom[grade]
-        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-        self.bactivatedclassification = buttom
+        if button is None:
+            return
+        button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedclassification = button
+
+
 
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
         # print(subgrade)
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
 
-        buttom = self.dict_subclass2buttom[subgrade]
-        if buttom is not None:
-            buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-            self.bactivatedsubclassification = buttom
+        button = self.dict_subclass2button[subgrade]
+        if button is not None:
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+            self.bactivatedsubclassification = button
 
             
 if __name__ == "__main__":
