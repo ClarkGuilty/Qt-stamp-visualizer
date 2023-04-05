@@ -940,10 +940,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
 
-        if button is None:
-            return
-        button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-        self.bactivatedclassification = button
+        if button is not None:
+            # return
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+            self.bactivatedclassification = button
 
 
 
