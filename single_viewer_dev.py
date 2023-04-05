@@ -553,23 +553,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
 
-        if self.bactivatedclassification is not None:
-            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
-        buttom = self.dict_class2button[grade]
-        buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-        self.bactivatedclassification = buttom
+        # if self.bactivatedclassification is not None:
+        #     self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+        # buttom = self.dict_class2button[grade]
+        # buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        # self.bactivatedclassification = buttom
 
 
-        if self.dict_subclass2button[subgrade] is not None:
-            if self.bactivatedsubclassification is not None:
-                self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
-            buttom = self.dict_subclass2button[grade]
-            buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-            self.bactivatedsubclassification = buttom        
-        else:
-            if self.bactivatedsubclassification is not None:
-                self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+        # if self.dict_subclass2button[subgrade] is not None:
+        #     if self.bactivatedsubclassification is not None:
+        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+        #     buttom = self.dict_subclass2button[grade]
+        #     buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        #     self.bactivatedsubclassification = buttom        
+        # else:
+        #     if self.bactivatedsubclassification is not None:
+        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
 
+        self.update_classification_buttoms()
         if self.config_dict['autonext']:
             self.next()
         
