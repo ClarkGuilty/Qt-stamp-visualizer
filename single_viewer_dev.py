@@ -108,7 +108,7 @@ class FetchThread(QThread):
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
     def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
         residual = (residual and pixscale == '0.048')
-        res = '-resid' if residual else ''
+        res = '-resid' if residual else '-grz'
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)
         if os.path.exists(savefile):
