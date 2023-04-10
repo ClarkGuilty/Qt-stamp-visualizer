@@ -575,16 +575,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.next()
         
 
-    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False):
-        residual = (residual and pixscale == '0.048')
+    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False,size=47):
+        # residual = (residual and pixscale == '0.048')
+        pixscale = 0.262
+        residual = (residual and size == 47)
         res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+size + 'ls-dr10{}.jpg'.format(res)
         savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
             return savefile, ''
         self.status.showMessage("Downloading legacy survey jpeg.")
         url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
+            dec) + '&layer=ls-dr10{}&size={}&pixscale='.format(res,size)+str(pixscale)
         return savefile, url
 
     def generate_title(self, residuals=False, bigarea=False):
@@ -616,7 +618,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         try:
             savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
                                         pixscale=pixscale,
-                                        residual=self.config_dict['legacyresiduals'])
+                                        residual=self.config_dict['legacyresiduals']) #TODO FIX BUG HERE.
+
             title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
                                         bigarea=self.config_dict['legacybigarea'])
             # print('setting ls')
@@ -695,7 +698,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def viewls(self):
-        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=16&spectra".format(self.ra,self.dec))
+        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10-grz&zoom=16&spectra".format(self.ra,self.dec))
         #subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
 
     @Slot()
@@ -722,7 +725,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_scale_log(self):
-        if self.sender() != self.bactivatedscale:
+        if self.sender() != self.bactivatedscale and self.sender() is not None: #TODO test if this works/
             self.scale = log
             self.replot()
             self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
