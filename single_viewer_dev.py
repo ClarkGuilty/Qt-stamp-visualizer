@@ -359,7 +359,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bsqrt = QtWidgets.QPushButton('Sqrt')
         self.bsqrt.clicked.connect(self.set_scale_sqrt)
 
-        self.blog = QtWidgets.QPushButton('Log10')
+        self.blog = QtWidgets.QPushButton('Log')
         self.blog.clicked.connect(self.set_scale_log)
 
         self.basinh = QtWidgets.QPushButton('Asinh')
@@ -577,16 +577,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False,size=47):
         # residual = (residual and pixscale == '0.048')
-        pixscale = 0.262
+        pixscale = '0.262'
         residual = (residual and size == 47)
         res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+size + 'ls-dr10{}.jpg'.format(res)
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
         savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
+            # print(savefile)
             return savefile, ''
         self.status.showMessage("Downloading legacy survey jpeg.")
-        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=ls-dr10{}&size={}&pixscale='.format(res,size)+str(pixscale)
+        # print(url)
+        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
+         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
         return savefile, url
 
     def generate_title(self, residuals=False, bigarea=False):
@@ -615,10 +617,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def set_legacy_survey(self):
         pixscale = '0.5' if self.config_dict['legacybigarea'] else '0.048'
+        size = 488 if self.config_dict['legacybigarea'] else 47
         try:
             savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
                                         pixscale=pixscale,
-                                        residual=self.config_dict['legacyresiduals']) #TODO FIX BUG HERE.
+                                        residual=self.config_dict['legacyresiduals'],
+                                        size=size) #TODO FIX BUG HERE.
 
             title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
                                         bigarea=self.config_dict['legacybigarea'])

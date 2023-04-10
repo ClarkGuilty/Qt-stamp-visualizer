@@ -57,6 +57,7 @@ def asinh2(x):
     return np.arcsinh(x/2)
 
 class LabelledIntField(QtWidgets.QWidget):
+    "Widget for the page number."
     "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
     def __init__(self, title, initial_value,  total_pages):
         QtWidgets.QWidget.__init__(self)
@@ -91,6 +92,44 @@ class LabelledIntField(QtWidgets.QWidget):
     def getValue(self):
         return int(self.lineEdit.text())-1
 
+class NamedLabel(QtWidgets.QWidget):
+    "Widget to show unclickable label."
+    "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
+    def __init__(self, title, initial_value):
+        QtWidgets.QWidget.__init__(self)
+        layout = QtWidgets.QHBoxLayout()
+        self.setLayout(layout)
+        
+        self.name = QtWidgets.QLabel()
+        self.name.setText(title)
+        # self.title.setFixedWidth(100)
+        self.name.setFont(QFont("Arial",20,weight=QFont.Bold))
+        layout.addWidget(self.name)
+        
+        self.label = QtWidgets.QLineEdit(self)
+        self.label.setFixedWidth(50)
+        self.label.setEnabled(False)
+        self.label.setText(str(initial_value))
+        self.label.setFont(QFont("Arial",20))
+        self.label.setStyleSheet('background-color: black; color: gray')
+        self.label.setAlignment(Qt.AlignRight)
+        layout.addWidget(self.label)
+
+        # self.total_pages = QtWidgets.QLabel()
+        # self.total_pages.setText("/ "+str(total_pages+1))
+        # self.total_pages.setFont(QFont("Arial",20))
+        # layout.addWidget(self.total_pages)
+
+        # layout.addStretch()
+
+    def setText(self, input):
+        self.label.setText(str(input))
+
+        
+    def getValue(self):
+        return int(self.lineEdit.text())-1
+
+
 
 def clickable(widget):
         "https://wiki.python.org/moin/PyQt/Making%20non-clickable%20widgets%20clickable"
@@ -115,7 +154,9 @@ class AlignDelegate(QtWidgets.QStyledItemDelegate):
         option.displayAlignment = Qt.AlignCenter
 
 class ClickableLabel(QtWidgets.QLabel):
-    def __init__(self, filepath, backgroundpath, deactivatedpath, i, status, activation, update_df_func, parent=None):
+    clicked = Signal()
+    def __init__(self, filepath, backgroundpath, deactivatedpath, i,
+     status, activation, update_df_func, parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepath = filepath
         self.is_activate = activation
@@ -222,7 +263,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.scratchpath = './.temp'
         self.deactivatedpath = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
-        self.clean_scratch(self.scratchpath)
+        self.clean_dir(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
         # print(join(self.stampspath, '*.fits'))
@@ -235,6 +276,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             'sqrt': np.sqrt,
                             'cbrt': np.cbrt,
                             'log': log,
+                            # 'log10': log, #just for retrocompatibility
                             'asinh': asinh2}
 
         self.defaults = {
@@ -250,6 +292,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.scale = self.scale2funct[self.config_dict['scale']]
         self.path_background = '.background.png'
         self.deactivatedpath = '.backgrounddark.png'
+
+
+        self.buttons = []
+        self.clean_dir(self.scratchpath)
+
+        self.df = self.obtain_df()
+        self.prepare_png(self.gridsize**2)
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         stamp_grid_layout = QtWidgets.QGridLayout()
@@ -306,6 +355,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
         self.bcounter.setStyleSheet('background-color: black; color: gray')
         self.bcounter.lineEdit.returnPressed.connect(self.goto)
+
+        print(self.df['classification'].sum().astype(int))
+        self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
+        self.bclickcounter.setStyleSheet('background-color: black; color: gray')
+
         # button.clicked.connect(line_edit.clear)
 
 
@@ -323,17 +377,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         button_bar_layout.addWidget(self.cbcolormap)
         button_bar_layout.addWidget(self.bprev)
         button_bar_layout.addWidget(self.bnext)
+        page_counter_layout.addWidget(self.bclickcounter)
         page_counter_layout.addWidget(self.bcounter)
 
-
-
-        self.buttons = []
-
-
-        self.clean_scratch(self.scratchpath)
-
-        self.df = self.obtain_df()
-        self.prepare_png(self.gridsize**2)
 
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
         start = self.config_dict['page']*self.gridarea
@@ -385,7 +431,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.config_dict['page']=self.PAGE_MAX
             self.status.showMessage('You are already at the last page',10000)
         else:
-            self.clean_scratch(self.scratchpath)
+            self.clean_dir(self.scratchpath)
             self.update_grid()
             self.bcounter.setInputText(self.config_dict['page'])
             self.save_dict()
@@ -397,7 +443,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.config_dict['page'] = 0
             self.status.showMessage('You are already at the first page',10000)
         else:
-            self.clean_scratch(self.scratchpath)
+            self.clean_dir(self.scratchpath)
             self.update_grid()
             self.bcounter.setInputText(self.config_dict['page'])
             self.save_dict()
@@ -426,6 +472,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 self.df.iloc[self.gridarea*self.config_dict['page']+i,
                             self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
 
+                self.bclickcounter.setText(self.df['classification'].sum().astype(int))
                 self.df.to_csv(
                     self.df_name, index=False)
 
@@ -436,13 +483,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         with open('.config_mosaic.json', 'w') as f:
             json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
 
-    def load_dict(self):
-        try:
-            with open('.config_mosaic.json', ) as f:
-                return json.load(f)
-        except FileNotFoundError:
-            print("Loaded default configuration.")
-            return self.defaults
+    # def load_dict(self):
+    #     try:
+    #         with open('.config_mosaic.json', ) as f:
+    #             return json.load(f)
+    #     except FileNotFoundError:
+    #         print("Loaded default configuration.")
+    #         return self.defaults
 
     def load_dict(self):
         try:
@@ -454,6 +501,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     temp_dict['name'] = args.gridsize
                 if args.page is not None:
                     temp_dict['page'] = args.page
+                if temp_dict['scale'] == 'log10':
+                    temp_dict['scale'] = 'log'
                 return temp_dict
         except FileNotFoundError:
             print("Loaded default configuration.")
@@ -541,7 +590,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
             # self.config_dict['counter'] = self.config_dict['counter'] + 1
 
-    def clean_scratch(self, path_dir):
+    def clean_dir(self, path_dir):
         "Removes everything in the scratch folder."
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
