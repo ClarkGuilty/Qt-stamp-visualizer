@@ -355,7 +355,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
         self.bcounter.setStyleSheet('background-color: black; color: gray')
         self.bcounter.lineEdit.returnPressed.connect(self.goto)
-
+        self.bcounter.setInputText(self.config_dict['page'])
+        
         print(self.df['classification'].sum().astype(int))
         self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
@@ -536,7 +537,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         df['page'] = np.zeros(np.shape(self.listimage))
         df['grid_pos'] = np.zeros(np.shape(self.listimage))
         self.config_dict['page'] = 0
-        self.bcounter.setInputText(self.config_dict['page'])
         return df
 
     def update_grid(self):
