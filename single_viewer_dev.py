@@ -106,16 +106,17 @@ class FetchThread(QThread):
             self.stampspath = args.path
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-    def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
-        residual = (residual and pixscale == '0.048')
+    def download_legacy_survey(self, ra, dec, size=47,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
+        pixscale = '0.262'
+        residual = (residual and size == 47)
         res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
-        savefile = os.path.join(self.legacy_survey_path, savename)
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
+        savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
             print('File already exists:', savefile)
             return True
-        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
+        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
+         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
         print(url)
         try:
             urllib.request.urlretrieve(url, savefile)
@@ -123,6 +124,7 @@ class FetchThread(QThread):
             with open(savefile,'w') as f:
                 self.im.save(f)
             return False
+        
         return True
 
     def get_ra_dec(self,header):
@@ -143,8 +145,9 @@ class FetchThread(QThread):
                 ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
             else:
                 ra,dec = stamp[['ra','dec']]
-            self.download_legacy_survey(ra,dec,'0.048')
-            self.download_legacy_survey(ra,dec,pixscale='0.5')
+            self.download_legacy_survey(ra,dec,size=47)
+            # self.download_legacy_survey(ra,dec,300)
+            self.download_legacy_survey(ra,dec,size=488)
             # self.download_legacy_survey(ra,dec,pixscale='0.048',residual=True)
             index+=1
         return 0
