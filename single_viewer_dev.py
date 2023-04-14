@@ -146,6 +146,7 @@ class FetchThread(QThread):
             else:
                 ra,dec = stamp[['ra','dec']]
             self.download_legacy_survey(ra,dec,size=47)
+            self.download_legacy_survey(ra,dec,size=47,residual=True)
             # self.download_legacy_survey(ra,dec,300)
             self.download_legacy_survey(ra,dec,size=488)
             # self.download_legacy_survey(ra,dec,pixscale='0.048',residual=True)
@@ -710,45 +711,49 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_scale_linear(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.blinear
+        if button != self.bactivatedscale:
             self.scale = identity
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='identity'
             self.save_dict()
 
     @Slot()
     def set_scale_sqrt(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.bsqrt
+        if button != self.bactivatedscale:
             self.scale = np.sqrt
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button 
             self.config_dict['scale']='sqrt'
             self.save_dict()
 
     @Slot()
     def set_scale_log(self):
-        if self.sender() != self.bactivatedscale and self.sender() is not None: #TODO test if this works/
+        button = self.blog
+        if button != self.bactivatedscale:# and self.sender() is not None: #TODO test if this works/
             self.scale = log
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='log'
             self.save_dict()
 
     @Slot()
     def set_scale_asinh(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.basinh
+        if button != self.bactivatedscale:
             self.scale = asinh2
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='asinh2'
             self.save_dict()
 
