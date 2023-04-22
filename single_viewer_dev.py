@@ -309,16 +309,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts']:
             self.bkeyboardshortcuts.toggle()
 
-        self.bsurelens = QtWidgets.QPushButton('Sure Lens')
+        self.bsurelens = QtWidgets.QPushButton('A')
         self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL') )
 
-        self.bmaybelens = QtWidgets.QPushButton('Maybe Lens')
+        self.bmaybelens = QtWidgets.QPushButton('B')
         self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML'))
 
-        self.bflexion = QtWidgets.QPushButton('Flexion')
+        self.bflexion = QtWidgets.QPushButton('C')
         self.bflexion.clicked.connect(partial(self.classify, 'FL','FL'))
 
-        self.bnonlens = QtWidgets.QPushButton('Non Lens')
+        self.bnonlens = QtWidgets.QPushButton('X')
         self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL'))
 
         self.bMerger = QtWidgets.QPushButton('Merger')
