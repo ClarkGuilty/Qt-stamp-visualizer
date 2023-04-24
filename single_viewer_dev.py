@@ -276,7 +276,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.set_legacy_survey()
 
 
-        self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
+        self.blsarea = QtWidgets.QCheckBox("Large FoV")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
         if self.config_dict['legacybigarea']:
             self.blsarea.toggle()
