@@ -41,8 +41,15 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
 parser.add_argument("--printname", help="Whether to print the name when you click",type=bool,default=True)
+parser.add_argument("--fixed-scale",
+                    help="Whether to print the name when you click",
+                    type=bool,default=True)
 parser.add_argument("--page", help="Initial page",type=int,
                     default=None)
+parser.add_argument('--resize',
+                    help="Set to allow the resizing of the stamps with the window.",
+                    action=argparse.BooleanOptionalAction,
+                    default=False)
 
 args = parser.parse_args()
 
@@ -51,7 +58,8 @@ def identity(x):
     return x
 
 def log(x):
-    return np.emath.logn(1000,x) #base 1000 like ds9
+    # return np.emath.logn(1000,x) #base 1000 like ds9
+    return np.log(x, out=np.zeros_like(x), where=(x!=0)) / np.log(1000)
 
 def asinh2(x):
     return np.arcsinh(x/2)
@@ -131,7 +139,7 @@ class NamedLabel(QtWidgets.QWidget):
 
 
 
-def clickable(widget):
+def Clickable(widget):
         "https://wiki.python.org/moin/PyQt/Making%20non-clickable%20widgets%20clickable"
         class Filter(QObject):
             clicked = Signal()
@@ -154,13 +162,12 @@ class AlignDelegate(QtWidgets.QStyledItemDelegate):
         option.displayAlignment = Qt.AlignCenter
 
 class ClickableLabel(QtWidgets.QLabel):
-    clicked = Signal()
+    clicked = Signal(str)
     def __init__(self, filepath, backgroundpath, deactivatedpath, i,
      status, activation, update_df_func, parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepath = filepath
         self.is_activate = activation
-        # self._whenClicked = whenClicked
         self.backgroundpath = backgroundpath
         self.deactivatedpath = deactivatedpath
         self.is_a_candidate = status
@@ -168,7 +175,8 @@ class ClickableLabel(QtWidgets.QLabel):
         self.i = i
         self.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding,
                            QtWidgets.QSizePolicy.MinimumExpanding)
-        # self.setScaledContents(True)
+        # print(f'{args.resize = }')
+        self.setScaledContents(args.resize)
         if self.is_activate:
             if self.is_a_candidate:
                 self._pixmap = QPixmap(self.backgroundpath)
@@ -176,7 +184,20 @@ class ClickableLabel(QtWidgets.QLabel):
                 self._pixmap = QPixmap(self.filepath)
         else:
             self._pixmap = QPixmap(self.deactivatedpath)
-        self.setPixmap(self._pixmap)
+        
+        self.target_width = min(66,self.width())
+        self.target_height = min(66,self.height()) #TODO: add case where width != height
+        
+        # print(f'{self.target_width = }')
+
+        self.target_width = 100
+        self.target_height = 100
+        # target_width = self.width()
+        # target_height = self.height()
+        self.setPixmap(self._pixmap.scaled(
+            self.target_width, self.target_height,
+            Qt.KeepAspectRatio))
+        # self.setPixmap(self._pixmap)
 
     def activate(self):
         self.is_activate = True
@@ -199,20 +220,29 @@ class ClickableLabel(QtWidgets.QLabel):
         if self.is_activate:
             self.filepath = filepath
             self._pixmap = QPixmap(self.filepath)
-            # print(self.filepath)
-            # if self.is_activate:
+            # target_width = min(66,self.width())
+            # target_height = min(66,self.height()) #TODO: add case where width != height
             self.setPixmap(self._pixmap.scaled(
+                # self.target_width, self.target_height,
                 self.width(), self.height(),
                 Qt.KeepAspectRatio))
 
     def paint_pixmap(self):
         if self.is_activate:
-            self.setPixmap(self._pixmap)
+            # target_width = min(66,self.width())
+            # target_height = min(66,self.height()) #TODO: add case where width != height
+            self.setPixmap(self._pixmap.scaled(
+                # self.target_width, self.target_height,
+                self.width(), self.height(),
+                Qt.KeepAspectRatio
+                ))
+            # self.setPixmap(self._pixmap)
 
     def paint_background_pixmap(self):
         if self.is_activate:
             self._pixmap = QPixmap(self.backgroundpath)
             self.setPixmap(self._pixmap.scaled(
+                # self.target_width, self.target_height,
                 self.width(), self.height(),
                 Qt.KeepAspectRatio))
 
@@ -247,13 +277,11 @@ class ClickableLabel(QtWidgets.QLabel):
             Qt.KeepAspectRatio))
 
 
-
 class MosaicVisualizer(QtWidgets.QMainWindow):
     def __init__(self, path_to_the_stamps= args.path):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
-        #print(path_to_the_stamps)
         self.setWindowTitle("Mosaic Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
@@ -293,11 +321,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.path_background = '.background.png'
         self.deactivatedpath = '.backgrounddark.png'
 
+        self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
+        self.bcounter.setStyleSheet('background-color: black; color: gray')
+        self.bcounter.lineEdit.returnPressed.connect(self.goto)
+        self.bcounter.setInputText(self.config_dict['page'])
 
         self.buttons = []
         self.clean_dir(self.scratchpath)
 
         self.df = self.obtain_df()
+
+        if self.config_dict['page'] > self.PAGE_MAX:
+            self.bcounter.setInputText(0)
+            self.goto()
+            
         self.prepare_png(self.gridsize**2)
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
@@ -318,7 +355,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.setItemDelegate(delegate)
         # self.cbscale.setEditable(True)
         self.cbscale.setFont(QFont("Arial",20))
-        clickable(self.cbscale).connect(self.cbscale.showPopup)
+        Clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
         # self.cbscale.addItems(['linear','sqrt','' 'log', 'asinh'])
         self.cbscale.addItems(self.scale2funct.keys())
@@ -351,13 +388,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bnext.setStyleSheet('background-color: gray')
         self.bnext.setFont(QFont("Arial",20))
 
-        # self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
-        self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
-        self.bcounter.setStyleSheet('background-color: black; color: gray')
-        self.bcounter.lineEdit.returnPressed.connect(self.goto)
-        self.bcounter.setInputText(self.config_dict['page'])
-        
-        print(self.df['classification'].sum().astype(int))
+        # print(self.df['classification'].sum().astype(int))
         self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
 
@@ -384,7 +415,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
         start = self.config_dict['page']*self.gridarea
-        print("Page: ",self.config_dict['page'])
+        # print("Page: ",self.config_dict['page'])
         # n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
 
         for i in range(start,start+self.gridarea):
@@ -412,7 +443,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     @Slot()
     def goto(self):
         if self.bcounter.getValue()>self.PAGE_MAX:
-            print(self.PAGE_MAX)
+            print("page: ",self.PAGE_MAX)
             self.status.showMessage('WARNING: There are only {} pages.'.format(
                 self.PAGE_MAX+1),10000)
         elif self.bcounter.getValue()<0:
@@ -536,7 +567,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         df['classification'] = np.zeros(np.shape(self.listimage))
         df['page'] = np.zeros(np.shape(self.listimage))
         df['grid_pos'] = np.zeros(np.shape(self.listimage))
-        self.config_dict['page'] = 0
         return df
 
     def update_grid(self):
@@ -580,14 +610,27 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             # img = self.draw_image(i, self.scale_state)
             try:
                 image = self.read_fits(i)
+                if image.shape[0] > 100:
+                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical range)
+                # image -= np.min(image)
+                # image += 1e-16
+                # print(f'Stats before: {np.min(image),np.max(image)}')
+                # percentage = 99
+                scale_min, scale_max = self.scale_val_percentile(image,0,100)
+                image = image.clip(min=scale_min, max=scale_max)
+                # print(f'Stats middle: {np.min(image),np.max(image)}')
+                # scale_min, scale_max = self.scale_val_percentile(image,(100-percentage)/2,50+percentage/2)
+                scale_min, scale_max = self.scale_val(image)
+                image = self.rescale_image(image, scale_min, scale_max)
+                # print(f'Stats after: {np.min(image),np.max(image)}')
+
+                plt.imsave(self.filepath(i, self.config_dict['page']),
+                        image, cmap=self.config_dict['colormap'], origin="lower")
             except:
-                image = np.ones((44, 44)) * 0.0000001
-
-            scale_min, scale_max = self.scale_val(image)
-            image = self.rescale_image(image, scale_min, scale_max)
-            plt.imsave(self.filepath(i, self.config_dict['page']),
+                image = np.zeros((66, 66))# * 0.0000001
+                plt.imsave(self.filepath(i, self.config_dict['page']),
                        image, cmap=self.config_dict['colormap'], origin="lower")
-
+            
             # self.config_dict['counter'] = self.config_dict['counter'] + 1
 
     def clean_dir(self, path_dir):
@@ -603,29 +646,55 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return image
 
     def rescale_image(self, image, scale_min, scale_max):
-        factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)
+        # factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)#+2e-16)
+        factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
+                 self.scale2funct[self.config_dict['scale']](scale_min))
         image = image.clip(min=scale_min, max=scale_max)
-        #image = (image - self.scale_min) / factor
-        indices0 = np.where(image < scale_min)
-        indices1 = np.where((image >= scale_min) & (image <= scale_max))
-        indices2 = np.where(image > scale_max)
+        indices0 = np.where(image <= scale_min)
+        indices1 = np.where((image > scale_min) & (image < scale_max))
+        indices2 = np.where(image >= scale_max)
         image[indices0] = 0.0
         image[indices2] = 1.0
-        image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / (factor * 1.0)
+        image[indices1] = np.abs(self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0))
+        # image[indices1] /= image[indices1].max()
+        
+        # print(f'{np.sum(indices0) = }')
+        # print(f'{np.sum(indices1) = }')
+        # print(f'{np.sum(indices2) = }')
+
+        # image[indices1] = 0.5
+        # print(image[indices1].max())
+        # print(f'Stats after: {np.min(image),np.max(image)}')
         return image
 
     def scale_val(self, image_array):
-        if len(np.shape(image_array)) == 2:
-            image_array = [image_array]
-        vmin = np.min([self.background_rms_image(5, image_array[i])
-                      for i in range(len(image_array))])
-        xl, yl = np.shape(image_array[0])
-        box_size = 14  # in pixel
+        
+        box_size = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
+        # print(f'{box_size = }')
+        vmin = np.min(self.background_rms_image(box_size, image_array))
+                      
+        
+        xl, yl = np.shape(image_array)
+        # box_size = 14  # in pixel
+        # np.sqrt(image_array.shape[1]*image_array.shape[0]*0.1)
+        box_size = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
+        # print(box_size)
         xmin = int((xl) / 2. - (box_size / 2.))
         xmax = int((xl) / 2. + (box_size / 2.))
-        vmax = np.max([image_array[i][xmin:xmax, xmin:xmax]
-                      for i in range(len(image_array))])
+        ymin = int((yl) / 2. - (box_size / 2.))
+        ymax = int((yl) / 2. + (box_size / 2.))
+        vmax = np.max(image_array[xmin:xmax, ymin:ymax])
+        # print(vmin,vmax)
+        # return max(0,vmin), vmax*1.5
+        # print(vmin, vmax*1.5)
         return vmin, vmax*1.5
+        
+
+
+    def scale_val_percentile(self,image_array,p_min=0.1,p_max=99.9):
+        # image_to_plot = np.clip(image_array,np.percentile(p_min),np.percentile(p_max))
+        # print(np.percentile(image_array,p_min),np.percentile(image_array,p_max))
+        return np.percentile(image_array,p_min),np.percentile(image_array,p_max)
 
     def background_rms_image(self, cb, image):
         xg, yg = np.shape(image)
