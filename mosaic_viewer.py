@@ -40,10 +40,9 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
-parser.add_argument("--printname", help="Whether to print the name when you click",type=bool,default=True)
-parser.add_argument("--fixed-scale",
-                    help="Whether to print the name when you click",
-                    type=bool,default=True)
+parser.add_argument("--printname", help="Whether to print the name when you click",
+                    action=argparse.BooleanOptionalAction,
+                    default=False)
 parser.add_argument("--page", help="Initial page",type=int,
                     default=None)
 parser.add_argument('--resize',
@@ -53,6 +52,9 @@ parser.add_argument('--resize',
 
 args = parser.parse_args()
 
+C_INTERESTING = 2
+C_LENS = 1
+C_UNINTERESTING = 0
 
 def identity(x):
     return x
@@ -163,47 +165,48 @@ class AlignDelegate(QtWidgets.QStyledItemDelegate):
 
 class ClickableLabel(QtWidgets.QLabel):
     clicked = Signal(str)
-    def __init__(self, filepath, backgroundpath, deactivatedpath, i,
-     status, activation, update_df_func, parent=None):
+    def __init__(self, filepath, lens_background_path,
+                    interesting_background_path, deactivated_path, i,
+                    status, activation, update_df_func, parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepath = filepath
         self.is_activate = activation
-        self.backgroundpath = backgroundpath
-        self.deactivatedpath = deactivatedpath
+        self.lens_background_path = lens_background_path
+        self.interesting_background_path = interesting_background_path
+
+        self.deactivated_path = deactivated_path
         self.is_a_candidate = status
         self.update_df_func = update_df_func
         self.i = i
         self.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding,
                            QtWidgets.QSizePolicy.MinimumExpanding)
-        # print(f'{args.resize = }')
         self.setScaledContents(args.resize)
-        if self.is_activate:
-            if self.is_a_candidate:
-                self._pixmap = QPixmap(self.backgroundpath)
-            else:
-                self._pixmap = QPixmap(self.filepath)
-        else:
-            self._pixmap = QPixmap(self.deactivatedpath)
-        
-        self.target_width = min(66,self.width())
-        self.target_height = min(66,self.height()) #TODO: add case where width != height
-        
-        # print(f'{self.target_width = }')
 
+        if self.is_activate:
+            if self.is_a_candidate == C_UNINTERESTING:
+                self._pixmap = QPixmap(self.filepath)
+            elif self.is_a_candidate == C_LENS:
+                self._pixmap = QPixmap(self.lens_background_path)
+            elif self.is_a_candidate == C_INTERESTING:
+                self._pixmap = QPixmap(self.interesting_background_path)
+        else:
+            self._pixmap = QPixmap(self.deactivated_path)
+        
+        # self.target_width = min(66,self.width())
+        # self.target_height = min(66,self.height()) #TODO: add case where width != height
+        
         self.target_width = 100
         self.target_height = 100
-        # target_width = self.width()
-        # target_height = self.height()
+
         self.setPixmap(self._pixmap.scaled(
             self.target_width, self.target_height,
             Qt.KeepAspectRatio))
-        # self.setPixmap(self._pixmap)
 
     def activate(self):
         self.is_activate = True
 
     def deactivate(self):
-        self.change_and_paint_pixmap(self.deactivatedpath)
+        self.change_and_paint_pixmap(self.deactivated_path)
         self.is_activate = False
 
     def set_candidate_status(self, status):
@@ -220,10 +223,7 @@ class ClickableLabel(QtWidgets.QLabel):
         if self.is_activate:
             self.filepath = filepath
             self._pixmap = QPixmap(self.filepath)
-            # target_width = min(66,self.width())
-            # target_height = min(66,self.height()) #TODO: add case where width != height
             self.setPixmap(self._pixmap.scaled(
-                # self.target_width, self.target_height,
                 self.width(), self.height(),
                 Qt.KeepAspectRatio))
 
@@ -238,9 +238,9 @@ class ClickableLabel(QtWidgets.QLabel):
                 ))
             # self.setPixmap(self._pixmap)
 
-    def paint_background_pixmap(self):
+    def paint_background_pixmap(self, background_path):
         if self.is_activate:
-            self._pixmap = QPixmap(self.backgroundpath)
+            self._pixmap = QPixmap(background_path)
             self.setPixmap(self._pixmap.scaled(
                 # self.target_width, self.target_height,
                 self.width(), self.height(),
@@ -250,25 +250,43 @@ class ClickableLabel(QtWidgets.QLabel):
         self.filepath = filepath
         self._pixmap = QPixmap(self.filepath)
 
+    # def mousePressEvent(self, event):
+    #     # print(self.is_activate)
+    #     if self.is_activate:
+    #         self.is_a_candidate = not self.is_a_candidate
+    #         modifiers = event.modifiers()
+    #         print('local:' ,modifiers)
+    #         if self.is_a_candidate:
+    #             self.paint_background_pixmap()
+    #         else:
+    #             self.change_and_paint_pixmap(self.filepath)
+
+    #         self.update_df_func(event, self.i)
+    #     else:
+    #         print('Inactive button')
+    
     def mousePressEvent(self, event):
         # print(self.is_activate)
         if self.is_activate:
-            self.is_a_candidate = not self.is_a_candidate
-            if self.is_a_candidate:
-                self.paint_background_pixmap()
-                # self.setPixmap(QPixmap(self.backgroundpath).scaled(
-                #     self.width(), self.height(),
-                #     Qt.KeepAspectRatio))
-            else:
-                # self.setPixmap(QPixmap(self.filepath).scaled(
-                #     self.width(), self.height(),
-                #     Qt.KeepAspectRatio))
+            # self.is_a_candidate = not self.is_a_candidate
+            modifiers = event.modifiers()
+            # print('local:' ,modifiers)
+            if self.is_a_candidate != C_UNINTERESTING:
                 self.change_and_paint_pixmap(self.filepath)
+                new_class = C_UNINTERESTING
+            else:
+                if modifiers in [Qt.ControlModifier, Qt.ShiftModifier]:
+                    self.paint_background_pixmap(self.interesting_background_path)
+                    # print('Interesting',self.interesting_background_path)
+                    new_class = C_INTERESTING
+                elif modifiers == Qt.NoModifier:
+                    self.paint_background_pixmap(self.lens_background_path)
+                    new_class = C_LENS
 
-            self.update_df_func(event, self.i)
+            self.update_df_func(event, self.i, new_class)
+            self.is_a_candidate = new_class
         else:
             print('Inactive button')
-
 
     def resizeEvent(self, event):
         self.setPixmap(self._pixmap.scaled(
@@ -289,7 +307,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.stampspath = path_to_the_stamps
         self.scratchpath = './.temp'
-        self.deactivatedpath = './dark.png'
+        self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_dir(self.scratchpath)
         self.listimage = sorted([os.path.basename(x)
@@ -318,8 +336,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         }
         self.config_dict = self.load_dict()
         self.scale = self.scale2funct[self.config_dict['scale']]
-        self.path_background = '.background.png'
-        self.deactivatedpath = '.backgrounddark.png'
+        
+        self.interesting_background_path = '.background_interesting.png'
+        self.lens_background_path = '.background.png'
+        self.deactivated_path = '.backgrounddark.png'
+        self.status2background_dict = {C_LENS:self.lens_background_path,
+                                        C_INTERESTING:self.interesting_background_path}               
 
         self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
         self.bcounter.setStyleSheet('background-color: black; color: gray')
@@ -421,14 +443,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         for i in range(start,start+self.gridarea):
             filepath = self.filepath(i, self.config_dict['page'])
             try:
-                classification = self.df.iloc[i,
-                                                 self.df.columns.get_loc('classification')]
+                classification = self.df.iloc[i,self.df.columns.get_loc('classification')]
                 activation = True
             except IndexError:
                 classification = False
                 activation = False
 
-            button = ClickableLabel(filepath, self.path_background, self.deactivatedpath,
+            button = ClickableLabel(filepath, self.lens_background_path,
+                                    self.interesting_background_path,
+                                    self.deactivated_path,
                                     i-start, classification, activation,
                                     self.my_label_clicked)
             stamp_grid_layout.addWidget(
@@ -490,23 +513,45 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.update_grid()
         self.save_dict()
 
-    def my_label_clicked(self, event, i):
+    # def my_label_clicked(self, event, i):
+    #     button = event.button()
+    #     modifiers = event.modifiers()
+    #     print(f'official mod {modifiers}')
+    #     print(Qt.NoModifier)
+    #     print(modifiers == Qt.NoModifier)
+    #     if modifiers == Qt.NoModifier and button == Qt.LeftButton:
+    #         if self.config_dict['page']*self.gridarea+i > len(self.listimage):
+    #             print('Not an image')
+    #         else:
+    #             self.df.iloc[self.gridarea*self.config_dict['page']+i,
+    #                         self.df.columns.get_loc('grid_pos')] = i+1
+    #             print(self.df.iloc[self.gridarea*self.config_dict['page']+i,
+    #                         self.df.columns.get_loc('file_name')]) if args.printname else True
+    #             self.df.iloc[self.gridarea*self.config_dict['page']+i,
+    #                         self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
+
+    #             self.bclickcounter.setText(self.df['classification'].sum().astype(int))
+    #             self.df.to_csv(
+    #                 self.df_name, index=False)
+
+    def my_label_clicked(self, event, i, new_class):
         button = event.button()
         modifiers = event.modifiers()
-        if modifiers == Qt.NoModifier and button == Qt.LeftButton:
-            if self.config_dict['page']*self.gridarea+i > len(self.listimage):
-                print('Not an image')
-            else:
-                self.df.iloc[self.gridarea*self.config_dict['page']+i,
-                            self.df.columns.get_loc('grid_pos')] = i+1
-                print(self.df.iloc[self.gridarea*self.config_dict['page']+i,
-                            self.df.columns.get_loc('file_name')]) if args.printname else True
-                self.df.iloc[self.gridarea*self.config_dict['page']+i,
-                            self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
+        # if modifiers == Qt.NoModifier and button == Qt.LeftButton:
+        if self.config_dict['page']*self.gridarea+i > len(self.listimage):
+            print('Something is wrong. This condition should not be trigger.')
+        else:
+            object_index = self.gridarea*self.config_dict['page']+i
+            self.df.iloc[object_index,
+                        self.df.columns.get_loc('grid_pos')] = i+1
+            print(self.df.iloc[object_index,
+                        self.df.columns.get_loc('file_name')]) if args.printname else True
+            self.df.iloc[object_index,
+                        self.df.columns.get_loc('classification')] = new_class
 
-                self.bclickcounter.setText(self.df['classification'].sum().astype(int))
-                self.df.to_csv(
-                    self.df_name, index=False)
+            self.bclickcounter.setText((self.df['classification'] == C_LENS).sum().astype(int))
+            self.df.to_csv(
+                self.df_name, index=False)
 
     def filepath(self, i, page):
         return join(self.scratchpath, str(i+1)+self.config_dict['scale'] + self.config_dict['colormap'] + str(page)+'.png')
@@ -578,15 +623,16 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         j = 0
         for button in self.buttons:
             try:
-                if self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('classification')] == 0:
+                status = self.df.iloc[self.gridarea*self.config_dict['page']+j,self.df.columns.get_loc('classification')]
+                if status == 0:
                     button.activate()
                     button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
-                    button.set_candidate_status(False)
+                    button.set_candidate_status(status)
                 else:
                     button.activate()
                     button.change_pixmap(self.filepath(i,self.config_dict['page']))
-                    button.paint_background_pixmap()
-                    button.set_candidate_status(True)
+                    button.paint_background_pixmap(self.status2background_dict[status])
+                    button.set_candidate_status(status)
 
                 self.df.iloc[self.gridarea*self.config_dict['page']+j,
                              self.df.columns.get_loc('grid_pos')] = j+1
@@ -611,7 +657,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             try:
                 image = self.read_fits(i)
                 if image.shape[0] > 100:
-                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical range)
+                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges)
                 # image -= np.min(image)
                 # image += 1e-16
                 # print(f'Stats before: {np.min(image),np.max(image)}')
