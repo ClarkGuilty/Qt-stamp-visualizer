@@ -61,7 +61,7 @@ def identity(x):
 
 def log(x):
     # return np.emath.logn(1000,x) #base 1000 like ds9
-    return np.log(x, out=np.zeros_like(x), where=(x!=0)) / np.log(1000)
+    return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
 
 def asinh2(x):
     return np.arcsinh(x/2)
@@ -662,8 +662,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 # image += 1e-16
                 # print(f'Stats before: {np.min(image),np.max(image)}')
                 # percentage = 99
-                scale_min, scale_max = self.scale_val_percentile(image,0,100)
-                image = image.clip(min=scale_min, max=scale_max)
+
+                # scale_min, scale_max = self.scale_val_percentile(image,0,100)
+                # image = image.clip(min=scale_min, max=scale_max)
+
                 # print(f'Stats middle: {np.min(image),np.max(image)}')
                 # scale_min, scale_max = self.scale_val_percentile(image,(100-percentage)/2,50+percentage/2)
                 scale_min, scale_max = self.scale_val(image)
@@ -692,9 +694,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return image
 
     def rescale_image(self, image, scale_min, scale_max):
-        # factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)#+2e-16)
-        factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
-                 self.scale2funct[self.config_dict['scale']](scale_min))
+        factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)#+2e-16)
+        # factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
+        #          self.scale2funct[self.config_dict['scale']](scale_min))
         image = image.clip(min=scale_min, max=scale_max)
         indices0 = np.where(image <= scale_min)
         indices1 = np.where((image > scale_min) & (image < scale_max))
@@ -715,20 +717,23 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     def scale_val(self, image_array):
         
-        box_size = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
-        # print(f'{box_size = }')
-        vmin = np.min(self.background_rms_image(box_size, image_array))
+        if image_array.shape[0] > 100:
+            box_size_vmin = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
+            box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
+        else:
+            box_size_vmin = 5
+            box_size_vmax = 14
+        # print(f'{box_size_vmin = }')
+        # print(f'{box_size_vmax = }')
+        vmin = np.min(self.background_rms_image(box_size_vmin, image_array))
+        # print(f'{self.background_rms_image(box_size_vmin, image_array) = }')
                       
         
         xl, yl = np.shape(image_array)
-        # box_size = 14  # in pixel
-        # np.sqrt(image_array.shape[1]*image_array.shape[0]*0.1)
-        box_size = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
-        # print(box_size)
-        xmin = int((xl) / 2. - (box_size / 2.))
-        xmax = int((xl) / 2. + (box_size / 2.))
-        ymin = int((yl) / 2. - (box_size / 2.))
-        ymax = int((yl) / 2. + (box_size / 2.))
+        xmin = int((xl) / 2. - (box_size_vmax / 2.))
+        xmax = int((xl) / 2. + (box_size_vmax / 2.))
+        ymin = int((yl) / 2. - (box_size_vmax / 2.))
+        ymax = int((yl) / 2. + (box_size_vmax / 2.))
         vmax = np.max(image_array[xmin:xmax, ymin:ymax])
         # print(vmin,vmax)
         # return max(0,vmin), vmax*1.5
@@ -749,6 +754,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         cut2 = image[0:cb, yg - cb:yg]
         cut3 = image[xg - cb:xg, yg - cb:yg]
         l = [cut0, cut1, cut2, cut3]
+        # m = np.mean(np.mean(l, axis=1), axis=1)
         m = np.mean(np.mean(l, axis=1), axis=1)
         ml = min(m)
         mm = max(m)
