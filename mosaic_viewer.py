@@ -698,12 +698,16 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
         #          self.scale2funct[self.config_dict['scale']](scale_min))
         image = image.clip(min=scale_min, max=scale_max)
-        indices0 = np.where(image <= scale_min)
-        indices1 = np.where((image > scale_min) & (image < scale_max))
+
+        #I'm gonna go with this one since it solves the bright noise problem and seems to not hurt anything else.
+        indices0 = np.where(image < scale_min)
+        indices1 = np.where((image >= scale_min) & (image < scale_max))
         indices2 = np.where(image >= scale_max)
+
         image[indices0] = 0.0
         image[indices2] = 1.0
-        image[indices1] = np.abs(self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0))
+        # image[indices1] = np.abs(self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0))
+        image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0)
         # image[indices1] /= image[indices1].max()
         
         # print(f'{np.sum(indices0) = }')
@@ -766,7 +770,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             std = np.std([cut0, cut1, cut2, cut3])
         return std
 
-#
+
 
 
 if __name__ == "__main__":
