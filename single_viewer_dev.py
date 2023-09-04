@@ -310,40 +310,46 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bkeyboardshortcuts.toggle()
 
         self.bsurelens = QtWidgets.QPushButton('A')
-        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL') )
+        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
 
         self.bmaybelens = QtWidgets.QPushButton('B')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML'))
+        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
 
         self.bflexion = QtWidgets.QPushButton('C')
-        self.bflexion.clicked.connect(partial(self.classify, 'FL','FL'))
+        self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
 
         self.bnonlens = QtWidgets.QPushButton('X')
-        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL'))
+        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
 
         self.bMerger = QtWidgets.QPushButton('Merger')
-        self.bMerger.clicked.connect(partial(self.classify, 'NL','Merger') )
+        self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
 
         self.bSpiral = QtWidgets.QPushButton('Spiral')
-        self.bSpiral.clicked.connect(partial(self.classify, 'NL','Spiral'))
+        self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
 
         self.bRing = QtWidgets.QPushButton('Ring')
-        self.bRing.clicked.connect(partial(self.classify, 'NL','Ring'))
+        self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
 
         self.bElliptical = QtWidgets.QPushButton('Elliptical')
-        self.bElliptical.clicked.connect(partial(self.classify, 'NL','Elliptical'))
+        self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
 
         self.bDisc = QtWidgets.QPushButton('Disc')
-        self.bDisc.clicked.connect(partial(self.classify, 'NL','Disc'))
+        self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
 
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
-        self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
+        self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
 
-        self.dict_class2button = {'SL':self.bsurelens,
+        self.dict_class2button = {
+                                 'A':self.bsurelens,
+                                  'B':self.bmaybelens,
+                                  'C':self.bflexion,
+                                  'X':self.bnonlens,
+                                 'SL':self.bsurelens,
                                   'ML':self.bmaybelens,
                                   'FL':self.bflexion,
                                   'NL':self.bnonlens,
-                                  'None':None}
+
+                                 'None':None}
 
         self.dict_subclass2button = {'Merger':self.bMerger,
                                   'Spiral':self.bSpiral,
@@ -351,6 +357,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                   'Elliptical':self.bElliptical,
                                   'Disc':self.bDisc,
                                   'Edge-on':self.bEdgeon,
+                                  'A':None,
+                                  'B':None,
+                                  'C':None,
+                                  'X':None,
                                   'SL':None,
                                   'ML':None,
                                   'FL':None,
@@ -392,12 +402,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedcolormap = self.bGray
 
         grade = self.df.at[self.config_dict['counter'],'classification']
-        if grade != 'None':
+#        if grade is not None and not np.isnan(grade) and grade != 'None':
+        if grade is not None and grade != 'None' and grade != 'Empty':
+            print(type(grade))
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
-        if subgrade != 'None':
+        # if subgrade != 'None':
+#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
+        if subgrade is not None and subgrade != 'None' and grade != 'Empty':
+            # print(subgrade)
             self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
             if self.bactivatedsubclassification is not None:
                 self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
@@ -411,34 +426,34 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('q'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'SL','SL'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
 
         self.kmaybelens = QShortcut(QKeySequence('w'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'ML','ML'))
+        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
         self.kflexion = QShortcut(QKeySequence('e'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'FL','FL'))
+        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
         self.knonlens = QShortcut(QKeySequence('r'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'NL','NL'))
+        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
         self.kMerger = QShortcut(QKeySequence('a'), self)
-        self.kMerger.activated.connect(partial(self.keyClassify, 'NL','Merger'))
+        self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
 
         self.kSpiral = QShortcut(QKeySequence('s'), self)
-        self.kSpiral.activated.connect(partial(self.keyClassify, 'NL','Spiral'))
+        self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
 
         self.kRing = QShortcut(QKeySequence('d'), self)
-        self.kRing.activated.connect(partial(self.keyClassify, 'NL','Ring'))
+        self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
 
         self.kElliptical = QShortcut(QKeySequence('f'), self)
-        self.kElliptical.activated.connect(partial(self.keyClassify, 'NL','Elliptical'))
+        self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
 
         self.kDisc = QShortcut(QKeySequence('g'), self)
-        self.kDisc.activated.connect(partial(self.keyClassify, 'NL','Disc'))
+        self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
 
         self.kEdgeon = QShortcut(QKeySequence('h'), self)
-        self.kEdgeon.activated.connect(partial(self.keyClassify, 'NL','Edge-on'))
+        self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
 
         #Buttons
@@ -901,12 +916,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 'ra','dec','comment','legacy_survey_data']
         df = pd.DataFrame(columns=dfc)
         df['file_name'] = self.listimage
-        df['classification'] = ['None'] * len(self.listimage)
-        df['subclassification'] = ['None'] * len(self.listimage)
+        df['classification'] = ['Empty'] * len(self.listimage)
+        df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
-        df['comment'] = ['None'] * len(self.listimage)
-        df['legacy_survey_data'] = ['None'] * len(self.listimage)
+        df['comment'] = ['Empty'] * len(self.listimage)
+        df['legacy_survey_data'] = ['Empty'] * len(self.listimage)
         return df
 
     @Slot()
@@ -949,16 +964,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def update_classification_buttoms(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
-        button = self.dict_class2button[grade]
+
 
         # print(grade)
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
 
-        if button is not None:
-            # return
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-            self.bactivatedclassification = button
+        #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
+        if grade is not None and grade != 'None' and grade != 'Empty':
+            print(grade)
+            button = self.dict_class2button[grade]
+            if button is not None:
+                # return
+                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+                self.bactivatedclassification = button
 
 
 
@@ -967,10 +986,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
 
-        button = self.dict_subclass2button[subgrade]
-        if button is not None:
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-            self.bactivatedsubclassification = button
+#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
+        if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
+            button = self.dict_subclass2button[subgrade]
+            if button is not None:
+                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+                self.bactivatedsubclassification = button
 
             
 if __name__ == "__main__":
