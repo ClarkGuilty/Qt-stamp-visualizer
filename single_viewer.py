@@ -179,7 +179,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-#        print(self.config_dict)
 
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
@@ -273,44 +272,67 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.bds9 = QtWidgets.QPushButton('ds9')
         self.bds9.clicked.connect(self.open_ds9)
+        if not args.fits:
+            self.bds9.setEnabled(False)
 
         self.bviewls = QtWidgets.QPushButton('View LS')
         self.bviewls.clicked.connect(self.viewls)
+        if not args.fits:
+            self.bviewls.setEnabled(False)
 
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        if not self.config_dict['legacysurvey']:
-                self.label_plot[1].hide()
-                self.canvas[1].hide()
+        if args.fits:
+            if not self.config_dict['legacysurvey']:
+                    self.label_plot[1].hide()
+                    self.canvas[1].hide()
+            else:
+                    self.label_plot[1].show()
+                    self.canvas[1].show()
+                    self.blegsur.toggle()
+                    self.set_legacy_survey()
         else:
-                self.label_plot[1].show()
-                self.canvas[1].show()
-                self.blegsur.toggle()
-                self.set_legacy_survey()
-
+            self.config_dict['legacysurvey'] = False
+            self.blegsur.setEnabled(False)
+            self.label_plot[1].hide()
+            self.canvas[1].hide()
+        
 
         self.blsarea = QtWidgets.QCheckBox("Large FoV")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-        if self.config_dict['legacybigarea']:
-            self.blsarea.toggle()
-            if self.config_dict['legacysurvey']:
-                self.set_legacy_survey()
-#            self.checkbox_ls_change_area()
+        if args.fits:
+            if self.config_dict['legacybigarea']:
+                self.blsarea.toggle()
+                if self.config_dict['legacysurvey']:
+                    self.set_legacy_survey()
+        #            self.checkbox_ls_change_area()
+        else:
+            self.blsarea.setEnabled(False)
+            self.config_dict['legacybigarea'] = False
 
         self.blsresidual = QtWidgets.QCheckBox("Residuals")
         self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
-        if self.config_dict['legacyresiduals']:
-            self.blsresidual.toggle()
-            if self.config_dict['legacysurvey']:
-                self.set_legacy_survey()
+        if args.fits:
+            if self.config_dict['legacyresiduals']:
+                self.blsresidual.toggle()
+                if self.config_dict['legacysurvey']:
+                    self.set_legacy_survey()
+        else:
+            self.blsresidual.setEnabled(False)
+            self.config_dict['legacyresiduals'] = False
 
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
         self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-        if self.config_dict['prefetch']:
+        if args.fits:
+            if self.config_dict['prefetch']:
+                self.config_dict['prefetch'] = False
+                self.prefetch_legacysurvey()
+                self.bprefetch.toggle()
+    #            self.checkbox_ls_change_area()
+        else:
+            self.bprefetch.setEnabled(False)
             self.config_dict['prefetch'] = False
-            self.prefetch_legacysurvey()
-            self.bprefetch.toggle()
-#            self.checkbox_ls_change_area()
+
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
@@ -417,7 +439,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         grade = self.df.at[self.config_dict['counter'],'classification']
 #        if grade is not None and not np.isnan(grade) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
-            print(type(grade))
+            # print(type(grade))
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
@@ -508,8 +530,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_layout.addLayout(button_row0_layout, 25)
         button_layout.addLayout(button_row10_layout, 25)
         button_layout.addLayout(button_row11_layout, 25)
-        button_layout.addLayout(button_row2_layout, 25)
-        button_layout.addLayout(button_row3_layout, 25)
+        if args.fits:
+            button_layout.addLayout(button_row2_layout, 25)
+            button_layout.addLayout(button_row3_layout, 25)
+        else:
+            print("Use fits images to change colormap and colorscale.")
 
 
         main_layout.addLayout(self.label_layout, 2)
@@ -543,6 +568,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
 
             self.update_classification_buttoms()
@@ -579,8 +605,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
-        self.df.at[cnt,'ra'] = self.ra
-        self.df.at[cnt,'dec'] = self.dec
+        if args.fits:
+            self.df.at[cnt,'ra'] = self.ra
+            self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
@@ -697,6 +724,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def checkbox_legacy_survey(self):
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                 self.label_plot[1].hide()
                 self.canvas[1].hide()
         else:
@@ -710,12 +738,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def checkbox_ls_change_area(self):
         self.config_dict['legacybigarea'] = not self.config_dict['legacybigarea']
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                     self.set_legacy_survey()
 
     @Slot()
     def checkbox_ls_use_residuals(self):
         self.config_dict['legacyresiduals'] = not self.config_dict['legacyresiduals']
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                     self.set_legacy_survey()
 
 
@@ -880,19 +910,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
 
         self.ax[canvas_id].cla()
-        image = self.load_fits(self.filename)
-        self.image = np.copy(image)
-        if scale_min is not None and scale_max is not None:
-            self.scale_min = scale_min
-            self.scale_max = scale_max
+        if args.fits:
+            image = self.load_fits(self.filename)
+            self.image = np.copy(image)
+            if scale_min is not None and scale_max is not None:
+                self.scale_min = scale_min
+                self.scale_max = scale_max
+            else:
+                self.scale_min, self.scale_max = self.scale_val(image)
+            image = self.rescale_image(image)
+            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.scale_min, self.scale_max = self.scale_val(image)
-
-        image = self.rescale_image(image)
-
-        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
-        self.ax[canvas_id].set_axis_off()
+            image = np.asarray(Image.open(self.filename))
+            self.image = np.copy(image)
+        self.ax[canvas_id].imshow(image, origin='lower')
         self.canvas[canvas_id].draw()
+        self.ax[canvas_id].set_axis_off()
 
     def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
@@ -900,9 +933,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].cla()
 
         image = np.copy(self.image)
-        image = self.rescale_image(image)
-
-        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        if args.fits:
+            image = self.rescale_image(image)
+            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        else:
+            self.ax[canvas_id].imshow(image, origin='lower')
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
@@ -951,9 +986,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
             
             self.save_dict()
+            
             self.update_classification_buttoms()
             self.update_counter()
 
@@ -969,9 +1006,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
             self.update_counter()
             self.save_dict()
+            
             self.update_classification_buttoms()
 
 
@@ -985,7 +1024,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
-            print(grade)
+            # print(grade)
             button = self.dict_class2button[grade]
             if button is not None:
                 # return
