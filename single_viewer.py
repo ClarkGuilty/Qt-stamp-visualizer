@@ -37,14 +37,26 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
-parser.add_argument("--clean", help="Removes the configuration dictionary during startup.",
-                    default=False)
+parser.add_argument("--reset-config", help="Removes the configuration dictionary during startup.",
+                    action="store_true", default=False)
+parser.add_argument("--clean", help="Cleans the legacy survey folder.",
+                    action="store_true")
+parser.add_argument('--fits',
+                    help="Specify whether the images to classify are fits or png/jpeg.",
+                    action=argparse.BooleanOptionalAction,
+                    default=True)
 
 
 args = parser.parse_args()
 
-if args.clean:
+LEGACY_SURVEY_PATH = './Legacy_survey/'
+
+if args.reset_config:
     os.remove('.config.json')
+
+if args.clean:
+    for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
+        os.remove(f)
 
 def identity(x):
     return x
@@ -57,42 +69,35 @@ def asinh2(x):
 
 
 class SingleFetchWorker(QObject):
-    successful_download = Signal(str)
-    failed_download = Signal(str)
+    successful_download = Signal()
+    failed_download = Signal()
+    has_finished = Signal()
 
-    def __init__(self, url, savefile):
+    def __init__(self, url, savefile, title):
         # super.__init__(self)
         super(SingleFetchWorker, self).__init__()
         self.url = url
         self.savefile = savefile
+        self.title = title
+    
+    @Slot()
     def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
-            self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('No Legacy Survey data available.')
-
-class SingleFetchThread(QThread):
-    successful_download = Signal(str)
-    failed_download = Signal(str)
-    def __init__(self, url, savefile, parent=None):
-        QThread.__init__(self, parent)
-        self.url = url
-        self.savefile = savefile
-
-    def run(self):
-        try:
-            urllib.request.urlretrieve(self.url, self.savefile)
-            print('Success!!!!')
-            self.successful_download.emit('Heh')
-        except urllib.error.HTTPError:
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit('eHe')
-
+        # print(f'Running file worker: {self.savefile}')
+        if self.url == '':
+            # print('There is already a file')
+            self.successful_download.emit()
+        else:
+            try:
+                urllib.request.urlretrieve(self.url, self.savefile)
+                # print('Success!!!!')
+                self.successful_download.emit()
+            except urllib.error.HTTPError:
+                with open(self.savefile,'w') as f:
+                    Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+                # self.failed_download.emit('No Legacy Survey data available.')
+                self.failed_download.emit()
+        self.has_finished.emit()
+        # self.deleteLater()
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
@@ -101,20 +106,21 @@ class FetchThread(QThread):
 
             self.df = df
             self.initial_counter = initial_counter
-            self.legacy_survey_path = './Legacy_survey/'
+            self.legacy_survey_path = LEGACY_SURVEY_PATH
             self.stampspath = args.path
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-    def download_legacy_survey(self, ra, dec, pixscale,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
-        residual = (residual and pixscale == '0.048')
-        res = '-resid' if residual else ''
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
-        savefile = os.path.join(self.legacy_survey_path, savename)
+    def download_legacy_survey(self, ra, dec, size=47,residual=False): #pixscale = 0.04787578125 for 66 pixels in CFIS.
+        pixscale = '0.262'
+        residual = (residual and size == 47)
+        res = '-resid' if residual else '-grz'
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
+        savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
-            print('already exists:', savefile)
+            print('File already exists:', savefile)
             return True
-        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
+        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
+         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
         print(url)
         try:
             urllib.request.urlretrieve(url, savefile)
@@ -122,6 +128,7 @@ class FetchThread(QThread):
             with open(savefile,'w') as f:
                 self.im.save(f)
             return False
+        
         return True
 
     def get_ra_dec(self,header):
@@ -142,13 +149,16 @@ class FetchThread(QThread):
                 ra,dec = self.get_ra_dec(fits.getheader(f,memmap=False))
             else:
                 ra,dec = stamp[['ra','dec']]
-            self.download_legacy_survey(ra,dec,'0.048')
-            self.download_legacy_survey(ra,dec,pixscale='0.5')
+            self.download_legacy_survey(ra,dec,size=47)
+            self.download_legacy_survey(ra,dec,size=47,residual=True)
+            # self.download_legacy_survey(ra,dec,300)
+            self.download_legacy_survey(ra,dec,size=488)
+            # self.download_legacy_survey(ra,dec,pixscale='0.048',residual=True)
             index+=1
-        # self.interrupt()
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
+    # workerThread = QThread()
     def __init__(self):
         super().__init__()
         self._main = QtWidgets.QWidget()
@@ -169,22 +179,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-#        print(self.config_dict)
 
-        # self.workerThread = QThread()
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
         self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'asinh2':asinh2}
+        self.buttonclasscolor = "darkRed"
+        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'log10':log, 'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
         self.stampspath = args.path
-        self.legacy_survey_path = './Legacy_survey/'
-        self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
+        self.legacy_survey_path = LEGACY_SURVEY_PATH
+        # self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
+        if args.fits:
+            self.listimage = sorted([os.path.basename(x)
+                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+        else:
+            self.listimage = sorted([os.path.basename(x)
+                                for x in (glob.glob(join(self.stampspath, '*.png')) +
+                                          glob.glob(join(self.stampspath, '*.jpg')) +
+                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                         )])
         self.df = self.obtain_df()
 
         self.number_graded = 0
@@ -254,44 +272,67 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.bds9 = QtWidgets.QPushButton('ds9')
         self.bds9.clicked.connect(self.open_ds9)
+        if not args.fits:
+            self.bds9.setEnabled(False)
 
         self.bviewls = QtWidgets.QPushButton('View LS')
         self.bviewls.clicked.connect(self.viewls)
+        if not args.fits:
+            self.bviewls.setEnabled(False)
 
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        if not self.config_dict['legacysurvey']:
-                self.label_plot[1].hide()
-                self.canvas[1].hide()
+        if args.fits:
+            if not self.config_dict['legacysurvey']:
+                    self.label_plot[1].hide()
+                    self.canvas[1].hide()
+            else:
+                    self.label_plot[1].show()
+                    self.canvas[1].show()
+                    self.blegsur.toggle()
+                    self.set_legacy_survey()
         else:
-                self.label_plot[1].show()
-                self.canvas[1].show()
-                self.blegsur.toggle()
-                self.set_legacy_survey()
+            self.config_dict['legacysurvey'] = False
+            self.blegsur.setEnabled(False)
+            self.label_plot[1].hide()
+            self.canvas[1].hide()
+        
 
-
-        self.blsarea = QtWidgets.QCheckBox("1 arcmin²")
+        self.blsarea = QtWidgets.QCheckBox("Large FoV")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-        if self.config_dict['legacybigarea']:
-            self.blsarea.toggle()
-            if self.config_dict['legacysurvey']:
-                self.set_legacy_survey()
-#            self.checkbox_ls_change_area()
+        if args.fits:
+            if self.config_dict['legacybigarea']:
+                self.blsarea.toggle()
+                if self.config_dict['legacysurvey']:
+                    self.set_legacy_survey()
+        #            self.checkbox_ls_change_area()
+        else:
+            self.blsarea.setEnabled(False)
+            self.config_dict['legacybigarea'] = False
 
         self.blsresidual = QtWidgets.QCheckBox("Residuals")
         self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
-        if self.config_dict['legacyresiduals']:
-            self.blsresidual.toggle()
-            if self.config_dict['legacysurvey']:
-                self.set_legacy_survey()
+        if args.fits:
+            if self.config_dict['legacyresiduals']:
+                self.blsresidual.toggle()
+                if self.config_dict['legacysurvey']:
+                    self.set_legacy_survey()
+        else:
+            self.blsresidual.setEnabled(False)
+            self.config_dict['legacyresiduals'] = False
 
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
         self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-        if self.config_dict['prefetch']:
+        if args.fits:
+            if self.config_dict['prefetch']:
+                self.config_dict['prefetch'] = False
+                self.prefetch_legacysurvey()
+                self.bprefetch.toggle()
+    #            self.checkbox_ls_change_area()
+        else:
+            self.bprefetch.setEnabled(False)
             self.config_dict['prefetch'] = False
-            self.prefetch_legacysurvey()
-            self.bprefetch.toggle()
-#            self.checkbox_ls_change_area()
+
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
@@ -303,35 +344,63 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts']:
             self.bkeyboardshortcuts.toggle()
 
-        self.bsurelens = QtWidgets.QPushButton('Sure Lens')
-        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL') )
+        self.bsurelens = QtWidgets.QPushButton('A')
+        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
 
-        self.bmaybelens = QtWidgets.QPushButton('Maybe Lens')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML'))
+        self.bmaybelens = QtWidgets.QPushButton('B')
+        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
 
-        self.bflexion = QtWidgets.QPushButton('Flexion')
-        self.bflexion.clicked.connect(partial(self.classify, 'FL','FL'))
+        self.bflexion = QtWidgets.QPushButton('C')
+        self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
 
-        self.bnonlens = QtWidgets.QPushButton('Non Lens')
-        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL'))
+        self.bnonlens = QtWidgets.QPushButton('X')
+        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
 
         self.bMerger = QtWidgets.QPushButton('Merger')
-        self.bMerger.clicked.connect(partial(self.classify, 'NL','Merger') )
+        self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
 
         self.bSpiral = QtWidgets.QPushButton('Spiral')
-        self.bSpiral.clicked.connect(partial(self.classify, 'NL','Spiral'))
+        self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
 
         self.bRing = QtWidgets.QPushButton('Ring')
-        self.bRing.clicked.connect(partial(self.classify, 'NL','Ring'))
+        self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
 
         self.bElliptical = QtWidgets.QPushButton('Elliptical')
-        self.bElliptical.clicked.connect(partial(self.classify, 'NL','Elliptical'))
+        self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
 
         self.bDisc = QtWidgets.QPushButton('Disc')
-        self.bDisc.clicked.connect(partial(self.classify, 'NL','Disc'))
+        self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
 
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
-        self.bEdgeon.clicked.connect(partial(self.classify, 'NL','Edge-on'))
+        self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
+
+        self.dict_class2button = {
+                                 'A':self.bsurelens,
+                                  'B':self.bmaybelens,
+                                  'C':self.bflexion,
+                                  'X':self.bnonlens,
+                                 'SL':self.bsurelens,
+                                  'ML':self.bmaybelens,
+                                  'FL':self.bflexion,
+                                  'NL':self.bnonlens,
+
+                                 'None':None}
+
+        self.dict_subclass2button = {'Merger':self.bMerger,
+                                  'Spiral':self.bSpiral,
+                                  'Ring':self.bRing,
+                                  'Elliptical':self.bElliptical,
+                                  'Disc':self.bDisc,
+                                  'Edge-on':self.bEdgeon,
+                                  'A':None,
+                                  'B':None,
+                                  'C':None,
+                                  'X':None,
+                                  'SL':None,
+                                  'ML':None,
+                                  'FL':None,
+                                  'NL':None,
+                                  'None':None}
 
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(self.set_scale_linear)
@@ -339,7 +408,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bsqrt = QtWidgets.QPushButton('Sqrt')
         self.bsqrt.clicked.connect(self.set_scale_sqrt)
 
-        self.blog = QtWidgets.QPushButton('Log10')
+        self.blog = QtWidgets.QPushButton('Log')
         self.blog.clicked.connect(self.set_scale_log)
 
         self.basinh = QtWidgets.QPushButton('Asinh')
@@ -357,13 +426,32 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bViridis = QtWidgets.QPushButton('Viridis')
         self.bViridis.clicked.connect(self.set_colormap_Viridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,
+        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,'log10':self.blog,
                             'asinh2': self.basinh}
         self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
                             'Viridis': self.bViridis}
 
+        self.bactivatedclassification = None
+        self.bactivatedsubclassification = None
         self.bactivatedscale = self.scale2button[self.config_dict['scale']]
         self.bactivatedcolormap = self.bGray
+
+        grade = self.df.at[self.config_dict['counter'],'classification']
+#        if grade is not None and not np.isnan(grade) and grade != 'None':
+        if grade is not None and grade != 'None' and grade != 'Empty':
+            # print(type(grade))
+            self.bactivatedclassification = self.dict_class2button[grade]
+            self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+ 
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        # if subgrade != 'None':
+#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
+        if subgrade is not None and subgrade != 'None' and grade != 'Empty':
+            # print(subgrade)
+            self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+
 
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
@@ -373,34 +461,34 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('q'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'SL','SL'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
 
         self.kmaybelens = QShortcut(QKeySequence('w'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'ML','ML'))
+        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
         self.kflexion = QShortcut(QKeySequence('e'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'FL','FL'))
+        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
         self.knonlens = QShortcut(QKeySequence('r'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'NL','NL'))
+        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
         self.kMerger = QShortcut(QKeySequence('a'), self)
-        self.kMerger.activated.connect(partial(self.keyClassify, 'NL','Merger'))
+        self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
 
         self.kSpiral = QShortcut(QKeySequence('s'), self)
-        self.kSpiral.activated.connect(partial(self.keyClassify, 'NL','Spiral'))
+        self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
 
         self.kRing = QShortcut(QKeySequence('d'), self)
-        self.kRing.activated.connect(partial(self.keyClassify, 'NL','Ring'))
+        self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
 
         self.kElliptical = QShortcut(QKeySequence('f'), self)
-        self.kElliptical.activated.connect(partial(self.keyClassify, 'NL','Elliptical'))
+        self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
 
         self.kDisc = QShortcut(QKeySequence('g'), self)
-        self.kDisc.activated.connect(partial(self.keyClassify, 'NL','Disc'))
+        self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
 
         self.kEdgeon = QShortcut(QKeySequence('h'), self)
-        self.kEdgeon.activated.connect(partial(self.keyClassify, 'NL','Edge-on'))
+        self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
 
         #Buttons
@@ -442,21 +530,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_layout.addLayout(button_row0_layout, 25)
         button_layout.addLayout(button_row10_layout, 25)
         button_layout.addLayout(button_row11_layout, 25)
-        button_layout.addLayout(button_row2_layout, 25)
-        button_layout.addLayout(button_row3_layout, 25)
+        if args.fits:
+            button_layout.addLayout(button_row2_layout, 25)
+            button_layout.addLayout(button_row3_layout, 25)
+        else:
+            print("Use fits images to change colormap and colorscale.")
 
 
         main_layout.addLayout(self.label_layout, 2)
         main_layout.addLayout(self.plot_layout, 88)
         main_layout.addLayout(button_layout, 10)
 
+
     @Slot()
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
             # self.fetchthread.quit()
-            # self.fetchthread.terminate()
-            # self.fetchthread.deleteLater()
-            self.fetchthread.interrupt()
+            self.fetchthread.terminate()
+            # self.fetchthread.interrupt()
             # print(self.fetchthread._active)
             self.config_dict['prefetch'] = False
         else:
@@ -477,7 +568,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
+
+            self.update_classification_buttoms()
             self.update_counter()
             self.save_dict()
 
@@ -504,70 +598,75 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts'] == True:
             self.classify(grade, subgrade)
         
-
+    @Slot()
     def classify(self, grade, subgrade):
         cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
-        self.df.at[cnt,'ra'] = self.ra
-        self.df.at[cnt,'dec'] = self.dec
+        if args.fits:
+            self.df.at[cnt,'ra'] = self.ra
+            self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
+
+        # if self.bactivatedclassification is not None:
+        #     self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+        # buttom = self.dict_class2button[grade]
+        # buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        # self.bactivatedclassification = buttom
+
+
+        # if self.dict_subclass2button[subgrade] is not None:
+        #     if self.bactivatedsubclassification is not None:
+        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+        #     buttom = self.dict_subclass2button[grade]
+        #     buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        #     self.bactivatedsubclassification = buttom        
+        # else:
+        #     if self.bactivatedsubclassification is not None:
+        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+
+        self.update_classification_buttoms()
         if self.config_dict['autonext']:
             self.next()
+        
 
-
-    def get_legacy_survey(self,ra,dec,pixscale = '0.048',residual=False): #pixscale = 0.04787578125 is 66 pixels in CFIS.
-#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) +"_"+pixscale + 'dr8.jpg'
-        residual = (residual and pixscale == '0.048')
-        res = '-resid' if residual else ''
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +"_"+pixscale + 'ls-dr10{}.jpg'.format(res)
-        savefile = os.path.join(self.legacy_survey_path, savename)
+    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.048',residual=False,size=47):
+        # residual = (residual and pixscale == '0.048')
+        pixscale = '0.262'
+        residual = (residual and size == 47)
+        res = '-resid' if residual else '-grz'
+        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
+        savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
-            return savefile
+            # print(savefile)
+            return savefile, ''
         self.status.showMessage("Downloading legacy survey jpeg.")
-        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(ra) + '&dec=' + str(
-            dec) + '&layer=ls-dr10{}&pixscale='.format(res)+str(pixscale)
-        try:
-            #No thread version
-            urllib.request.urlretrieve(url, savefile)
-            #Thread version. This is broken, too many threads instantiated.
-            # self.singlefetchthread = SingleFetchThread(url,savefile) #Always store in an object.
-            # self.singlefetchthread.finished.connect(self.singlefetchthread.deleteLater)
-            # self.singlefetchthread.setTerminationEnabled(True)
-            # self.singlefetchthread.start()
-            # self.singlefetchthread.successful_download.connect(self.plot_legacy_survey)
-            # self.singlefetchthread.failed_download.connect(self.plot_no_legacy_survey)
-            #Thread+worker version.
-            # self.singleFetchWorker = SingleFetchWorker(url, savefile)
-            # self.singleFetchWorker.moveToThread(self.workerThread)
-            # self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
-            # self.operate.connect(self.singleFetchWorker.doWork)
-            # self.singleFetchWorker.resultReady.connect(self.handleResults)
-            # self.workerThread.start()
+        # print(url)
+        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
+         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
+        return savefile, url
 
-            # self.singlefetchthread_active = True
-        except urllib.error.HTTPError:
-            self.status.showMessage("Download failed: no data for RA: {}, DEC: {}.".format(ra,dec),10000)
-            raise
-#        url = 'http://legacysurvey.org/viewer/cutout.jpg?ra=' + str(self.ra) + '&dec=' + str(
-#            self.dec) + '&layer=dr8-resid&pixscale=0.06'
-#        savename = 'N' + str(self.config_dict['counter'])+ '_' + str(self.ra) + '_' + str(self.dec) + 'dr8-resid.jpg'
-#        urllib.request.urlretrieve(url, os.path.join(self.legacy_survey_path, savename))
-        # self.status.showMessage("Downloading legacy survey jpeg. Success!")
-        return savefile
+    def generate_title(self, residuals=False, bigarea=False):
+        if residuals:
+            return "Residuals, {0} arcsec x {0} arcsec".format(12.56)
+        if bigarea:
+            return '{0} arcmin x {0} arcmin'.format(2.13)
+        return "{0}''x{0}''".format(12.56)
 
-    def plot_legacy_survey(self, title='12x12', canvas_id = 1):
+    def plot_legacy_survey(self, savefile, title, canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(mpimg.imread(self.legacy_filename))
+        if savefile != self.legacy_filename:
+            return
+        self.ax[canvas_id].imshow(mpimg.imread(savefile))
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
-    def plot_no_legacy_survey(self, title='No Legacy Survey data available locally', canvas_id = 1):
+    def plot_no_legacy_survey(self, title='Waiting for data', canvas_id = 1):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
         self.ax[canvas_id].imshow(np.zeros((66,66)), cmap='Greys_r')
@@ -576,37 +675,56 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
-        if self.config_dict['legacyresiduals'] == True:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,residual=True)
-                # print(self.legacy_filename)
-                title='Residuals {0}x{0}'.format(0.5)
-                self.plot_legacy_survey(title=title)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
+        pixscale = '0.5' if self.config_dict['legacybigarea'] else '0.048'
+        size = 488 if self.config_dict['legacybigarea'] else 47
+        try:
+            savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
+                                        pixscale=pixscale,
+                                        residual=self.config_dict['legacyresiduals'],
+                                        size=size) #TODO FIX BUG HERE.
 
-        elif self.config_dict['legacybigarea'] == True:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec,pixscale='0.5')
-                title='{0}x{0}'.format(0.5)
-                self.plot_legacy_survey(title=title)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
-        else:
-            try:
-                self.legacy_filename = self.get_legacy_survey(self.ra,self.dec)
-                title='{0}x{0}'.format(12.56)
-                self.plot_legacy_survey(title=title)
-            except urllib.error.HTTPError:
-                self.plot_no_legacy_survey()
+            title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
+                                        bigarea=self.config_dict['legacybigarea'])
+            # print('setting ls')
+            if url == '':
+                # print('There is already a file')
+                self.legacy_filename = savefile
+                # self.plot_legacy_survey(title = 'There is already an image')
+                self.plot_legacy_survey(savefile, title)
+                return
+            self.plot_no_legacy_survey()
+            self.legacy_filename = savefile
+            self.workerThread = QThread(parent=self)
+            self.singleFetchWorker = SingleFetchWorker(url, savefile, title)
+            self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
+            self.workerThread.started.connect(self.singleFetchWorker.run)
+        
+            self.singleFetchWorker.moveToThread(self.workerThread)
 
-        # self.plot_no_legacy_survey()
-        # self.plot_legacy_survey(title=title)
+            self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
+            self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
+            self.workerThread.finished.connect(self.workerThread.deleteLater)
+            self.workerThread.setTerminationEnabled(True)
+
+            self.workerThread.start()
+            self.workerThread.quit()
+            # self.singleFetchWorker.has_finished.connect(self.singleFetchWorker.deleteLater)
+            # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
+        
+        except FileNotFoundError as E:
+            self.plot_no_legacy_survey()
+            # print(E.args)
+            # print(type(E))
+            # raise
+        except Exception as E:
+            print(E.args)
+            print(type(E))
 
 
     @Slot()
     def checkbox_legacy_survey(self):
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                 self.label_plot[1].hide()
                 self.canvas[1].hide()
         else:
@@ -620,12 +738,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def checkbox_ls_change_area(self):
         self.config_dict['legacybigarea'] = not self.config_dict['legacybigarea']
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                     self.set_legacy_survey()
 
     @Slot()
     def checkbox_ls_use_residuals(self):
         self.config_dict['legacyresiduals'] = not self.config_dict['legacyresiduals']
         if self.config_dict['legacysurvey']:
+        # if self.blegsur.isChecked():
                     self.set_legacy_survey()
 
 
@@ -644,50 +764,54 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def viewls(self):
-        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=16&spectra".format(self.ra,self.dec))
+        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10-grz&zoom=16&spectra".format(self.ra,self.dec))
         #subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
 
     @Slot()
     def set_scale_linear(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.blinear
+        if button != self.bactivatedscale:
             self.scale = identity
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='identity'
             self.save_dict()
 
     @Slot()
     def set_scale_sqrt(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.bsqrt
+        if button != self.bactivatedscale:
             self.scale = np.sqrt
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button 
             self.config_dict['scale']='sqrt'
             self.save_dict()
 
     @Slot()
     def set_scale_log(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.blog
+        if button != self.bactivatedscale:# and self.sender() is not None: #TODO test if this works/
             self.scale = log
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='log'
             self.save_dict()
 
     @Slot()
     def set_scale_asinh(self):
-        if self.sender() != self.bactivatedscale:
+        button = self.basinh
+        if button != self.bactivatedscale:
             self.scale = asinh2
             self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = self.sender()
+            self.bactivatedscale = button
             self.config_dict['scale']='asinh2'
             self.save_dict()
 
@@ -786,19 +910,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
 
         self.ax[canvas_id].cla()
-        image = self.load_fits(self.filename)
-        self.image = np.copy(image)
-        if scale_min is not None and scale_max is not None:
-            self.scale_min = scale_min
-            self.scale_max = scale_max
+        if args.fits:
+            image = self.load_fits(self.filename)
+            self.image = np.copy(image)
+            if scale_min is not None and scale_max is not None:
+                self.scale_min = scale_min
+                self.scale_max = scale_max
+            else:
+                self.scale_min, self.scale_max = self.scale_val(image)
+            image = self.rescale_image(image)
+            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.scale_min, self.scale_max = self.scale_val(image)
-
-        image = self.rescale_image(image)
-
-        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
-        self.ax[canvas_id].set_axis_off()
+            image = np.asarray(Image.open(self.filename))
+            self.image = np.copy(image)
+        self.ax[canvas_id].imshow(image, origin='lower')
         self.canvas[canvas_id].draw()
+        self.ax[canvas_id].set_axis_off()
 
     def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
@@ -806,9 +933,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].cla()
 
         image = np.copy(self.image)
-        image = self.rescale_image(image)
-
-        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        if args.fits:
+            image = self.rescale_image(image)
+            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        else:
+            self.ax[canvas_id].imshow(image, origin='lower')
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
@@ -835,12 +964,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 'ra','dec','comment','legacy_survey_data']
         df = pd.DataFrame(columns=dfc)
         df['file_name'] = self.listimage
-        df['classification'] = ['None'] * len(self.listimage)
-        df['subclassification'] = ['None'] * len(self.listimage)
+        df['classification'] = ['Empty'] * len(self.listimage)
+        df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
-        df['comment'] = ['None'] * len(self.listimage)
-        df['legacy_survey_data'] = ['None'] * len(self.listimage)
+        df['comment'] = ['Empty'] * len(self.listimage)
+        df['legacy_survey_data'] = ['Empty'] * len(self.listimage)
         return df
 
     @Slot()
@@ -857,9 +986,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
-            self.update_counter()
+            
             self.save_dict()
+            
+            self.update_classification_buttoms()
+            self.update_counter()
 
     @Slot()
     def prev(self):
@@ -870,18 +1003,48 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.status.showMessage('First image')
 
         else:
-            #self.status.showMessage(self.listimage[self.config_dict['counter']])
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
-            # if self.singlefetchthread_active:
-            #     self.singlefetchthread.terminate()
             self.plot()
             if self.config_dict['legacysurvey']:
+            # if self.blegsur.isChecked():
                 self.set_legacy_survey()
             self.update_counter()
             self.save_dict()
-
-
             
+            self.update_classification_buttoms()
+
+
+    def update_classification_buttoms(self):
+        grade = self.df.at[self.config_dict['counter'],'classification']
+
+
+        # print(grade)
+        if self.bactivatedclassification is not None:
+            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+
+        #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
+        if grade is not None and grade != 'None' and grade != 'Empty':
+            # print(grade)
+            button = self.dict_class2button[grade]
+            if button is not None:
+                # return
+                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+                self.bactivatedclassification = button
+
+
+
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        # print(subgrade)
+        if self.bactivatedsubclassification is not None:
+            self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+
+#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
+        if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
+            button = self.dict_subclass2button[subgrade]
+            if button is not None:
+                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+                self.bactivatedsubclassification = button
+
             
 if __name__ == "__main__":
     # Check whether there is already a running QApplication (e.g., if running
