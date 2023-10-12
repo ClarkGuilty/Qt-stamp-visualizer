@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 import urllib
 
 from functools import partial
+import shutil
 
 import webbrowser
 import json
@@ -49,6 +50,11 @@ parser.add_argument('--resize',
                     help="Set to allow the resizing of the stamps with the window.",
                     action=argparse.BooleanOptionalAction,
                     default=False)
+parser.add_argument('--fits',
+                    help="Specify whether the images to classify are fits or png/jpeg.",
+                    action=argparse.BooleanOptionalAction,
+                    default=True)
+
 
 args = parser.parse_args()
 
@@ -310,8 +316,17 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_dir(self.scratchpath)
-        self.listimage = sorted([os.path.basename(x)
+        if args.fits:
+            self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
+        else:
+            self.listimage = sorted([os.path.basename(x)
+                                for x in (glob.glob(join(self.stampspath, '*.png')) +
+                                          glob.glob(join(self.stampspath, '*.jpg')) +
+                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                         )])
+        if len(self.listimage) == 0:
+            print(f"WARNING: no images found in {self.stampspath}")
         # print(join(self.stampspath, '*.fits'))
         # print(glob.glob(self.stampspath + '*.fits'))
         self.gridsize = args.gridsize
@@ -649,15 +664,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             j = j+1
             i = i+1
 
-    def prepare_png(self, number):
+    def prepare_png_old(self, number):
         "Generates the png files from the fits."
         start = self.config_dict['page']*self.gridarea
         for i in np.arange(start, start + number + 1):
             # img = self.draw_image(i, self.scale_state)
             try:
                 image = self.read_fits(i)
-                if image.shape[0] > 100:
-                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges)
+                if image.shape[0] == 334:
+                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges).
                 # image -= np.min(image)
                 # image += 1e-16
                 # print(f'Stats before: {np.min(image),np.max(image)}')
@@ -680,6 +695,38 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                        image, cmap=self.config_dict['colormap'], origin="lower")
             
             # self.config_dict['counter'] = self.config_dict['counter'] + 1
+
+    
+    def prepare_png(self, number):
+            "Generates the png files from the fits."
+            start = self.config_dict['page']*self.gridarea
+            for i in np.arange(start, start + number + 1):
+                if args.fits:
+                    try:
+                        image = self.read_fits(i)
+                        if image.shape[0] == 334: #Special casen for HST/HSC COSMOS stamps
+                            image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges).
+                        scale_min, scale_max = self.scale_val(image)
+                        image = self.rescale_image(image, scale_min, scale_max)
+                        plt.imsave(self.filepath(i, self.config_dict['page']),
+                                image, cmap=self.config_dict['colormap'], origin="lower")
+                    except:
+                        image = np.zeros((66, 66))# * 0.0000001
+                        plt.imsave(self.filepath(i, self.config_dict['page']),
+                            image, cmap=self.config_dict['colormap'], origin="lower")
+                else:
+                    if i < len(self.listimage):
+                        try:
+                            original_filepath = join(self.stampspath, self.listimage[i])
+                            shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
+                        except:
+                            print(f'file not found: {original_filepath}' )
+                    else:
+                        image = np.zeros((66, 66))# * 0.0000001
+                        plt.imsave(self.filepath(i, self.config_dict['page']),
+                            image, cmap=self.config_dict['colormap'], origin="lower")
+                
+                # self.config_dict['counter'] = self.config_dict['counter'] + 1
 
     def clean_dir(self, path_dir):
         "Removes everything in the scratch folder."
