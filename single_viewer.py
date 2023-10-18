@@ -428,26 +428,21 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,'log10':self.blog,
                             'asinh2': self.basinh}
-        self.colormap2button = {'Inverted':self.bInverted,'Bb8':self.bBb8,'Gray':self.bGray,
-                            'Viridis': self.bViridis}
+        self.colormap2button = {'gist_yarg':self.bInverted,'hot':self.bBb8,'gray':self.bGray,
+                            'viridis': self.bViridis}
 
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
         self.bactivatedscale = self.scale2button[self.config_dict['scale']]
-        self.bactivatedcolormap = self.bGray
+        self.bactivatedcolormap = self.colormap2button[self.config_dict['colormap']]
 
         grade = self.df.at[self.config_dict['counter'],'classification']
-#        if grade is not None and not np.isnan(grade) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
-            # print(type(grade))
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
-        # if subgrade != 'None':
-#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
         if subgrade is not None and subgrade != 'None' and grade != 'Empty':
-            # print(subgrade)
             self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
             if self.bactivatedsubclassification is not None:
                 self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
@@ -612,23 +607,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
         self.df.to_csv(self.df_name)
 
-        # if self.bactivatedclassification is not None:
-        #     self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
-        # buttom = self.dict_class2button[grade]
-        # buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-        # self.bactivatedclassification = buttom
-
-
-        # if self.dict_subclass2button[subgrade] is not None:
-        #     if self.bactivatedsubclassification is not None:
-        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
-        #     buttom = self.dict_subclass2button[grade]
-        #     buttom.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-        #     self.bactivatedsubclassification = buttom        
-        # else:
-        #     if self.bactivatedsubclassification is not None:
-        #         self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
-
         self.update_classification_buttoms()
         if self.config_dict['autonext']:
             self.next()
@@ -681,7 +659,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
                                         pixscale=pixscale,
                                         residual=self.config_dict['legacyresiduals'],
-                                        size=size) #TODO FIX BUG HERE.
+                                        size=size) #TODO Check for bugs
 
             title = self.generate_title(residuals=self.config_dict['legacyresiduals'],
                                         bigarea=self.config_dict['legacybigarea'])
@@ -712,6 +690,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
         
         except FileNotFoundError as E:
+            print("File not found during seting_legacy_survey()")
             self.plot_no_legacy_survey()
             # print(E.args)
             # print(type(E))
@@ -908,7 +887,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def plot(self, scale_min = None, scale_max = None, canvas_id = 0):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
-
         self.ax[canvas_id].cla()
         if args.fits:
             image = self.load_fits(self.filename)
@@ -923,15 +901,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             image = np.asarray(Image.open(self.filename))
             self.image = np.copy(image)
-        self.ax[canvas_id].imshow(image, origin='lower')
+            self.ax[canvas_id].imshow(image, origin='lower')
+        self.ax[canvas_id].set_axis_off() #Always before .draw()!
         self.canvas[canvas_id].draw()
-        self.ax[canvas_id].set_axis_off()
 
     def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
-
         self.ax[canvas_id].cla()
-
         image = np.copy(self.image)
         if args.fits:
             image = self.rescale_image(image)
@@ -982,14 +958,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         else:
             self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
-            # if self.singlefetchthread_active:
-            #     self.singlefetchthread.terminate()
+            self.save_dict()
             self.plot()
             if self.config_dict['legacysurvey']:
             # if self.blegsur.isChecked():
                 self.set_legacy_survey()
             
-            self.save_dict()
             
             self.update_classification_buttoms()
             self.update_counter()
