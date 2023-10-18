@@ -664,39 +664,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             j = j+1
             i = i+1
 
-    def prepare_png_old(self, number):
-        "Generates the png files from the fits."
-        start = self.config_dict['page']*self.gridarea
-        for i in np.arange(start, start + number + 1):
-            # img = self.draw_image(i, self.scale_state)
-            try:
-                image = self.read_fits(i)
-                if image.shape[0] == 334:
-                    image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges).
-                # image -= np.min(image)
-                # image += 1e-16
-                # print(f'Stats before: {np.min(image),np.max(image)}')
-                # percentage = 99
-
-                # scale_min, scale_max = self.scale_val_percentile(image,0,100)
-                # image = image.clip(min=scale_min, max=scale_max)
-
-                # print(f'Stats middle: {np.min(image),np.max(image)}')
-                # scale_min, scale_max = self.scale_val_percentile(image,(100-percentage)/2,50+percentage/2)
-                scale_min, scale_max = self.scale_val(image)
-                image = self.rescale_image(image, scale_min, scale_max)
-                # print(f'Stats after: {np.min(image),np.max(image)}')
-
-                plt.imsave(self.filepath(i, self.config_dict['page']),
-                        image, cmap=self.config_dict['colormap'], origin="lower")
-            except:
-                image = np.zeros((66, 66))# * 0.0000001
-                plt.imsave(self.filepath(i, self.config_dict['page']),
-                       image, cmap=self.config_dict['colormap'], origin="lower")
-            
-            # self.config_dict['counter'] = self.config_dict['counter'] + 1
-
-    
     def prepare_png(self, number):
             "Generates the png files from the fits."
             start = self.config_dict['page']*self.gridarea
@@ -704,7 +671,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 if args.fits:
                     try:
                         image = self.read_fits(i)
-                        if image.shape[0] == 334: #Special casen for HST/HSC COSMOS stamps
+                        if image.shape[0] in [200,334]: #Special casen for HST/HSC COSMOS stamps
                             image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges).
                         scale_min, scale_max = self.scale_val(image)
                         image = self.rescale_image(image, scale_min, scale_max)
