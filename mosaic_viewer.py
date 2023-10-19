@@ -671,8 +671,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 if args.fits:
                     try:
                         image = self.read_fits(i)
-                        if image.shape[0] in [200,334]: #Special casen for HST/HSC COSMOS stamps
-                            image *= 7000 #TODO make this less hacky (one scheme for all dynamical ranges).
+                        scaling_factor = np.percentile(image,q=90)
+                        if scaling_factor == 0:
+                            scaling_factor = np.percentile(image,q=99)
+                            scaling_factor = 1
+                        image = image / scaling_factor*300 #Rescaling for better visualization.
+                        # if image.shape[0] in [200,334]: #Special casen for HST/HSC COSMOS stamps
+                            # image -= np.min(image) 
+                            # image *= 7000 #TODO Set all the magnitudes to CFIS's
                         scale_min, scale_max = self.scale_val(image)
                         image = self.rescale_image(image, scale_min, scale_max)
                         plt.imsave(self.filepath(i, self.config_dict['page']),
@@ -693,7 +699,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                         plt.imsave(self.filepath(i, self.config_dict['page']),
                             image, cmap=self.config_dict['colormap'], origin="lower")
                 
-                # self.config_dict['counter'] = self.config_dict['counter'] + 1
 
     def clean_dir(self, path_dir):
         "Removes everything in the scratch folder."
@@ -717,20 +722,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         indices0 = np.where(image < scale_min)
         indices1 = np.where((image >= scale_min) & (image < scale_max))
         indices2 = np.where(image >= scale_max)
-
         image[indices0] = 0.0
         image[indices2] = 1.0
         # image[indices1] = np.abs(self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0))
         image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0)
         # image[indices1] /= image[indices1].max()
         
-        # print(f'{np.sum(indices0) = }')
-        # print(f'{np.sum(indices1) = }')
-        # print(f'{np.sum(indices2) = }')
-
-        # image[indices1] = 0.5
-        # print(image[indices1].max())
-        # print(f'Stats after: {np.min(image),np.max(image)}')
         return image
 
     def scale_val(self, image_array):
@@ -741,11 +738,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         else:
             box_size_vmin = 5
             box_size_vmax = 14
-        # print(f'{box_size_vmin = }')
-        # print(f'{box_size_vmax = }')
         vmin = np.min(self.background_rms_image(box_size_vmin, image_array))
         # print(f'{self.background_rms_image(box_size_vmin, image_array) = }')
-                      
+        if vmin == 0:
+            vmin += 1e-3              
+        
         
         xl, yl = np.shape(image_array)
         xmin = int((xl) / 2. - (box_size_vmax / 2.))

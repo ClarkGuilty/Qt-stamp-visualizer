@@ -644,10 +644,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
-    def plot_no_legacy_survey(self, title='Waiting for data', canvas_id = 1):
+    def plot_no_legacy_survey(self, title='Waiting for data',
+                            canvas_id = 1, colormap='Greys_r'):
         self.label_plot[canvas_id].setText(title)
         self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(np.zeros((66,66)), cmap='Greys_r')
+        self.ax[canvas_id].imshow(np.zeros((66,66)), cmap=colormap)
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
@@ -680,7 +681,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.singleFetchWorker.moveToThread(self.workerThread)
 
             self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
-            self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
+            self.singleFetchWorker.failed_download.connect(partial(self.plot_no_legacy_survey,title='No Legacy Survey data available',
+                            canvas_id = 1, colormap='viridis'))
+            # self.singleFetchWorker.failed_download.connect(self.plot_no_legacy_survey)
             self.workerThread.finished.connect(self.workerThread.deleteLater)
             self.workerThread.setTerminationEnabled(True)
 
@@ -690,7 +693,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # self.singleFetchWorker.has_finished.connect(self.workerThread.deleteLater)
         
         except FileNotFoundError as E:
-            print("File not found during seting_legacy_survey()")
+            # print("File not found during seting_legacy_survey()")
             self.plot_no_legacy_survey()
             # print(E.args)
             # print(type(E))
@@ -698,6 +701,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         except Exception as E:
             print(E.args)
             print(type(E))
+            # raise
 
 
     @Slot()
@@ -891,6 +895,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if args.fits:
             image = self.load_fits(self.filename)
             self.image = np.copy(image)
+            if self.image.shape[0] in [200,334]:
+                self.image *= 7000
             if scale_min is not None and scale_max is not None:
                 self.scale_min = scale_min
                 self.scale_max = scale_max
