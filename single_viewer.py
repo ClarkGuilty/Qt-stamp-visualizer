@@ -894,9 +894,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].cla()
         if args.fits:
             image = self.load_fits(self.filename)
+            scaling_factor = np.percentile(image,q=90)
+            if scaling_factor == 0:
+                scaling_factor = np.percentile(image,q=99)
+                scaling_factor = 1
+            image = image / scaling_factor*300 #Rescaling for better visualization.
             self.image = np.copy(image)
-            if self.image.shape[0] in [200,334]:
-                self.image *= 7000
+            # if self.image.shape[0] in [200,334]:
+            #     self.image *= 7000
             if scale_min is not None and scale_max is not None:
                 self.scale_min = scale_min
                 self.scale_max = scale_max
