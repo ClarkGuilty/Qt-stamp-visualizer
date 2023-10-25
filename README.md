@@ -5,7 +5,7 @@ This is a fork of [Visualisation-tool](https://github.com/esavary/Visualisation-
 Originally developed with single-band `.fits` files in mind, it can also be used with (mutichannel) `.png`, `.jpg` and `.jpeg` files, albeit with limited functionality.
 
 ## Features
-- Fast classification of thousand of images using the mosaic app.
+- Fast classification of thousands of images using the mosaic app.
 - Easy access to Legacy Survey stamps using the sequential app.
 - Nice visualization of single band astronomical images with different color maps and color scales.
 - Easy handling of many different classifications for the same dataset using the argument: `-N name_of_the_classification`.
@@ -21,16 +21,16 @@ python mosaic_viewer.py --p /path/to/the/files --N name_of_the_classification
 
 optional arguments:
 -h, --help                          show help message and exit
--l GRIDSIZE, --gridsize GRIDSIZE    Number of stamps per side of the mosaic
---printname, --no-printname         Whether to print the name when you click                               
+-l GRIDSIZE, --gridsize GRIDSIZE    Number of stamps per side on the mosaic
+--printname, --no-printname         Whether to print the filename when you click                               
                                     (default: False)
 --page PAGE                         Initial page
 --resize, --no-resize               Set to allow the resizing of the stamps 
-                                    with the window. (default: False)
+                                    with the window (default: False)
 --fits, --no-fits                   Specify whether the images to classify
-                                    are fits or png/jp(e)g. (default: True)
+                                    are fits or png/jp(e)g (default: True)
 ```
-- `left click` to mark a stamp as a (potential) gravitational lens.
+- `left click` to mark a stamp as a gravitational lens candidate.
 - `shift+left` click to mark a stamp as *interesting*.
 - `left click` on an already marked stamp to undo the classification.
 
@@ -50,7 +50,7 @@ optional arguments:
 ```
 - Toggle `Legacy Survey (LS)` to automatically display a Legacy Survey cutout of the same area.
 - Toggle `Large Fov` to display a Legacy Survey cutout covering of 4.5 arcmin².
-- Toggle `Residuals` to display a Legacy Survey cutout of residuals of the area.
+- Toggle `Residuals` to display a Legacy Survey cutout of the residuals of the area.
 - Toggle `Pre-fetch` to download in the background the Legacy Survey images of all the stamps to classify.
 - Toggle `Auto-next` to automatically show the next stamp after making a classification.
 - Toggle `Keyboard shortcuts` to activate the keyboard shortcuts:
@@ -64,7 +64,7 @@ optional arguments:
 |||`g`|Disc|
 |||`h`|Edge-on|
 
-
+Note that classifying an image as Merger, Spiral, Ring, Elliptical, Disc, or Edge-on will also classify them as **Grade X**.
 
 ## Installation
 
