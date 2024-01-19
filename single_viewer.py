@@ -30,7 +30,7 @@ import json
 from os.path import join
 
 import argparse
-
+import re
 
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect",
@@ -45,7 +45,8 @@ parser.add_argument('--fits',
                     help="Specify whether the images to classify are fits or png/jpeg.",
                     action=argparse.BooleanOptionalAction,
                     default=True)
-
+parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
+                    default=None)
 
 args = parser.parse_args()
 
@@ -67,6 +68,33 @@ def log(x):
 def asinh2(x):
     return np.arcsinh(x/2)
 
+
+def natural_sort(l): 
+    "https://stackoverflow.com/a/4836734"
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+    return sorted(l, key=alphanum_key)
+
+def find_filename_iteration(latest_filename, max_iterations = 100, initial_iteration = "-(1)"):
+    "Uses regex to find and add 1 to the number in parentheses right before the .csv"
+    re_pattern = re.compile('-\\(([^)]+)\\)')
+    re_search = re_pattern.search(latest_filename)
+    if re_search is None:
+        return initial_iteration
+    iterations = 0
+    while re_search.span()[-1] != len(latest_filename) and (iterations < max_iterations):
+        # print(re_search.span()[-1], len(latest_filename))
+        re_search = re_pattern.search(latest_filename, re_search.span()[-1])
+        if re_search is None:
+            return initial_iteration
+    if re_search.span()[-1] == len(latest_filename): #at this point, re_search cannot be None
+        re_match = re_search[1]
+    try:
+        int_match = int(re_match)
+    except:
+        return initial_iteration
+    
+    return f"-({int_match+1})"
 
 class SingleFetchWorker(QObject):
     successful_download = Signal()
@@ -194,6 +222,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.stampspath = args.path
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         # self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
+        self.random_seed = args.seed
+        self.name = args.name
+
         if args.fits:
             self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
@@ -203,6 +234,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                           glob.glob(join(self.stampspath, '*.jpg')) +
                                           glob.glob(join(self.stampspath, '*.jpeg'))
                                          )])
+
+        if self.random_seed is not None:
+            print("shuffling")
+            rng = np.random.default_rng(self.random_seed)
+            rng.shuffle(self.listimage) #inplace shuffling
+        
+
         self.df = self.obtain_df()
 
         self.number_graded = 0
@@ -605,6 +643,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
 #        print('updating '+'classification_autosave'+str(self.nf)+'.csv file')
+        # self.df.to_csv(self.df_name, index=False)
         self.df.to_csv(self.df_name)
 
         self.update_classification_buttoms()
@@ -928,7 +967,70 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].set_axis_off()
         self.canvas[canvas_id].draw()
 
+
     def obtain_df(self):
+        if self.random_seed is None:
+            base_filename = f'classification_single_{args.name}_{len(self.listimage)}'
+            string_to_glob = f'./Classifications/{base_filename}*.csv'
+            print("Globing for", string_to_glob)
+            # glob_results_0 = set(glob.glob(string_to_glob))
+            # glob_results_1 = set(glob.glob(f'./Classifications/{base_filename}_*.csv'))
+            glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(f'./Classifications/{base_filename}_*.csv'))
+        else:
+            base_filename = f'classification_single_{args.name}_{len(self.listimage)}_{self.random_seed}'
+            string_to_glob = f'./Classifications/{base_filename}*.csv'
+            print("Globing for", string_to_glob)
+            glob_results = glob.glob(string_to_glob)
+        
+        
+        file_iteration = ""
+        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.        print("Globing for", string_to_glob)
+        print(class_file)
+        if len(class_file) >= 1:
+            file_index = 0
+            if len(class_file) > 1:
+                file_index = -2
+            self.df_name = class_file[file_index]
+            print('Reading '+ self.df_name)
+            df = pd.read_csv(self.df_name)
+            keys_to_drop = []
+            for key in df.keys():
+                if "Unnamed:" in key:
+                    keys_to_drop.append(key)
+            df.drop(keys_to_drop,axis=1)
+            if np.all(self.listimage == df['file_name'].values):
+                return df
+            else:
+                print("Classification file corresponds to a different dataset.")
+                string_tested = os.path.basename(self.df_name).split(".csv")[0]
+                file_iteration = find_filename_iteration(string_tested)
+
+        self.dfc = ['file_name', 'classification', 'grid_pos','page']
+        self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
+
+        print('A new csv will be created', self.df_name)
+        if file_iteration != "":
+            print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
+
+        # self.df_name = './Classifications/classification_single_{}_{}_{}.csv'.format(
+        #                             args.name,len(self.listimage), self.random_seed)
+        # print('Creating dataframe', self.df_name)        
+        self.config_dict['counter'] = 0
+        dfc = ['file_name', 'classification', 'subclassification',
+                'ra','dec','comment','legacy_survey_data']
+        df = pd.DataFrame(columns=dfc)
+        df['file_name'] = self.listimage
+        df['classification'] = ['Empty'] * len(self.listimage)
+        df['subclassification'] = ['Empty'] * len(self.listimage)
+        df['ra'] = np.full(len(self.listimage),np.nan)
+        df['dec'] = np.full(len(self.listimage),np.nan)
+        df['comment'] = ['Empty'] * len(self.listimage)
+        df['legacy_survey_data'] = ['Empty'] * len(self.listimage)
+        return df
+
+
+
+    def obtain_df_old(self):
         string_to_glob = './Classifications/classification_single_{}_{}*.csv'.format(
                                     args.name,len(self.listimage))
         class_file = np.sort(glob.glob(string_to_glob))
@@ -936,7 +1038,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(class_file) >=1:
             self.df_name = class_file[len(class_file)-1]
             print('reading',self.df_name)
-            df = pd.read_csv(self.df_name,index_col=0)
+            df = pd.read_csv(self.df_name)
             if len(df) == len(self.listimage):
                 self.listimage = df['file_name'].values
                 return df
