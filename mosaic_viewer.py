@@ -97,7 +97,7 @@ def find_filename_iteration(latest_filename, max_iterations = 100, initial_itera
     except:
         return initial_iteration
     
-    return f"-({int_match+1})"
+    return "-({})".format(int_match+1)
     # print("heh")
     # print(latest_filename)
     # print(re_search)
@@ -344,7 +344,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.setWindowTitle("Mosaic Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
-        self.random_seed = args.seed
+        self.random_seed = args.seed            
         self.stampspath = path_to_the_stamps
         self.scratchpath = './.temp'
         self.deactivated_path = './dark.png'
@@ -361,12 +361,16 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                          )])
 
         if self.random_seed is not None:
-            print("shuffling")
-            rng = np.random.default_rng(self.random_seed)
+            # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
+            # 128 bits, proton decay might be more likely than someone *randomly* using this number.
+            # Please, do not use this number as seed.
+            seed_to_use = 120552782132343758881253061212639178445 if self.random_seed == 99 else self.random_seed
+            # print("shuffling")
+            rng = np.random.default_rng(seed_to_use)
             rng.shuffle(self.listimage) #inplace shuffling
         
         if len(self.listimage) == 0:
-            print(f"WARNING: no images found in {self.stampspath}")
+            print("WARNING: no images found in {}".format(self.stampspath))
         # print(join(self.stampspath, '*.fits'))
         # print(glob.glob(self.stampspath + '*.fits'))
         self.gridsize = args.gridsize
@@ -641,13 +645,23 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             return self.defaults
 
     def obtain_df(self):
-        string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
-                                    args.name,len(self.listimage),self.gridsize, str(self.random_seed))
-        # class_file = np.sort(glob.glob(
-        #     string_to_glob))
-        class_file = np.array(natural_sort(glob.glob(
-            string_to_glob))) #better to use natural sort.
-        print("Globing for", string_to_glob)
+        if self.random_seed is None:
+            base_filename = 'classification_mosaic_autosave_{}_{}_{}_99'.format(
+                                    args.name,len(self.listimage),self.gridsize)
+            string_to_glob = './Classifications/{}*.csv'.format(base_filename)
+            print("Globing for", string_to_glob)
+            string_to_glob_for_files_with_seed = './Classifications/{}_*.csv'.format(base_filename)
+            glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
+        else:
+            base_filename = base_filename = 'classification_mosaic_autosave_{}_{}_{}_{}'.format(
+                                    args.name,len(self.listimage),self.gridsize,self.random_seed)
+            string_to_glob = './Classifications/{}*.csv'.format(base_filename)
+            glob_results = glob.glob(string_to_glob)
+
+        # string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
+        #                             args.name,len(self.listimage),self.gridsize, str(self.random_seed))
+        class_file = natural_sort(glob.glob(
+            string_to_glob)) #better to use natural sort.
         file_iteration = ""
         if len(class_file) >= 1:
             file_index = 0
@@ -664,9 +678,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 file_iteration = find_filename_iteration(string_tested)
         
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
-        self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}{}.csv'.format(
-                                    args.name,len(self.listimage),self.gridsize,str(self.random_seed),
-                                    file_iteration)
+        # self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}{}.csv'.format(
+        #                             args.name,len(self.listimage),self.gridsize,str(self.random_seed),
+        #                             file_iteration)
+        self.df_name = './Classifications/{}{}.csv'.format(base_filename,file_iteration)
         print('A new csv will be created', self.df_name)
         if file_iteration != "":
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
@@ -741,7 +756,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             original_filepath = join(self.stampspath, self.listimage[i])
                             shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
                         except:
-                            print(f'file not found: {original_filepath}' )
+                            print('file not found: {}'.format(original_filepath) )
                     else:
                         image = np.zeros((66, 66))# * 0.0000001
                         plt.imsave(self.filepath(i, self.config_dict['page']),

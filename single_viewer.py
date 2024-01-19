@@ -236,7 +236,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                          )])
 
         if self.random_seed is not None:
-            print("shuffling")
+            # print("shuffling")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
         
@@ -972,20 +972,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.random_seed is None:
             base_filename = f'classification_single_{args.name}_{len(self.listimage)}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
-            print("Globing for", string_to_glob)
-            # glob_results_0 = set(glob.glob(string_to_glob))
-            # glob_results_1 = set(glob.glob(f'./Classifications/{base_filename}_*.csv'))
-            glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(f'./Classifications/{base_filename}_*.csv'))
+            # print("Globing for", string_to_glob)
+            string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
+            glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
         else:
             base_filename = f'classification_single_{args.name}_{len(self.listimage)}_{self.random_seed}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
-            print("Globing for", string_to_glob)
             glob_results = glob.glob(string_to_glob)
         
-        
         file_iteration = ""
-        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.        print("Globing for", string_to_glob)
-        print(class_file)
+        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
+        # print(class_file)
         if len(class_file) >= 1:
             file_index = 0
             if len(class_file) > 1:
@@ -1007,14 +1004,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
-
         print('A new csv will be created', self.df_name)
         if file_iteration != "":
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
-
         # self.df_name = './Classifications/classification_single_{}_{}_{}.csv'.format(
         #                             args.name,len(self.listimage), self.random_seed)
-        # print('Creating dataframe', self.df_name)        
+        self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
         self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification', 'subclassification',
                 'ra','dec','comment','legacy_survey_data']
@@ -1027,8 +1022,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['comment'] = ['Empty'] * len(self.listimage)
         df['legacy_survey_data'] = ['Empty'] * len(self.listimage)
         return df
-
-
 
     def obtain_df_old(self):
         string_to_glob = './Classifications/classification_single_{}_{}*.csv'.format(
