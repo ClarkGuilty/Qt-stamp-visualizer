@@ -1,9 +1,6 @@
 # This Python file uses the following encoding: utf-8
-import sys
-#from PySide6.QtWidgets import QApplication, QWidget, QPushButton
-import PySide6
+import argparse
 
-#import time
 import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
@@ -13,13 +10,11 @@ import pandas as pd
 import subprocess
 from PIL import Image
 
-import argparse
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent
 from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
 
-# from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib import image as mpimg
 import matplotlib.pyplot as plt
@@ -33,6 +28,8 @@ import shutil
 import webbrowser
 import json
 from os.path import join
+import re
+import sys
 
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect",
@@ -41,7 +38,7 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default="")
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
-parser.add_argument("--seed", help="Seed used to shuffle the images.",type=int,
+parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
 parser.add_argument("--printname", help="Whether to print the name when you click",
                     action=argparse.BooleanOptionalAction,
@@ -68,22 +65,28 @@ def identity(x):
     return x
 
 def log(x):
+    "Simple log base 1000 function that ignores numbers less than 0"
     # return np.emath.logn(1000,x) #base 1000 like ds9
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
 
 def asinh2(x):
     return np.arcsinh(x/2)
 
+def natural_sort(l): 
+    "https://stackoverflow.com/a/4836734"
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+    return sorted(l, key=alphanum_key)
+
 def find_filename_iteration(latest_filename, max_iterations = 100, initial_iteration = "-(1)"):
     "Uses regex to find and add 1 to the number in parentheses right before the .csv"
-    import re
     re_pattern = re.compile('-\\(([^)]+)\\)')
     re_search = re_pattern.search(latest_filename)
     if re_search is None:
         return initial_iteration
     iterations = 0
     while re_search.span()[-1] != len(latest_filename) and (iterations < max_iterations):
-        print(re_search.span()[-1], len(latest_filename))
+        # print(re_search.span()[-1], len(latest_filename))
         re_search = re_pattern.search(latest_filename, re_search.span()[-1])
         if re_search is None:
             return initial_iteration
@@ -102,7 +105,6 @@ def find_filename_iteration(latest_filename, max_iterations = 100, initial_itera
     # print(int_match)
     # print(file_iteration)
     # print("heh")
-    return file_iteration
 
 
 class LabelledIntField(QtWidgets.QWidget):
@@ -343,7 +345,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
         self.random_seed = args.seed
-
         self.stampspath = path_to_the_stamps
         self.scratchpath = './.temp'
         self.deactivated_path = './dark.png'
@@ -358,6 +359,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                           glob.glob(join(self.stampspath, '*.jpg')) +
                                           glob.glob(join(self.stampspath, '*.jpeg'))
                                          )])
+
+        if self.random_seed is not None:
+            print("shuffling")
+            rng = np.random.default_rng(self.random_seed)
+            rng.shuffle(self.listimage) #inplace shuffling
+        
         if len(self.listimage) == 0:
             print(f"WARNING: no images found in {self.stampspath}")
         # print(join(self.stampspath, '*.fits'))
@@ -636,39 +643,33 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def obtain_df(self):
         string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
                                     args.name,len(self.listimage),self.gridsize, str(self.random_seed))
-        class_file = np.sort(glob.glob(
-            string_to_glob))
+        # class_file = np.sort(glob.glob(
+        #     string_to_glob))
+        class_file = np.array(natural_sort(glob.glob(
+            string_to_glob))) #better to use natural sort.
         print("Globing for", string_to_glob)
         file_iteration = ""
-        # print(class_file, len(class_file))
         if len(class_file) >= 1:
-            print(class_file)
-            # print('Reading '+str(class_file[len(class_file)-1]))
-            # self.df_name = class_file[len(class_file) - 1]
             file_index = 0
             if len(class_file) > 1:
                 file_index = -2
             self.df_name = class_file[file_index]
             print('Reading '+ self.df_name)
             df = pd.read_csv(self.df_name)
-#            if len(self.listimage) == len(df):
             if np.all(self.listimage == df['file_name'].values):
-                # print("saved classification has the same number of rows as there are images.")
-                # self.listimage = df['file_name'].values
                 return df
             else:
-
-                # print("The number of rows in the csv and the number of images must be equal.")
                 print("Classification file corresponds to a different dataset.")
-                print("Use the argument `-N name` and give different names to different datasets to avoid this in the future.")
-                # print("WARNING: THIS WILL OVERDRIVE {string_to_glob}")
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
                 file_iteration = find_filename_iteration(string_tested)
+        
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}{}.csv'.format(
                                     args.name,len(self.listimage),self.gridsize,str(self.random_seed),
                                     file_iteration)
         print('A new csv will be created', self.df_name)
+        if file_iteration != "":
+            print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
         df['classification'] = np.zeros(np.shape(self.listimage))
