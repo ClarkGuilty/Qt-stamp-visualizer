@@ -17,13 +17,15 @@ Originally developed with single-band `.fits` files in mind, it can also be used
 ## Usage
 ### Mosaic app
 ```
-python mosaic_viewer.py --p /path/to/the/files --N name_of_the_classification 
+python mosaic_viewer.py --p /path/to/the/files --N name_of_the_classification -s seed
 
 optional arguments:
 -h, --help                          show help message and exit
 -l GRIDSIZE, --gridsize GRIDSIZE    Number of stamps per side on the mosaic
---printname, --no-printname         Whether to print the filename when you click                               
-                                    (default: False)
+-s SEED, --seed SEED                Seed used to shuffle the images, must 
+                                    be a positive integer.
+--printname, --no-printname         Whether to print the filename when you                               
+                                    click (default: False)
 --page PAGE                         Initial page
 --resize, --no-resize               Set to allow the resizing of the stamps 
                                     with the window (default: False)
@@ -47,6 +49,8 @@ optional arguments:
 --clean               Cleans the legacy survey folder.
 --fits, --no-fits     Specify whether the images to classify are fits or png/
                       jpeg. (default: True)
+-s SEED, --seed SEED  Seed used to shuffle the images.
+
 ```
 - Toggle `Legacy Survey (LS)` to automatically display a Legacy Survey cutout of the same area.
 - Toggle `Large Fov` to display a Legacy Survey cutout covering of 4.5 arcmin².
