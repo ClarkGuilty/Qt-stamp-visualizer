@@ -884,26 +884,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         cut2 = image[0:cb, yg - cb:yg]
         cut3 = image[xg - cb:xg, yg - cb:yg]
         l = [cut0, cut1, cut2, cut3]
-        m = np.mean(np.mean(l, axis=1), axis=1)
+        m = np.nanmean(np.nanmean(l, axis=1), axis=1)
         ml = min(m)
         mm = max(m)
+        if ml is np.nan or mm is np.nan:
+            print(f"WARNING: {ml = }, {mm = }")
         if mm > 5 * ml:
             s = np.sort(l, axis=0)
             nl = s[:-1]
-            std = np.std(nl)
+            std = np.nanstd(nl)
         else:
-            std = np.std([cut0, cut1, cut2, cut3])
+            std = np.nanstd([cut0, cut1, cut2, cut3])
         return std
 
     def scale_val(self,image_array):
         if len(np.shape(image_array)) == 2:
             image_array = [image_array]
-        vmin = np.min([self.background_rms_image(5, image_array[i]) for i in range(len(image_array))])
+        vmin = np.nanmin([self.background_rms_image(5, image_array[i]) for i in range(len(image_array))])
         xl, yl = np.shape(image_array[0])
         box_size = 14  # in pixel
         xmin = int((xl) / 2. - (box_size / 2.))
         xmax = int((xl) / 2. + (box_size / 2.))
-        vmax = np.max([image_array[i][xmin:xmax, xmin:xmax] for i in range(len(image_array))])
+        vmax = np.nanmax([image_array[i][xmin:xmax, xmin:xmax] for i in range(len(image_array))])
         return vmin, vmax*1.3
 
     def rescale_image(self, image):
@@ -933,14 +935,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[canvas_id].cla()
         if args.fits:
             image = self.load_fits(self.filename)
-            scaling_factor = np.percentile(image,q=90)
+            scaling_factor = np.nanpercentile(image,q=90)
             if scaling_factor == 0:
-                scaling_factor = np.percentile(image,q=99)
+                # scaling_factor = np.nanpercentile(image,q=99)
                 scaling_factor = 1
             image = image / scaling_factor*300 #Rescaling for better visualization.
             self.image = np.copy(image)
-            # if self.image.shape[0] in [200,334]:
-            #     self.image *= 7000
             if scale_min is not None and scale_max is not None:
                 self.scale_min = scale_min
                 self.scale_max = scale_max
