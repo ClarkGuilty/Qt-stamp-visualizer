@@ -734,20 +734,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 if args.fits:
                     try:
                         image = self.read_fits(i)
-                        scaling_factor = np.percentile(image,q=90)
+                        scaling_factor = np.nanpercentile(image,q=90)
                         if scaling_factor == 0:
-                            scaling_factor = np.percentile(image,q=99)
+                            # scaling_factor = np.nanpercentile(image,q=99)
                             scaling_factor = 1
                         image = image / scaling_factor*300 #Rescaling for better visualization.
-                        # if image.shape[0] in [200,334]: #Special casen for HST/HSC COSMOS stamps
-                            # image -= np.min(image) 
-                            # image *= 7000 #TODO Set all the magnitudes to CFIS's
                         scale_min, scale_max = self.scale_val(image)
+                        print(f"{scale_min = }, {scale_max = }")
                         image = self.rescale_image(image, scale_min, scale_max)
                         plt.imsave(self.filepath(i, self.config_dict['page']),
                                 image, cmap=self.config_dict['colormap'], origin="lower")
-                    except:
+                    except Exception as E:
+                        # raise
                         image = np.zeros((66, 66))# * 0.0000001
+                        print(self.filepath(i, self.config_dict['page']))
                         plt.imsave(self.filepath(i, self.config_dict['page']),
                             image, cmap=self.config_dict['colormap'], origin="lower")
                 else:
@@ -756,7 +756,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             original_filepath = join(self.stampspath, self.listimage[i])
                             shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
                         except:
-                            print('file not found: {}'.format(original_filepath) )
+                            print('file not found: {}'.format(original_filepath))
                     else:
                         image = np.zeros((66, 66))# * 0.0000001
                         plt.imsave(self.filepath(i, self.config_dict['page']),
@@ -779,6 +779,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)#+2e-16)
         # factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
         #          self.scale2funct[self.config_dict['scale']](scale_min))
+        print(f"{factor = }")
         image = image.clip(min=scale_min, max=scale_max)
 
         #I'm gonna go with this one since it solves the bright noise problem and seems to not hurt anything else.
@@ -790,7 +791,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # image[indices1] = np.abs(self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0))
         image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0)
         # image[indices1] /= image[indices1].max()
-        
         return image
 
     def scale_val(self, image_array):
@@ -801,29 +801,26 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         else:
             box_size_vmin = 5
             box_size_vmax = 14
-        vmin = np.min(self.background_rms_image(box_size_vmin, image_array))
+        vmin = np.nanmin(self.background_rms_image(box_size_vmin, image_array))
         # print(f'{self.background_rms_image(box_size_vmin, image_array) = }')
         if vmin == 0:
             vmin += 1e-3              
-        
         
         xl, yl = np.shape(image_array)
         xmin = int((xl) / 2. - (box_size_vmax / 2.))
         xmax = int((xl) / 2. + (box_size_vmax / 2.))
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
-        vmax = np.max(image_array[xmin:xmax, ymin:ymax])
+        vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
         # print(vmin,vmax)
         # return max(0,vmin), vmax*1.5
         # print(vmin, vmax*1.5)
-        return vmin, vmax*1.5
-        
-
+        return vmin, vmax*1.3
 
     def scale_val_percentile(self,image_array,p_min=0.1,p_max=99.9):
         # image_to_plot = np.clip(image_array,np.percentile(p_min),np.percentile(p_max))
         # print(np.percentile(image_array,p_min),np.percentile(image_array,p_max))
-        return np.percentile(image_array,p_min),np.percentile(image_array,p_max)
+        return np.nanpercentile(image_array,p_min),np.nanpercentile(image_array,p_max)
 
     def background_rms_image(self, cb, image):
         xg, yg = np.shape(image)
@@ -833,15 +830,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         cut3 = image[xg - cb:xg, yg - cb:yg]
         l = [cut0, cut1, cut2, cut3]
         # m = np.mean(np.mean(l, axis=1), axis=1)
-        m = np.mean(np.mean(l, axis=1), axis=1)
+        m = np.nanmean(np.nanmean(l, axis=1), axis=1)
         ml = min(m)
         mm = max(m)
         if mm > 5 * ml:
             s = np.sort(l, axis=0)
             nl = s[:-1]
-            std = np.std(nl)
+            std = np.nanstd(nl)
         else:
-            std = np.std([cut0, cut1, cut2, cut3])
+            std = np.nanstd([cut0, cut1, cut2, cut3])
         return std
 
 
