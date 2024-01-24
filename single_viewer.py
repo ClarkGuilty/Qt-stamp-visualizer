@@ -898,15 +898,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return std
 
     def scale_val(self,image_array):
+        if image_array.shape[0] > 170:
+            box_size_vmin = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
+            box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
+        else:
+            #Sensible default values
+            box_size_vmin = 5
+            box_size_vmax = 14
+
         if len(np.shape(image_array)) == 2:
             image_array = [image_array]
-        vmin = np.nanmin([self.background_rms_image(5, image_array[i]) for i in range(len(image_array))])
+        vmin = np.nanmin([self.background_rms_image(box_size_vmin, image_array[i]) for i in range(len(image_array))])
+        
         xl, yl = np.shape(image_array[0])
-        box_size = 14  # in pixel
-        xmin = int((xl) / 2. - (box_size / 2.))
-        xmax = int((xl) / 2. + (box_size / 2.))
-        vmax = np.nanmax([image_array[i][xmin:xmax, xmin:xmax] for i in range(len(image_array))])
-        return vmin, vmax*1.3
+        xmin = int((xl) / 2. - (box_size_vmax / 2.))
+        xmax = int((xl) / 2. + (box_size_vmax / 2.))
+        ymin = int((yl) / 2. - (box_size_vmax / 2.))
+        ymax = int((yl) / 2. + (box_size_vmax / 2.))
+        vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
+
+        vmax = np.nanmax([image_array[i][xmin:xmax, ymin:ymax] for i in range(len(image_array))])
+        return vmin*1.5, vmax*1.3 #vmin is 1 sigma. I put 1.5 to remove most background noise (85%).
 
     def rescale_image(self, image):
             factor = self.scale(self.scale_max - self.scale_min)

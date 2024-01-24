@@ -730,37 +730,39 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def prepare_png(self, number):
             "Generates the png files from the fits."
             start = self.config_dict['page']*self.gridarea
-            for i in np.arange(start, start + number + 1):
-                if args.fits:
-                    try:
-                        image = self.read_fits(i)
-                        scaling_factor = np.nanpercentile(image,q=90)
-                        if scaling_factor == 0:
-                            # scaling_factor = np.nanpercentile(image,q=99)
-                            scaling_factor = 1
-                        image = image / scaling_factor*300 #Rescaling for better visualization.
-                        scale_min, scale_max = self.scale_val(image)
-                        print(f"{scale_min = }, {scale_max = }")
-                        image = self.rescale_image(image, scale_min, scale_max)
-                        plt.imsave(self.filepath(i, self.config_dict['page']),
-                                image, cmap=self.config_dict['colormap'], origin="lower")
-                    except Exception as E:
-                        # raise
-                        image = np.zeros((66, 66))# * 0.0000001
-                        print(self.filepath(i, self.config_dict['page']))
-                        plt.imsave(self.filepath(i, self.config_dict['page']),
-                            image, cmap=self.config_dict['colormap'], origin="lower")
-                else:
-                    if i < len(self.listimage):
+            for i in np.arange(start, start + number + 0): 
+                if i < len(self.listimage):
+                    if args.fits:
                         try:
-                            original_filepath = join(self.stampspath, self.listimage[i])
-                            shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
-                        except:
-                            print('file not found: {}'.format(original_filepath))
+                            image = self.read_fits(i)
+                            scaling_factor = np.nanpercentile(image,q=90)
+                            if scaling_factor == 0:
+                                # scaling_factor = np.nanpercentile(image,q=99)
+                                scaling_factor = 1
+                            image = image / scaling_factor * 300 #Rescaling for better visualization.
+                            scale_min, scale_max = self.scale_val(image)
+                            image = self.rescale_image(image, scale_min, scale_max)
+                            image[np.isnan(image)] = np.nanmin(image)
+                            
+                            plt.imsave(self.filepath(i, self.config_dict['page']),
+                                    image, cmap=self.config_dict['colormap'], origin="lower")
+                        except Exception as E:
+                            # raise
+                            print(f"WARNING: exception saving file {E}")
+                            image = np.zeros((66, 66))# * 0.0000001
+                            plt.imsave(self.filepath(i, self.config_dict['page']),
+                                image, cmap=self.config_dict['colormap'], origin="lower")
                     else:
-                        image = np.zeros((66, 66))# * 0.0000001
-                        plt.imsave(self.filepath(i, self.config_dict['page']),
-                            image, cmap=self.config_dict['colormap'], origin="lower")
+                        if i < len(self.listimage):
+                            try:
+                                original_filepath = join(self.stampspath, self.listimage[i])
+                                shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
+                            except:
+                                print('file not found: {}'.format(original_filepath))
+                else:
+                    image = np.zeros((66, 66))# * 0.0000001
+                    plt.imsave(self.filepath(i, self.config_dict['page']),
+                        image, cmap=self.config_dict['colormap'], origin="lower")
                 
 
     def clean_dir(self, path_dir):
@@ -779,7 +781,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)#+2e-16)
         # factor = (self.scale2funct[self.config_dict['scale']](scale_max) -
         #          self.scale2funct[self.config_dict['scale']](scale_min))
-        print(f"{factor = }")
         image = image.clip(min=scale_min, max=scale_max)
 
         #I'm gonna go with this one since it solves the bright noise problem and seems to not hurt anything else.
@@ -794,15 +795,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return image
 
     def scale_val(self, image_array):
-        
-        if image_array.shape[0] > 100:
+        if image_array.shape[0] > 173:
             box_size_vmin = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
             box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
         else:
             box_size_vmin = 5
             box_size_vmax = 14
         vmin = np.nanmin(self.background_rms_image(box_size_vmin, image_array))
-        # print(f'{self.background_rms_image(box_size_vmin, image_array) = }')
         if vmin == 0:
             vmin += 1e-3              
         
@@ -812,10 +811,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
         vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
-        # print(vmin,vmax)
-        # return max(0,vmin), vmax*1.5
-        # print(vmin, vmax*1.5)
-        return vmin, vmax*1.3
+        return vmin*1.7, vmax*1.3 #vmin is 1 sigma. I put 1.7 to remove most background noise (91%).
 
     def scale_val_percentile(self,image_array,p_min=0.1,p_max=99.9):
         # image_to_plot = np.clip(image_array,np.percentile(p_min),np.percentile(p_max))
@@ -829,7 +825,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         cut2 = image[0:cb, yg - cb:yg]
         cut3 = image[xg - cb:xg, yg - cb:yg]
         l = [cut0, cut1, cut2, cut3]
-        # m = np.mean(np.mean(l, axis=1), axis=1)
         m = np.nanmean(np.nanmean(l, axis=1), axis=1)
         ml = min(m)
         mm = max(m)
