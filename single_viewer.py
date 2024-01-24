@@ -910,6 +910,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def rescale_image(self, image):
             factor = self.scale(self.scale_max - self.scale_min)
+            print(f"{factor = }")
             image = image.clip(min=self.scale_min, max=self.scale_max)
             #image = (image - self.scale_min) / factor
             indices0 = np.where(image < self.scale_min)
@@ -946,6 +947,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.scale_max = scale_max
             else:
                 self.scale_min, self.scale_max = self.scale_val(image)
+                print(f"{self.scale_min = } {self.scale_max = }")
             image = self.rescale_image(image)
             self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
