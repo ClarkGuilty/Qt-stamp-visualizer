@@ -53,6 +53,10 @@ parser.add_argument('--fits',
                     help="Specify whether the images to classify are fits or png/jpeg.",
                     action=argparse.BooleanOptionalAction,
                     default=True)
+# parser.add_argument('--crop',
+#                     help="Lenth of the side of the cropped cutout in arcsec. Defaults to the whole frame",
+#                     type=float,
+#                     default=None)
 
 
 args = parser.parse_args()
@@ -440,6 +444,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         line_edit = self.cbscale.lineEdit()
         # self.cbscale.addItems(['linear','sqrt','' 'log', 'asinh'])
         self.cbscale.addItems(self.scale2funct.keys())
+        self.cbscale.setCurrentIndex(list(self.scale2funct.keys()).index(self.config_dict['scale']))
         self.cbscale.setStyleSheet('background-color: gray')
         self.cbscale.currentIndexChanged.connect(self.change_scale)
 
@@ -811,7 +816,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
         vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
-        return vmin*1.7, vmax*1.3 #vmin is 1 sigma. I put 1.7 to remove most background noise (91%).
+        return vmin*1.5, vmax*1.3 #vmin is 1 sigma. I put 1.7 to remove most background noise (91%).
 
     def scale_val_percentile(self,image_array,p_min=0.1,p_max=99.9):
         # image_to_plot = np.clip(image_array,np.percentile(p_min),np.percentile(p_max))
@@ -835,8 +840,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         else:
             std = np.nanstd([cut0, cut1, cut2, cut3])
         return std
-
-
 
 
 if __name__ == "__main__":
