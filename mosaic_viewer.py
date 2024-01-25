@@ -100,16 +100,7 @@ def find_filename_iteration(latest_filename, max_iterations = 100, initial_itera
         int_match = int(re_match)
     except:
         return initial_iteration
-    
     return "-({})".format(int_match+1)
-    # print("heh")
-    # print(latest_filename)
-    # print(re_search)
-    # print(re_match)
-    # print(int_match)
-    # print(file_iteration)
-    # print("heh")
-
 
 class LabelledIntField(QtWidgets.QWidget):
     "Widget for the page number."
@@ -367,7 +358,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
             # 128 bits, proton decay might be more likely than someone *randomly* using this number.
-            # Please, do not use this number as seed.
+            # Please, do not use this number as your seed.
             seed_to_use = 120552782132343758881253061212639178445 if self.random_seed == 99 else self.random_seed
             # print("shuffling")
             rng = np.random.default_rng(seed_to_use)
@@ -498,7 +489,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         page_counter_layout.addWidget(self.bclickcounter)
         page_counter_layout.addWidget(self.bcounter)
 
-
         self.total_n_frame = int(len(self.listimage)/(self.gridsize**2))
         start = self.config_dict['page']*self.gridarea
         # print("Page: ",self.config_dict['page'])
@@ -524,8 +514,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.buttons.append(button)
             button.setAlignment(Qt.AlignCenter)
             # button.adjustSize()
-
-#
 
     @Slot()
     def goto(self):
@@ -576,27 +564,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.config_dict['colormap'] = self.cbcolormap.currentText()
         self.update_grid()
         self.save_dict()
-
-    # def my_label_clicked(self, event, i):
-    #     button = event.button()
-    #     modifiers = event.modifiers()
-    #     print(f'official mod {modifiers}')
-    #     print(Qt.NoModifier)
-    #     print(modifiers == Qt.NoModifier)
-    #     if modifiers == Qt.NoModifier and button == Qt.LeftButton:
-    #         if self.config_dict['page']*self.gridarea+i > len(self.listimage):
-    #             print('Not an image')
-    #         else:
-    #             self.df.iloc[self.gridarea*self.config_dict['page']+i,
-    #                         self.df.columns.get_loc('grid_pos')] = i+1
-    #             print(self.df.iloc[self.gridarea*self.config_dict['page']+i,
-    #                         self.df.columns.get_loc('file_name')]) if args.printname else True
-    #             self.df.iloc[self.gridarea*self.config_dict['page']+i,
-    #                         self.df.columns.get_loc('classification')] = int(self.buttons[i].is_a_candidate)
-
-    #             self.bclickcounter.setText(self.df['classification'].sum().astype(int))
-    #             self.df.to_csv(
-    #                 self.df_name, index=False)
 
     def my_label_clicked(self, event, i, new_class):
         button = event.button()
@@ -701,7 +668,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         start = self.config_dict['page']*self.gridarea
         n_images = self.gridarea
         self.prepare_png(n_images)
-
         i = start
         j = 0
         for button in self.buttons:
@@ -816,7 +782,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
         vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
-        return vmin*1.5, vmax*1.3 #vmin is 1 sigma. I put 1.7 to remove most background noise (91%).
+        return vmin*1.0, vmax*1.3 #vmin is 1 sigma.
 
     def scale_val_percentile(self,image_array,p_min=0.1,p_max=99.9):
         # image_to_plot = np.clip(image_array,np.percentile(p_min),np.percentile(p_max))
