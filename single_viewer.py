@@ -915,14 +915,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         xmax = int((xl) / 2. + (box_size_vmax / 2.))
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
-        vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
-
         vmax = np.nanmax([image_array[i][xmin:xmax, ymin:ymax] for i in range(len(image_array))])
-        return vmin*1.5, vmax*1.3 #vmin is 1 sigma. I put 1.5 to remove most background noise (85%).
+        return vmin*1.0, vmax*1.3 #vmin is 1 sigma of noise.
 
     def rescale_image(self, image):
             factor = self.scale(self.scale_max - self.scale_min)
-            print(f"{factor = }")
             image = image.clip(min=self.scale_min, max=self.scale_max)
             #image = (image - self.scale_min) / factor
             indices0 = np.where(image < self.scale_min)
@@ -959,7 +956,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.scale_max = scale_max
             else:
                 self.scale_min, self.scale_max = self.scale_val(image)
-                print(f"{self.scale_min = } {self.scale_max = }")
+                # print(f"{self.scale_min = } {self.scale_max = }")
             image = self.rescale_image(image)
             self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
