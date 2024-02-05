@@ -258,6 +258,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.filetype='COMPRESSED'
 
 
+        if len(self.listimage) < 1:
+            sys.exit()
+        if self.config_dict['counter'] > len(self.listimage):
+            self.config_dict['counter'] = 0
+
         if self.random_seed is not None:
             # print("shuffling")
             rng = np.random.default_rng(self.random_seed)
@@ -980,7 +985,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         
         file_iteration = ""
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
-        # print(class_file)
+        print(class_file)
         if len(class_file) >= 1:
             file_index = 0
             if len(class_file) > 1:
@@ -998,47 +1003,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             else:
                 print("Classification file corresponds to a different dataset.")
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
-                file_iteration = find_filename_iteration(string_tested)
+                file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
+
 
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
         print('A new csv will be created', self.df_name)
         if file_iteration != "":
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
-        # self.df_name = './Classifications/classification_single_{}_{}_{}.csv'.format(
-        #                             args.name,len(self.listimage), self.random_seed)
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
-        self.config_dict['counter'] = 0
-        dfc = ['file_name', 'classification', 'subclassification',
-                'ra','dec','comment','legacy_survey_data']
-        df = pd.DataFrame(columns=dfc)
-        df['file_name'] = self.listimage
-        df['classification'] = ['Empty'] * len(self.listimage)
-        df['subclassification'] = ['Empty'] * len(self.listimage)
-        df['ra'] = np.full(len(self.listimage),np.nan)
-        df['dec'] = np.full(len(self.listimage),np.nan)
-        df['comment'] = ['Empty'] * len(self.listimage)
-        df['legacy_survey_data'] = ['Empty'] * len(self.listimage)
-        return df
-
-    def obtain_df_old(self):
-        string_to_glob = './Classifications/classification_single_{}_{}*.csv'.format(
-                                    args.name,len(self.listimage))
-        class_file = np.sort(glob.glob(string_to_glob))
-        print("Globing for", string_to_glob)
-        if len(class_file) >=1:
-            self.df_name = class_file[len(class_file)-1]
-            print('reading',self.df_name)
-            df = pd.read_csv(self.df_name)
-            if len(df) == len(self.listimage):
-                self.listimage = df['file_name'].values
-                return df
-            else:
-                print("The number of rows in the csv and the number of images must be equal.")
-
-        self.df_name = './Classifications/classification_single_{}_{}.csv'.format(
-                                    args.name,len(self.listimage))
-        print('Creating dataframe', self.df_name)        
         self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification', 'subclassification',
                 'ra','dec','comment','legacy_survey_data']

@@ -537,8 +537,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             button.setAlignment(Qt.AlignCenter)
             # button.adjustSize()
 
-        self.cbscale.setEnabled(False)
-        self.cbcolormap.setEnabled(False)
+        if self.filetype != 'FITS':
+            self.cbscale.setEnabled(False)
+            self.cbcolormap.setEnabled(False)
         
 
     @Slot()
@@ -673,12 +674,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             else:
                 print("Classification file corresponds to a different dataset.")
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
-                file_iteration = find_filename_iteration(string_tested)
+                # file_iteration = find_filename_iteration(string_tested)
+                file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
+
         
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
-        # self.df_name = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}{}.csv'.format(
-        #                             args.name,len(self.listimage),self.gridsize,str(self.random_seed),
-        #                             file_iteration)
         self.df_name = './Classifications/{}{}.csv'.format(base_filename,file_iteration)
         print('A new csv will be created', self.df_name)
         if file_iteration != "":
