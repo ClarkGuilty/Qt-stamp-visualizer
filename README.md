@@ -26,7 +26,7 @@ optional arguments:
 -s SEED, --seed SEED                Seed used to shuffle the images, must 
                                     be a positive integer. (default: None).
 --printname, --no-printname         Whether to print the filename when you                               
-                                    click. (default: False)
+                                    click. (default: False).
 --page PAGE                         Initial page.
 --resize, --no-resize               Set to allow the resizing of the stamps
                                     with the window. (default: False).
@@ -48,16 +48,16 @@ python single_viewer.py --p /path/to/the/files --N name_of_the_classification
 
 optional arguments:
 
--h, --help            Show this help message and exit
--p PATH, --path PATH  Path to the images to inspect (default: Stamps_to_inspect)
+-h, --help            Show this help message and exit.
+-p PATH, --path PATH  Path to the images to inspect. (default: Stamps_to_inspect).
 -N NAME, --name NAME  Name of the classifying session.
 --reset-config        Removes the configuration dictionary during startup.
---verbose             Activates loging to terminal (default: False)
+--verbose             Activates loging to terminal. (default: False).
 --clean               Cleans the legacy survey folder.
 --fits, --no-fits     Forces app to only use fits (--fits) or png/jp(e)g (--no-fits).
                       If unset, the app searches for fits files in the path, but defaults
-                      to png/jp(e)g if no fits files are found. (default: None)
--s SEED, --seed SEED  Seed used to shuffle the images. (default: None)
+                      to png/jp(e)g if no fits files are found. (default: None).
+-s SEED, --seed SEED  Seed used to shuffle the images. (default: None).
 
 ```
 - Toggle `Legacy Survey (LS)` to automatically display a Legacy Survey cutout of the same area.
