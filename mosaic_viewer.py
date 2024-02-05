@@ -52,7 +52,7 @@ parser.add_argument('--resize',
 parser.add_argument('--fits',
                     help="Specify whether the images to classify are fits or png/jpeg.",
                     action=argparse.BooleanOptionalAction,
-                    default=True)
+                    default=None)
 # parser.add_argument('--crop',
 #                     help="Lenth of the side of the cropped cutout in arcsec. Defaults to the whole frame",
 #                     type=float,
@@ -345,15 +345,38 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_dir(self.scratchpath)
-        if args.fits:
+        if args.fits is None:
+            print("No filetype was specified, defaulting to .fits")
             self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
+            self.filetype='FITS'
+            if len(self.listimage) == 0:
+                print("No fits files were found, trying with .png, .jpg, and .jpeg")
+                self.listimage = sorted([os.path.basename(x)
+                                for x in (glob.glob(join(self.stampspath, '*.png')) +
+                                          glob.glob(join(self.stampspath, '*.jpg')) +
+                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                         )])
+                self.filetype='COMPRESSED'
+
+        elif args.fits:
+            self.listimage = sorted([os.path.basename(x)
+                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+            self.filetype='FITS'
+
         else:
             self.listimage = sorted([os.path.basename(x)
                                 for x in (glob.glob(join(self.stampspath, '*.png')) +
                                           glob.glob(join(self.stampspath, '*.jpg')) +
                                           glob.glob(join(self.stampspath, '*.jpeg'))
                                          )])
+            self.filetype='COMPRESSED'
+
+
+        if len(self.listimage) == 0:
+            print("No suitable files were found in {self.stampspath}")
+
+        print(self.filetype)
 
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
@@ -376,7 +399,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             'sqrt': np.sqrt,
                             'cbrt': np.cbrt,
                             'log': log,
-                            # 'log10': log, #just for retrocompatibility
                             'asinh': asinh2}
 
         self.defaults = {
@@ -703,7 +725,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             start = self.config_dict['page']*self.gridarea
             for i in np.arange(start, start + number + 0): 
                 if i < len(self.listimage):
-                    if args.fits:
+                    if self.filetype == 'FITS':
                         try:
                             image = self.read_fits(i)
                             scaling_factor = np.nanpercentile(image,q=90)
@@ -723,7 +745,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             image = np.zeros((66, 66))# * 0.0000001
                             plt.imsave(self.filepath(i, self.config_dict['page']),
                                 image, cmap=self.config_dict['colormap'], origin="lower")
-                    else:
+                    elif self.filetype == 'COMPRESSED':
                         if i < len(self.listimage):
                             try:
                                 original_filepath = join(self.stampspath, self.listimage[i])
