@@ -32,20 +32,24 @@ from os.path import join
 import argparse
 import re
 
-parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
-parser.add_argument('-p',"--path", help="Path to the images to inspect",
+parser = argparse.ArgumentParser(description='configure the parameters of the execution.')
+parser.add_argument('-p',"--path", help="path to the images to inspect",
                     default="Stamps_to_inspect")
-parser.add_argument('-N',"--name", help="Name of the classifying session.",
-                    default="")
-parser.add_argument("--reset-config", help="Removes the configuration dictionary during startup.",
+parser.add_argument('-N',"--name", help="name of the classifying session.",
+                    default=None)
+parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
-parser.add_argument("--clean", help="Cleans the legacy survey folder.",
+parser.add_argument("--verbose", help="activates loging to terminal",
+                    action="store_true", default=False)
+parser.add_argument("--clean", help="cleans the legacy survey folder.",
                     action="store_true")
 parser.add_argument('--fits',
-                    help="Specify whether the images to classify are fits or png/jpeg.",
+                    help=("forces app to only use fits (--fits) or png/jp(e)g (--no-fits). "+
+                    "If unset, the app searches for fits files in the path, but defaults to "+
+                    "png/jp(e)g if no fits files are found."),
                     action=argparse.BooleanOptionalAction,
                     default=None)
-parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
+parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 
 args = parser.parse_args()
@@ -57,7 +61,8 @@ if args.reset_config:
 
 if args.clean:
     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
-        os.remove(f)
+        if os.path.exists(f):
+            os.remove(f)
 
 def identity(x):
     return x
@@ -145,11 +150,11 @@ class FetchThread(QThread):
         savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
         savefile = os.path.join(self.legacy_survey_path, savename)        
         if os.path.exists(savefile):
-            print('File already exists:', savefile)
+            print('File already exists:', savefile) if args.verbose else False
             return True
         url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
          f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
-        print(url)
+        print(url) if args.verbose else False
         try:
             urllib.request.urlretrieve(url, savefile)
         except urllib.error.HTTPError:
@@ -190,7 +195,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self._main = QtWidgets.QWidget()
-        self.setWindowTitle("Stamp Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
         self.defaults = {
@@ -223,12 +227,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
+        title_strings = ["Sequential stamp visualizer"]
+        if args.name is not None:
+            self.name = args.name
+            title_strings.append(self.name)
+        else:
+            self.name = ''
+        self.setWindowTitle(' - '.join(title_strings))
 
         self.stampspath = args.path
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         # self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
         self.random_seed = args.seed
-        self.name = args.name
 
         
         if args.fits is None:
@@ -262,7 +272,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             sys.exit()
         if self.config_dict['counter'] > len(self.listimage):
             self.config_dict['counter'] = 0
-
+        
         if self.random_seed is not None:
             # print("shuffling")
             rng = np.random.default_rng(self.random_seed)
@@ -797,6 +807,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # print(type(E))
             # raise
         except Exception as E:
+            print("Exception while setting up the Legacy Survey image:")
             print(E.args)
             print(type(E))
             # raise
@@ -973,19 +984,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def obtain_df(self):
         if self.random_seed is None:
-            base_filename = f'classification_single_{args.name}_{len(self.listimage)}'
+            base_filename = f'classification_single_{self.name}_{len(self.listimage)}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
             # print("Globing for", string_to_glob)
             string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
             glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
         else:
-            base_filename = f'classification_single_{args.name}_{len(self.listimage)}_{self.random_seed}'
+            base_filename = f'classification_single_{self.name}_{len(self.listimage)}_{self.random_seed}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
             glob_results = glob.glob(string_to_glob)
         
         file_iteration = ""
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
-        print(class_file)
+        # print(class_file)
         if len(class_file) >= 1:
             file_index = 0
             if len(class_file) > 1:
@@ -1103,7 +1114,7 @@ if __name__ == "__main__":
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-
+    
     app = ApplicationWindow()
     app.show()
     app.activateWindow()

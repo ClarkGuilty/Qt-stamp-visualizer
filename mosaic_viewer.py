@@ -35,7 +35,7 @@ parser = argparse.ArgumentParser(description='Configure the parameters of the ex
 parser.add_argument('-p',"--path", help="Path to the images to inspect",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
-                    default="")
+                    default=None)
 parser.add_argument('-l',"--gridsize", help="Number of stamps per side.",type=int,
                     default=10)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
@@ -50,7 +50,11 @@ parser.add_argument('--resize',
                     action=argparse.BooleanOptionalAction,
                     default=False)
 parser.add_argument('--fits',
-                    help="Specify whether the images to classify are fits or png/jpeg.",
+                    help=("forces app to only use fits (--fits) "+
+                          "or png/jp(e)g (--no-fits). "+
+                          "If unset, the app searches for fits files "+
+                          "in the path, but defaults to png/jp(e)g "+
+                          "if no fits files are found."),
                     action=argparse.BooleanOptionalAction,
                     default=None)
 # parser.add_argument('--crop',
@@ -118,7 +122,7 @@ class LabelledIntField(QtWidgets.QWidget):
         
         self.lineEdit = QtWidgets.QLineEdit(self)
         self.lineEdit.setFixedWidth(50)
-        self.lineEdit.setValidator(QIntValidator(1,total_pages+1))
+        self.lineEdit.setValidator(QIntValidator(1,total_pages))
         self.lineEdit.setText(str(initial_value+1))
         self.lineEdit.setFont(QFont("Arial",20))
         self.lineEdit.setStyleSheet('background-color: black; color: gray')
@@ -126,7 +130,7 @@ class LabelledIntField(QtWidgets.QWidget):
         layout.addWidget(self.lineEdit)
 
         self.total_pages = QtWidgets.QLabel()
-        self.total_pages.setText("/ "+str(total_pages+1))
+        self.total_pages.setText("/ "+str(total_pages))
         self.total_pages.setFont(QFont("Arial",20))
         layout.addWidget(self.total_pages)
 
@@ -337,7 +341,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
-        self.setWindowTitle("Mosaic Visualizer")
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
         self.random_seed = args.seed            
@@ -376,8 +379,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if len(self.listimage) == 0:
             print("No suitable files were found in {self.stampspath}")
 
-        print(self.filetype)
-
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
             # 128 bits, proton decay might be more likely than someone *randomly* using this number.
@@ -393,13 +394,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # print(glob.glob(self.stampspath + '*.fits'))
         self.gridsize = args.gridsize
         self.gridarea = self.gridsize**2
-        self.PAGE_MAX = int(np.floor(len(self.listimage) / self.gridarea))
-
+        self.PAGE_MAX = int(np.ceil(len(self.listimage) / self.gridarea))
         self.scale2funct = {'linear': identity,
                             'sqrt': np.sqrt,
                             'cbrt': np.cbrt,
                             'log': log,
                             'asinh': asinh2}
+
+        title_strings = ["Mosaic stamp visualizer"]
+        if args.name is not None:
+            self.name = args.name
+            title_strings.append(self.name)
+        else:
+            self.name = ''
+        self.setWindowTitle(' - '.join(title_strings))
 
         self.defaults = {
             # 'counter': 0,
@@ -407,7 +415,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             # 'total': -1,
             'colormap': 'gray',
             'scale': 'asinh',
-            'name': args.name,
+            'name': self.name,
             'gridsize': args.gridsize
         }
         self.config_dict = self.load_dict()
@@ -559,12 +567,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     @Slot()
     def next(self):
-        self.config_dict['page'] = self.config_dict['page'] + 1
-        if self.config_dict['page']>self.PAGE_MAX:
+        if self.config_dict['page']+1 >= self.PAGE_MAX:
             # self.config_dict['counter']=self.PAGE_MAX
-            self.config_dict['page']=self.PAGE_MAX
+            # self.config_dict['page']=self.PAGE_MAX
             self.status.showMessage('You are already at the last page',10000)
         else:
+            self.config_dict['page'] = self.config_dict['page'] + 1
             self.clean_dir(self.scratchpath)
             self.update_grid()
             self.bcounter.setInputText(self.config_dict['page'])
@@ -572,11 +580,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     @Slot()
     def prev(self):
-        self.config_dict['page'] = self.config_dict['page'] - 1
-        if self.config_dict['page'] < 0:
-            self.config_dict['page'] = 0
+        if self.config_dict['page'] -1 < 0:
+            # self.config_dict['page'] = 0
             self.status.showMessage('You are already at the first page',10000)
         else:
+            self.config_dict['page'] = self.config_dict['page'] - 1
             self.clean_dir(self.scratchpath)
             self.update_grid()
             self.bcounter.setInputText(self.config_dict['page'])
@@ -630,9 +638,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         try:
             with open('.config_mosaic.json', ) as f:
                 temp_dict = json.load(f)
-                if ((temp_dict['name'] != args.name) or
+                if ((temp_dict['name'] != self.name) or
                     (temp_dict['gridsize'] != args.gridsize)):
-                    temp_dict['name'] = args.name
+                    temp_dict['name'] = self.name
                     temp_dict['name'] = args.gridsize
                 if args.page is not None:
                     temp_dict['page'] = args.page
@@ -646,19 +654,19 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def obtain_df(self):
         if self.random_seed is None:
             base_filename = 'classification_mosaic_autosave_{}_{}_{}_99'.format(
-                                    args.name,len(self.listimage),self.gridsize)
+                                    self.name,len(self.listimage),self.gridsize)
             string_to_glob = './Classifications/{}*.csv'.format(base_filename)
-            print("Globing for", string_to_glob)
+            # print("Globing for", string_to_glob)
             string_to_glob_for_files_with_seed = './Classifications/{}_*.csv'.format(base_filename)
             glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
         else:
             base_filename = base_filename = 'classification_mosaic_autosave_{}_{}_{}_{}'.format(
-                                    args.name,len(self.listimage),self.gridsize,self.random_seed)
+                                    self.name,len(self.listimage),self.gridsize,self.random_seed)
             string_to_glob = './Classifications/{}*.csv'.format(base_filename)
             glob_results = glob.glob(string_to_glob)
 
         # string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
-        #                             args.name,len(self.listimage),self.gridsize, str(self.random_seed))
+        #                             self.name,len(self.listimage),self.gridsize, str(self.random_seed))
         class_file = natural_sort(glob.glob(
             string_to_glob)) #better to use natural sort.
         file_iteration = ""
