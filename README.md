@@ -21,20 +21,25 @@ python mosaic_viewer.py --p /path/to/the/files --N name_of_the_classification -s
 
 optional arguments:
 -h, --help                          show help message and exit
--l GRIDSIZE, --gridsize GRIDSIZE    Number of stamps per side on the mosaic
--s SEED, --seed SEED                Seed used to shuffle the images, must 
-                                    be a positive integer.
---printname, --no-printname         Whether to print the filename when you                               
+-l GRIDSIZE, --gridsize GRIDSIZE    number of stamps per side on the mosaic (default: 10)
+-s SEED, --seed SEED                seed used to shuffle the images, must 
+                                    be a positive integer. (default: None)
+--printname, --no-printname         whether to print the filename when you                               
                                     click (default: False)
---page PAGE                         Initial page
---resize, --no-resize               Set to allow the resizing of the stamps 
+--page PAGE                         initial page
+--resize, --no-resize               set to allow the resizing of the stamps 
                                     with the window (default: False)
---fits, --no-fits                   Specify whether the images to classify
-                                    are fits or png/jp(e)g (default: True)
+--fits, --no-fits                   forces app to only use fits (--fits)
+                                    or png/jp(e)g (--no-fits).
+                                    If unset, the app searches for fits files
+                                    in the path, but defaults to png/jp(e)g
+                                    if no fits files are found. (default: None)
 ```
 - `left click` to mark a stamp as a gravitational lens candidate.
 - `shift+left` click to mark a stamp as *interesting*.
 - `left click` on an already marked stamp to undo the classification.
+- `d` go to previous page.
+- `f` go to following page.
 
 ### Sequential app
 ```
@@ -43,13 +48,15 @@ python single_viewer.py --p /path/to/the/files --N name_of_the_classification
 optional arguments:
 
 -h, --help            show this help message and exit
--p PATH, --path PATH  Path to the images to inspect
--N NAME, --name NAME  Name of the classifying session.
+-p PATH, --path PATH  path to the images to inspect (default: Stamps_to_inspect)
+-N NAME, --name NAME  name of the classifying session.
 --reset-config        Removes the configuration dictionary during startup.
---clean               Cleans the legacy survey folder.
---fits, --no-fits     Specify whether the images to classify are fits or png/
-                      jpeg. (default: True)
--s SEED, --seed SEED  Seed used to shuffle the images.
+--verbose             activates loging to terminal (default: False)
+--clean               cleans the legacy survey folder.
+--fits, --no-fits     forces app to only use fits (--fits) or png/jp(e)g (--no-fits).
+                      If unset, the app searches for fits files in the path, but defaults
+                      to png/jp(e)g if no fits files are found. (default: None)
+-s SEED, --seed SEED  seed used to shuffle the images. (default: None)
 
 ```
 - Toggle `Legacy Survey (LS)` to automatically display a Legacy Survey cutout of the same area.
