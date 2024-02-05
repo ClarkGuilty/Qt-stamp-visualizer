@@ -44,7 +44,7 @@ parser.add_argument("--clean", help="Cleans the legacy survey folder.",
 parser.add_argument('--fits',
                     help="Specify whether the images to classify are fits or png/jpeg.",
                     action=argparse.BooleanOptionalAction,
-                    default=True)
+                    default=None)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
 
@@ -215,7 +215,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
-        self.scale2funct = {'identity':identity,'sqrt':np.sqrt,'log':log, 'log10':log, 'asinh2':asinh2}
+        self.scale2funct = {'identity':identity,
+                            'sqrt':np.sqrt,
+                            'log':log,
+                            'log10':log,
+                            'cbrt':np.cbrt,
+                            'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
 
@@ -225,15 +230,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.random_seed = args.seed
         self.name = args.name
 
-        if args.fits:
+        
+        if args.fits is None:
+            print("No filetype was specified, defaulting to .fits")
             self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
+            self.filetype='FITS'
+            if len(self.listimage) == 0:
+                print("No fits files were found, trying with .png, .jpg, and .jpeg")
+                self.listimage = sorted([os.path.basename(x)
+                                for x in (glob.glob(join(self.stampspath, '*.png')) +
+                                          glob.glob(join(self.stampspath, '*.jpg')) +
+                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                         )])
+                self.filetype='COMPRESSED'
+
+        elif args.fits:
+            self.listimage = sorted([os.path.basename(x)
+                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+            self.filetype='FITS'
         else:
             self.listimage = sorted([os.path.basename(x)
                                 for x in (glob.glob(join(self.stampspath, '*.png')) +
                                           glob.glob(join(self.stampspath, '*.jpg')) +
                                           glob.glob(join(self.stampspath, '*.jpeg'))
                                          )])
+            self.filetype='COMPRESSED'
+
 
         if self.random_seed is not None:
             # print("shuffling")
@@ -298,29 +321,35 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.plot()
 
 
+        list_button_row0_layout=[]
 
         self.bgoto = QtWidgets.QPushButton('Go to')
         self.bgoto.clicked.connect(self.goto)
-
-        self.bnext = QtWidgets.QPushButton('Next')
-        self.bnext.clicked.connect(self.next)
+        list_button_row0_layout.append(self.bgoto)
 
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
+        list_button_row0_layout.append(self.bprev)
+
+        self.bnext = QtWidgets.QPushButton('Next')
+        self.bnext.clicked.connect(self.next)
+        list_button_row0_layout.append(self.bnext)
 
         self.bds9 = QtWidgets.QPushButton('ds9')
         self.bds9.clicked.connect(self.open_ds9)
-        if not args.fits:
+        if self.filetype != 'FITS':
             self.bds9.setEnabled(False)
+        list_button_row0_layout.append(self.bds9)
 
         self.bviewls = QtWidgets.QPushButton('View LS')
         self.bviewls.clicked.connect(self.viewls)
-        if not args.fits:
+        if self.filetype != 'FITS':
             self.bviewls.setEnabled(False)
+        list_button_row0_layout.append(self.bviewls)
 
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        if args.fits:
+        if self.filetype == 'FITS':
             if not self.config_dict['legacysurvey']:
                     self.label_plot[1].hide()
                     self.canvas[1].hide()
@@ -334,11 +363,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.blegsur.setEnabled(False)
             self.label_plot[1].hide()
             self.canvas[1].hide()
-        
+        list_button_row0_layout.append(self.blegsur)
+
 
         self.blsarea = QtWidgets.QCheckBox("Large FoV")
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-        if args.fits:
+        if self.filetype == 'FITS':
             if self.config_dict['legacybigarea']:
                 self.blsarea.toggle()
                 if self.config_dict['legacysurvey']:
@@ -347,10 +377,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.blsarea.setEnabled(False)
             self.config_dict['legacybigarea'] = False
+        list_button_row0_layout.append(self.blsarea)
 
         self.blsresidual = QtWidgets.QCheckBox("Residuals")
         self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
-        if args.fits:
+        if self.filetype == 'FITS':
             if self.config_dict['legacyresiduals']:
                 self.blsresidual.toggle()
                 if self.config_dict['legacysurvey']:
@@ -358,10 +389,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.blsresidual.setEnabled(False)
             self.config_dict['legacyresiduals'] = False
+        list_button_row0_layout.append(self.blsresidual)
 
         self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
         self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-        if args.fits:
+        if self.filetype == 'FITS':
             if self.config_dict['prefetch']:
                 self.config_dict['prefetch'] = False
                 self.prefetch_legacysurvey()
@@ -370,47 +402,62 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.bprefetch.setEnabled(False)
             self.config_dict['prefetch'] = False
+        list_button_row0_layout.append(self.bprefetch)
 
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
         if self.config_dict['autonext']:
             self.bautopass.toggle()
+        list_button_row0_layout.append(self.bautopass)
 
         self.bkeyboardshortcuts = QtWidgets.QCheckBox("Keyboard shortcuts")
         self.bkeyboardshortcuts.clicked.connect(self.checkbox_keyboard_shortcuts)
         if self.config_dict['keyboardshortcuts']:
             self.bkeyboardshortcuts.toggle()
+        list_button_row0_layout.append(self.bkeyboardshortcuts)
 
+        list_classifications = []
         self.bsurelens = QtWidgets.QPushButton('A')
         self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
+        list_classifications.append(self.bsurelens)
 
         self.bmaybelens = QtWidgets.QPushButton('B')
         self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
+        list_classifications.append(self.bmaybelens)
 
         self.bflexion = QtWidgets.QPushButton('C')
         self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
+        list_classifications.append(self.bflexion)
 
         self.bnonlens = QtWidgets.QPushButton('X')
         self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
+        list_classifications.append(self.bnonlens)
 
+        list_subclassifications = []
         self.bMerger = QtWidgets.QPushButton('Merger')
         self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
+        list_subclassifications.append(self.bMerger)
 
         self.bSpiral = QtWidgets.QPushButton('Spiral')
         self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
+        list_subclassifications.append(self.bSpiral)
 
         self.bRing = QtWidgets.QPushButton('Ring')
         self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
+        list_subclassifications.append(self.bRing)
 
         self.bElliptical = QtWidgets.QPushButton('Elliptical')
         self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
+        list_subclassifications.append(self.bElliptical)
 
         self.bDisc = QtWidgets.QPushButton('Disc')
         self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
+        list_subclassifications.append(self.bDisc)
 
         self.bEdgeon = QtWidgets.QPushButton('Edge-on')
         self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
+        list_subclassifications.append(self.bEdgeon)
 
         self.dict_class2button = {
                                  'A':self.bsurelens,
@@ -440,34 +487,56 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                   'NL':None,
                                   'None':None}
 
+        list_scales_buttons = []
         self.blinear = QtWidgets.QPushButton('Linear')
-        self.blinear.clicked.connect(self.set_scale_linear)
+        self.blinear.clicked.connect(partial(self.set_scale,self.blinear,'identity'))
+        list_scales_buttons.append(self.blinear)
 
         self.bsqrt = QtWidgets.QPushButton('Sqrt')
-        self.bsqrt.clicked.connect(self.set_scale_sqrt)
+        self.bsqrt.clicked.connect(partial(self.set_scale,self.bsqrt,'sqrt'))
+        list_scales_buttons.append(self.bsqrt)
+
+        self.bcbrt = QtWidgets.QPushButton('Cbrt')
+        self.bcbrt.clicked.connect(partial(self.set_scale,self.bcbrt,'cbrt'))
+        list_scales_buttons.append(self.bcbrt)
 
         self.blog = QtWidgets.QPushButton('Log')
-        self.blog.clicked.connect(self.set_scale_log)
+        self.blog.clicked.connect(partial(self.set_scale,self.blog,'log'))
+        list_scales_buttons.append(self.blog)
 
-        self.basinh = QtWidgets.QPushButton('Asinh')
-        self.basinh.clicked.connect(self.set_scale_asinh)
+        # self.basinh = QtWidgets.QPushButton('Asinh')
+        # self.basinh.clicked.connect(self.set_scale_asinh)
+        # self.basinh.clicked.connect(partial(self.set_scale,self.basinh,'asinh2'))
+        # list_scales_buttons.append(self.basinh)
 
+        list_colormap_buttons = []
         self.bInverted = QtWidgets.QPushButton('Inverted')
-        self.bInverted.clicked.connect(self.set_colormap_Inverted)
+        self.bInverted.clicked.connect(partial(self.set_colormap,self.bInverted,'gist_yarg'))
+        list_colormap_buttons.append(self.bInverted)
 
         self.bBb8 = QtWidgets.QPushButton('Bb8')
-        self.bBb8.clicked.connect(self.set_colormap_Bb8)
+        self.bBb8.clicked.connect(partial(self.set_colormap,self.bBb8,'hot'))
+        list_colormap_buttons.append(self.bBb8)
 
         self.bGray = QtWidgets.QPushButton('Gray')
-        self.bGray.clicked.connect(self.set_colormap_Gray)
+        self.bGray.clicked.connect(partial(self.set_colormap,self.bGray,'gray'))
+        list_colormap_buttons.append(self.bGray)
 
         self.bViridis = QtWidgets.QPushButton('Viridis')
-        self.bViridis.clicked.connect(self.set_colormap_Viridis)
+        self.bViridis.clicked.connect(partial(self.set_colormap,self.bViridis,'viridis'))
+        list_colormap_buttons.append(self.bViridis)
 
-        self.scale2button = {'identity':self.blinear,'sqrt':self.bsqrt,'log':self.blog,'log10':self.blog,
-                            'asinh2': self.basinh}
-        self.colormap2button = {'gist_yarg':self.bInverted,'hot':self.bBb8,'gray':self.bGray,
-                            'viridis': self.bViridis}
+        self.scale2button = {'identity':self.blinear,
+                            'sqrt':self.bsqrt,
+                            'log':self.blog,
+                            'log10':self.blog,
+                            'cbrt':self.bcbrt,
+                            # 'asinh2': self.basinh
+                            }
+        self.colormap2button = {'gist_yarg':self.bInverted,
+                                'hot':self.bBb8,
+                                'gray':self.bGray,
+                                'viridis': self.bViridis}
 
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
@@ -523,47 +592,32 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.kEdgeon = QShortcut(QKeySequence('h'), self)
         self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
+        for button in list_button_row0_layout:
+            button_row0_layout.addWidget(button)
 
-        #Buttons
-        button_row0_layout.addWidget(self.bgoto)
-        button_row0_layout.addWidget(self.bprev)
-        button_row0_layout.addWidget(self.bnext)
-        button_row0_layout.addWidget(self.bds9)
-        button_row0_layout.addWidget(self.bviewls)
-        button_row0_layout.addWidget(self.blegsur)
-        button_row0_layout.addWidget(self.blsarea)
-        button_row0_layout.addWidget(self.blsresidual)
-        button_row0_layout.addWidget(self.bprefetch)
-        button_row0_layout.addWidget(self.bautopass)
-        button_row0_layout.addWidget(self.bkeyboardshortcuts)
         button_row0_layout.addWidget(self.counter_widget,alignment=Qt.AlignRight)
 
-        button_row10_layout.addWidget(self.bsurelens)
-        button_row10_layout.addWidget(self.bmaybelens)
-        button_row10_layout.addWidget(self.bflexion)
-        button_row10_layout.addWidget(self.bnonlens)
+        for button in list_classifications:
+            button_row10_layout.addWidget(button)
 
+        for button in list_subclassifications:
+            button_row11_layout.addWidget(button)
 
-        button_row11_layout.addWidget(self.bMerger)
-        button_row11_layout.addWidget(self.bSpiral)
-        button_row11_layout.addWidget(self.bRing)
-        button_row11_layout.addWidget(self.bElliptical)
-        button_row11_layout.addWidget(self.bDisc)
-        button_row11_layout.addWidget(self.bEdgeon)
+        for button in list_scales_buttons:
+            button_row2_layout.addWidget(button)
 
-        button_row2_layout.addWidget(self.blinear)
-        button_row2_layout.addWidget(self.bsqrt)
-        button_row2_layout.addWidget(self.blog)
-        button_row2_layout.addWidget(self.basinh)
-        button_row3_layout.addWidget(self.bInverted)
-        button_row3_layout.addWidget(self.bBb8)
-        button_row3_layout.addWidget(self.bGray)
-        button_row3_layout.addWidget(self.bViridis)
+        for button in list_colormap_buttons:
+            button_row3_layout.addWidget(button)
+
+        # button_row3_layout.addWidget(self.bInverted)
+        # button_row3_layout.addWidget(self.bBb8)
+        # button_row3_layout.addWidget(self.bGray)
+        # button_row3_layout.addWidget(self.bViridis)
 
         button_layout.addLayout(button_row0_layout, 25)
         button_layout.addLayout(button_row10_layout, 25)
         button_layout.addLayout(button_row11_layout, 25)
-        if args.fits:
+        if self.filetype == 'FITS':
             button_layout.addLayout(button_row2_layout, 25)
             button_layout.addLayout(button_row3_layout, 25)
         else:
@@ -638,7 +692,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
-        if args.fits:
+        if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
@@ -790,91 +844,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
 
     @Slot()
-    def set_scale_linear(self):
-        button = self.blinear
+    def set_scale(self, button, scale):
         if button != self.bactivatedscale:
-            self.scale = identity
+            self.scale = self.scale2funct[scale]
             self.replot()
             button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
             self.bactivatedscale = button
-            self.config_dict['scale']='identity'
+            self.config_dict['scale']= scale
             self.save_dict()
 
     @Slot()
-    def set_scale_sqrt(self):
-        button = self.bsqrt
-        if button != self.bactivatedscale:
-            self.scale = np.sqrt
+    def set_colormap(self, button, colormap):
+        if button != self.bactivatedcolormap:
+            self.config_dict['colormap'] = colormap
             self.replot()
             button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = button 
-            self.config_dict['scale']='sqrt'
-            self.save_dict()
-
-    @Slot()
-    def set_scale_log(self):
-        button = self.blog
-        if button != self.bactivatedscale:# and self.sender() is not None: #TODO test if this works/
-            self.scale = log
-            self.replot()
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = button
-            self.config_dict['scale']='log'
-            self.save_dict()
-
-    @Slot()
-    def set_scale_asinh(self):
-        button = self.basinh
-        if button != self.bactivatedscale:
-            self.scale = asinh2
-            self.replot()
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedscale = button
-            self.config_dict['scale']='asinh2'
-            self.save_dict()
-
-    @Slot()
-    def set_colormap_Inverted(self):
-        if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap'] = "gist_yarg"
-            self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
             self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = self.sender()
-            self.save_dict()
-
-    @Slot()
-    def set_colormap_Bb8(self):
-        if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap'] = "hot"
-            self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = self.sender()
-            self.save_dict()
-
-    @Slot()
-    def set_colormap_Gray(self):
-        if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap'] = "gray"
-            self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = self.sender()
-            self.save_dict()
-
-    @Slot()
-    def set_colormap_Viridis(self):
-        if self.sender() != self.bactivatedcolormap:
-            self.config_dict['colormap'] = "viridis"
-            self.replot()
-            self.sender().setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = self.sender()
+            self.bactivatedcolormap = button
             self.save_dict()
 
     def background_rms_image(self,cb, image):
@@ -943,7 +930,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def plot(self, scale_min = None, scale_max = None, canvas_id = 0):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
         self.ax[canvas_id].cla()
-        if args.fits:
+        if self.filetype == 'FITS':
             image = self.load_fits(self.filename)
             scaling_factor = np.nanpercentile(image,q=90)
             if scaling_factor == 0:
@@ -970,7 +957,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
         self.ax[canvas_id].cla()
         image = np.copy(self.image)
-        if args.fits:
+        if self.filetype == 'FITS':
             image = self.rescale_image(image)
             self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:

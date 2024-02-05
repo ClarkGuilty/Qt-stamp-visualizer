@@ -184,7 +184,8 @@ def Clickable(widget):
             def eventFilter(self, obj, event):
                 if obj == widget:
                     if event.type() == QEvent.MouseButtonRelease:
-                        if obj.rect().contains(event.pos()):
+                        # if obj.rect().contains(event.pos()): #Deprecated
+                        if obj.rect().contains(event.globalPosition().toPoint()):
                             self.clicked.emit()
                             # The developer can opt for .emit(obj) to get the object within the slot.
                             return True
@@ -363,7 +364,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.listimage = sorted([os.path.basename(x)
                                 for x in glob.glob(join(self.stampspath, '*.fits'))])
             self.filetype='FITS'
-
         else:
             self.listimage = sorted([os.path.basename(x)
                                 for x in (glob.glob(join(self.stampspath, '*.png')) +
@@ -536,6 +536,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.buttons.append(button)
             button.setAlignment(Qt.AlignCenter)
             # button.adjustSize()
+
+        self.cbscale.setEnabled(False)
+        self.cbcolormap.setEnabled(False)
+        
 
     @Slot()
     def goto(self):
