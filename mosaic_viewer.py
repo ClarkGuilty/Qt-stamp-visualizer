@@ -636,11 +636,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         try:
             with open('.config_mosaic.json', ) as f:
                 temp_dict = json.load(f)
-                if ((temp_dict['name'] != self.name) or
-                    (temp_dict['nrows'] != self.nrows) or
-                    (temp_dict['ncols'] != self.ncols)
+                if ((temp_dict['name'] != self.name) 
                     ):
                     temp_dict['name'] = self.name
+                if (('nrows' not in temp_dict) or
+                  ('ncols' not in temp_dict) or
+                  (temp_dict['nrows'] != self.nrows) or
+                  (temp_dict['ncols'] != self.ncols)):
+
                     temp_dict['nrows'] = self.nrows
                     temp_dict['ncols'] = self.ncols
                     # temp_dict['name'] = args.gridsize #I commented this on 06-02-2024.
