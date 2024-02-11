@@ -225,13 +225,12 @@ class ClickableLabel(QtWidgets.QLabel):
         self.is_a_candidate = status
         self.update_df_func = update_df_func
         self.i = i
-        # print(self.sizeHint())
-        self.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding,
-                           QtWidgets.QSizePolicy.MinimumExpanding)
-        # self.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
-        #                    QtWidgets.QSizePolicy.Ignored)
-        # self.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-        #                    QtWidgets.QSizePolicy.Preferred)
+
+        sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        self.setSizePolicy(sizePolicy,sizePolicy)
+
+        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
+                           QtWidgets.QSizePolicy.Ignored)
         self.setScaledContents(args.resize)
 
         if self.is_activate:
@@ -244,11 +243,10 @@ class ClickableLabel(QtWidgets.QLabel):
         else:
             self._pixmap = QPixmap(self.deactivated_path)
         
-        # self.target_width = min(66,self.width())
-        # self.target_height = min(66,self.height()) #TODO: add case where width != height
-        
-        self.target_width = 10 #It seems that this is one possible limit, there is probably another one pertaining a different part of the UI.
-        self.target_height = 10 #In fact, this is not used. I will never go below initial size
+        self.target_width = 66 #At the very least, should be the initial size
+        self.target_height = 66 #
+
+        self.setMinimumSize(66,66)
 
         if image_width is not None:
             self.target_width = image_width
@@ -262,9 +260,6 @@ class ClickableLabel(QtWidgets.QLabel):
         self.setPixmap(self._pixmap.scaled(
             self.target_width, self.target_height,
             self.aspectRatioPolicy))
-
-    # def minimumSizeHint(self):
-    #     return QSize(7,17)
 
     def activate(self):
         self.is_activate = True
@@ -293,8 +288,6 @@ class ClickableLabel(QtWidgets.QLabel):
 
     def paint_pixmap(self):
         if self.is_activate:
-            # target_width = min(66,self.width())
-            # target_height = min(66,self.height()) #TODO: add case where width != height
             self.setPixmap(self._pixmap.scaled(
                 # self.target_width, self.target_height,
                 self.width(), self.height(),
@@ -349,6 +342,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
+        # self.setGeometry(800, 100, 100, 100)
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
         self.random_seed = args.seed            
@@ -459,6 +453,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         stamp_grid_layout = QtWidgets.QGridLayout()
+        # stamp_grid_layout.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
         bottom_bar_layout = QtWidgets.QHBoxLayout()
         button_bar_layout = QtWidgets.QHBoxLayout()
         page_counter_layout = QtWidgets.QHBoxLayout()
@@ -492,7 +487,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         line_edit = self.cbcolormap.lineEdit()
         # line_edit.setAlignment(Qt.AlignCenter)
         # line_edit.setReadOnly(True)
-        self.listscales = ['gray','viridis','gist_yarg','hot']
+        self.listscales = ['gist_gray','viridis','gist_yarg','hot']
         self.cbcolormap.addItems(self.listscales)
         self.cbcolormap.setCurrentIndex(self.listscales.index(self.config_dict['colormap']))
         self.cbcolormap.setStyleSheet('background-color: gray')
@@ -547,7 +542,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                     self.interesting_background_path,
                                     self.deactivated_path,
                                     i-start, classification, activation,
-                                    self.my_label_clicked)
+                                    self.my_label_clicked,
+                                    # image_width=66,
+                                    # image_height=66,
+                                    )
             stamp_grid_layout.addWidget(
                 button, i % self.nrows, i // self.nrows)
             self.buttons.append(button)
