@@ -651,6 +651,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     temp_dict['page'] = args.page
                 if temp_dict['scale'] == 'log10':
                     temp_dict['scale'] = 'log'
+                if temp_dict['colormap'] == 'grey':
+                    temp_dict['colormap'] = 'gist_gray'
                 return temp_dict
         except FileNotFoundError:
             print("Loaded default configuration.")
