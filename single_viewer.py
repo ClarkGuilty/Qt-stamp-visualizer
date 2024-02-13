@@ -965,7 +965,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             image = np.asarray(Image.open(self.filename))
             self.image = np.copy(image)
-            self.ax[canvas_id].imshow(image, origin='lower')
+            self.ax[canvas_id].imshow(image, origin='upper') #For pngs this is best.
         self.ax[canvas_id].set_axis_off() #Always before .draw()!
         self.canvas[canvas_id].draw()
 
