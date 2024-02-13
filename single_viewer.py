@@ -688,7 +688,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         try:
             with open('.config.json', ) as f:
                 temp_dict = json.load(f)
-                if temp_dict['colormap']
+                if temp_dict['colormap'] == 'gray':
+                    temp_dict['colormap'] = "gist_gray"
                 return temp_dict
         except FileNotFoundError:
             return self.defaults
