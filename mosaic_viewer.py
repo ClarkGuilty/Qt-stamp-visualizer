@@ -43,6 +43,8 @@ parser.add_argument('-m',"--nrows",
                     default=None)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
+parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The optimal value depends on your screen and the stampsize.",type=int,
+                    default=None)
 parser.add_argument("--printname", help="Whether to print the name when you click.",
                     action=argparse.BooleanOptionalAction,
                     default=False)
@@ -226,11 +228,10 @@ class ClickableLabel(QtWidgets.QLabel):
         self.update_df_func = update_df_func
         self.i = i
 
-        sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        sizePolicy = QtWidgets.QSizePolicy.Ignored
         self.setSizePolicy(sizePolicy,sizePolicy)
 
-        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
-                           QtWidgets.QSizePolicy.Ignored)
         self.setScaledContents(args.resize)
 
         if self.is_activate:
@@ -246,7 +247,8 @@ class ClickableLabel(QtWidgets.QLabel):
         self.target_width = 66 #At the very least, should be the initial size
         self.target_height = 66 #
 
-        self.setMinimumSize(66,66)
+        self.user_minimum_size = 66 if args.minimum_size is None else args.minimum_size
+        self.setMinimumSize(self.user_minimum_size,self.user_minimum_size)
 
         if image_width is not None:
             self.target_width = image_width
@@ -445,7 +447,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.df = self.obtain_df()
 
-        if self.config_dict['page'] > self.PAGE_MAX:
+        if self.config_dict['page'] >= self.PAGE_MAX:
             self.bcounter.setInputText(0)
             self.goto()
             

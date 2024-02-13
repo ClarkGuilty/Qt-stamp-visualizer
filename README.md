@@ -17,14 +17,21 @@ Originally developed with single-band `.fits` files in mind, it can also be used
 ## Usage
 ### Mosaic app
 ```
-python mosaic_viewer.py --p /path/to/the/files --N name_of_the_classification -s seed
+python mosaic_viewer.py -p /path/to/the/files -N name_of_the_classification -s seed
 
 optional arguments:
 -h, --help                          Show help message and exit.
--l GRIDSIZE, --gridsize GRIDSIZE    Number of stamps per side on the mosaic.
+-p PATH, --path PATH                Path to the images to inspect.
+-N NAME, --name NAME                Name of the classifying session.
+-l NCOLS, --ncols NCOLS             Number of columns per page.
+                                    (default: 10).
+-m NROWS, --nrows NROWS             Number of rows per page.
                                     (default: 10).
 -s SEED, --seed SEED                Seed used to shuffle the images, must 
                                     be a positive integer. (default: None).
+--minimum_size MINIMUM_SIZE         Minimum size of the stamps in the mosaic.
+                                    The optimal value depends on your screen
+                                    and on the stampsize.
 --printname, --no-printname         Whether to print the filename when you                               
                                     click. (default: False).
 --page PAGE                         Initial page.
@@ -44,7 +51,7 @@ optional arguments:
 
 ### Sequential app
 ```
-python single_viewer.py --p /path/to/the/files --N name_of_the_classification 
+python single_viewer.py -p /path/to/the/files -N name_of_the_classification -s seed
 
 optional arguments:
 
