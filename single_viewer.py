@@ -205,7 +205,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'prefetch':False,
                     'autonext':True,
                     'prefetch':False,
-                    'colormap':'gray',
+                    'colormap':'gist_gray',
                     'scale':'log',
                     'keyboardshortcuts':False,
                         }
@@ -534,7 +534,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_colormap_buttons.append(self.bBb8)
 
         self.bGray = QtWidgets.QPushButton('Gray')
-        self.bGray.clicked.connect(partial(self.set_colormap,self.bGray,'gray'))
+        self.bGray.clicked.connect(partial(self.set_colormap,self.bGray,'gist_gray'))
         list_colormap_buttons.append(self.bGray)
 
         self.bViridis = QtWidgets.QPushButton('Viridis')
@@ -550,7 +550,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             }
         self.colormap2button = {'gist_yarg':self.bInverted,
                                 'hot':self.bBb8,
-                                'gray':self.bGray,
+                                'gist_gray':self.bGray,
                                 'viridis': self.bViridis}
 
         self.bactivatedclassification = None
@@ -687,7 +687,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def load_dict(self):
         try:
             with open('.config.json', ) as f:
-                return json.load(f)
+                temp_dict = json.load(f)
+                if temp_dict['colormap']
+                return temp_dict
         except FileNotFoundError:
             return self.defaults
 
