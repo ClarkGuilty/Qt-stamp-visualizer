@@ -422,7 +422,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             # 'counter': 0,
             'page': 0, #Defaults to 0. Gets overwritten by --page argument.
             # 'total': -1,
-            'colormap': 'gray',
+            'colormap': 'gist_gray',
             'scale': 'asinh',
             'name': self.name,
             'ncols': self.ncols,
