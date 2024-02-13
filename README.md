@@ -17,6 +17,7 @@ Originally developed with single-band `.fits` files in mind, it can also be used
 ## Usage
 ### Mosaic app
 ```
+
 python mosaic_viewer.py -p /path/to/the/files -N name_of_the_classification -s seed
 
 optional arguments:
