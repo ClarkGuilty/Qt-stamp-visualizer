@@ -666,7 +666,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             base_filename = 'classification_mosaic_autosave_{}_{}_{}_{}_99'.format(
                                     self.name,len(self.listimage),self.ncols,self.nrows)
             base_filename = 'classification_mosaic_autosave_{}_{}_{}_99'.format(
-                                    self.name,len(self.listimage),self.gridsize)
+                                    self.name,len(self.listimage),self.ncols)
             string_to_glob = './Classifications/{}*.csv'.format(base_filename)
             # print("Globing for", string_to_glob)
             string_to_glob_for_files_with_seed = './Classifications/{}_*.csv'.format(base_filename)
