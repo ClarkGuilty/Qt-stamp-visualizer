@@ -1,35 +1,38 @@
 # This Python file uses the following encoding: utf-8
 import argparse
 
-import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
-import glob
-import os
-import pandas as pd
-import subprocess
-from PIL import Image
 
+from functools import partial
+
+import glob
+import json
+
+from matplotlib.figure import Figure
+from matplotlib import image as mpimg
+import matplotlib.pyplot as plt
+import numpy as np
+
+import pandas as pd
+
+from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent, QSize
 from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
 
-from matplotlib.figure import Figure
-from matplotlib import image as mpimg
-import matplotlib.pyplot as plt
-
-
-import urllib
-
-from functools import partial
 import shutil
 
-import webbrowser
-import json
+import os
 from os.path import join
+
 import re
+import subprocess
 import sys
+import urllib
+import webbrowser
+
 
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect.",
@@ -557,6 +560,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if self.filetype != 'FITS':
             self.cbscale.setEnabled(False)
             self.cbcolormap.setEnabled(False)
+        
+        self.time_initial = time.time()
         
 
     @Slot()
