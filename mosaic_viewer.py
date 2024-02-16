@@ -30,6 +30,7 @@ from os.path import join
 import re
 import subprocess
 import sys
+from time import time
 import urllib
 import webbrowser
 
@@ -113,6 +114,9 @@ def find_filename_iteration(latest_filename, max_iterations = 100, initial_itera
     except:
         return initial_iteration
     return "-({})".format(int_match+1)
+
+def iloc_to_page_and_grid_pos(iloc, gridarea):
+    return iloc // gridarea, iloc % gridarea
 
 class LabelledIntField(QtWidgets.QWidget):
     "Widget for the page number."
@@ -561,8 +565,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.cbscale.setEnabled(False)
             self.cbcolormap.setEnabled(False)
         
-        self.time_initial = time.time()
-        
+        self.time_0 = time()
+
+    def go_to_counter_page(self, target_page):
+        self.config_dict['page'] = target_page
+        self.clean_dir(self.scratchpath)
+        self.update_grid()
+        self.bcounter.setInputText(self.config_dict['page'])
+        self.save_dict()
 
     @Slot()
     def goto(self):
@@ -574,35 +584,19 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.status.showMessage('WARNING: Pages go from 1 to {}.'.format(
                 self.PAGE_MAX+1),10000)
         else:
-            self.config_dict['page'] = self.bcounter.getValue()
-            self.update_grid()
-            # self.bcounter.setInputText(self.config_dict['page'])
-            self.save_dict()
-
+            self.go_to_counter_page(self.bcounter.getValue())
     @Slot()
     def next(self):
         if self.config_dict['page']+1 >= self.PAGE_MAX:
-            # self.config_dict['counter']=self.PAGE_MAX
-            # self.config_dict['page']=self.PAGE_MAX
             self.status.showMessage('You are already at the last page',10000)
         else:
-            self.config_dict['page'] = self.config_dict['page'] + 1
-            self.clean_dir(self.scratchpath)
-            self.update_grid()
-            self.bcounter.setInputText(self.config_dict['page'])
-            self.save_dict()
-
+            self.go_to_counter_page(self.config_dict['page'] + 1)
     @Slot()
     def prev(self):
         if self.config_dict['page'] -1 < 0:
-            # self.config_dict['page'] = 0
             self.status.showMessage('You are already at the first page',10000)
         else:
-            self.config_dict['page'] = self.config_dict['page'] - 1
-            self.clean_dir(self.scratchpath)
-            self.update_grid()
-            self.bcounter.setInputText(self.config_dict['page'])
-            self.save_dict()
+            self.go_to_counter_page(self.config_dict['page'] - 1)
 
     def change_scale(self,i):
         self.config_dict['scale'] = self.cbscale.currentText()
@@ -622,8 +616,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print('Something is wrong. This condition should not be trigger.')
         else:
             object_index = self.gridarea*self.config_dict['page']+i
-            self.df.iloc[object_index,
-                        self.df.columns.get_loc('grid_pos')] = i+1
+            # self.df.iloc[object_index,
+            #             self.df.columns.get_loc('grid_pos')] = i+1
             print(self.df.iloc[object_index,
                         self.df.columns.get_loc('file_name')]) if args.printname else True
             self.df.iloc[object_index,
@@ -711,8 +705,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
         df['classification'] = np.zeros(np.shape(self.listimage))
-        df['page'] = np.zeros(np.shape(self.listimage))
-        df['grid_pos'] = np.zeros(np.shape(self.listimage))
+        page,grid_pos = iloc_to_page_and_grid_pos(np.array(df.index) ,gridarea = self.gridarea)
+        df['page'] = page
+        df['grid_pos'] = grid_pos
+        # df['page'] = np.zeros(np.shape(self.listimage))
+        # df['grid_pos'] = np.zeros(np.shape(self.listimage))
         return df
 
     def update_grid(self):
@@ -736,7 +733,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     button.set_candidate_status(status)
 
                 self.df.iloc[object_index,
-                             self.df.columns.get_loc('grid_pos')] = j+1
+                             self.df.columns.get_loc('grid_pos')] = j
 
                 self.df.iloc[object_index,
                              self.df.columns.get_loc('page')] = self.config_dict['page']
