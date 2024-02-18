@@ -83,7 +83,6 @@ def identity(x):
 
 def log(x):
     "Simple log base 1000 function that ignores numbers less than 0"
-    # return np.emath.logn(1000,x) #base 1000 like ds9
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
 
 def asinh2(x):
@@ -176,13 +175,6 @@ class NamedLabel(QtWidgets.QWidget):
         self.label.setStyleSheet('background-color: black; color: gray')
         self.label.setAlignment(Qt.AlignRight)
         layout.addWidget(self.label)
-
-        # self.total_pages = QtWidgets.QLabel()
-        # self.total_pages.setText("/ "+str(total_pages+1))
-        # self.total_pages.setFont(QFont("Arial",20))
-        # layout.addWidget(self.total_pages)
-
-        # layout.addStretch()
 
     def setText(self, input):
         self.label.setText(str(input))
@@ -317,7 +309,6 @@ class ClickableLabel(QtWidgets.QLabel):
         self._pixmap = QPixmap(self.filepath)
 
     def mousePressEvent(self, event):
-        # print(self.is_activate)
         if self.is_activate:
             # self.is_a_candidate = not self.is_a_candidate
             modifiers = event.modifiers()
@@ -341,7 +332,6 @@ class ClickableLabel(QtWidgets.QLabel):
 
     def resizeEvent(self, event):
         self.setPixmap(self._pixmap.scaled(
-            # 66, 66,
             self.width(), self.height(),
             self.aspectRatioPolicy))
 
@@ -402,8 +392,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         
         if len(self.listimage) == 0:
             print("WARNING: no images found in {}".format(self.stampspath))
-        # print(join(self.stampspath, '*.fits'))
-        # print(glob.glob(self.stampspath + '*.fits'))
         self.ncols = args.ncols
         if args.nrows is None:
             self.nrows = self.ncols
@@ -482,7 +470,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.setFont(QFont("Arial",20))
         Clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
-        # self.cbscale.addItems(['linear','sqrt','' 'log', 'asinh'])
         self.cbscale.addItems(self.scale2funct.keys())
         self.cbscale.setCurrentIndex(list(self.scale2funct.keys()).index(self.config_dict['scale']))
         self.cbscale.setStyleSheet('background-color: gray')
@@ -517,9 +504,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
 
-        # button.clicked.connect(line_edit.clear)
-
-
         ##### Keyboard shortcuts
         self.knext = QShortcut(QKeySequence('f'), self)
         self.knext.activated.connect(self.next)
@@ -537,7 +521,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.total_n_frame = int(len(self.listimage)/(self.gridarea))
         start = self.config_dict['page']*self.gridarea
-        # n_images = len(self.df) % self.gridarea if self.config_dict['page'] == self.PAGE_MAX else self.gridarea
 
         for i in range(start,start+self.gridarea):
             filepath = self.filepath(i, self.config_dict['page'])
@@ -568,11 +551,21 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.time_0 = time()
 
     def go_to_counter_page(self, target_page):
+        range_low = self.config_dict['page']*self.gridarea
+        range_high = min(len(self.df),(self.config_dict['page']+1)*(self.gridarea))
+        if hasattr(self, 'time_0'):
+            self.df.iloc[range(range_low,range_high),
+                        self.df.columns.get_loc('time')] += (time() - self.time_0)
+            self.time_0 = time()
+        else:
+            True
         self.config_dict['page'] = target_page
         self.clean_dir(self.scratchpath)
         self.update_grid()
         self.bcounter.setInputText(self.config_dict['page'])
         self.save_dict()
+        self.df.to_csv(
+                self.df_name, index=False)
 
     @Slot()
     def goto(self):
@@ -616,12 +609,17 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print('Something is wrong. This condition should not be trigger.')
         else:
             object_index = self.gridarea*self.config_dict['page']+i
-            # self.df.iloc[object_index,
-            #             self.df.columns.get_loc('grid_pos')] = i+1
             print(self.df.iloc[object_index,
                         self.df.columns.get_loc('file_name')]) if args.printname else True
             self.df.iloc[object_index,
                         self.df.columns.get_loc('classification')] = new_class
+            
+            range_low = self.config_dict['page']*self.gridarea
+            range_high = min(len(self.df),(self.config_dict['page']+1)*(self.gridarea))
+            if hasattr(self, 'time_0'):
+                self.df.iloc[range(range_low,range_high),
+                        self.df.columns.get_loc('time')] += (time() - self.time_0)
+                self.time_0 = time()
 
             self.bclickcounter.setText((self.df['classification'] == C_LENS).sum().astype(int))
             self.df.to_csv(
@@ -689,11 +687,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print('Reading '+ self.df_name)
             df = pd.read_csv(self.df_name)
             if np.all(self.listimage == df['file_name'].values):
+                if 'time' not in df.keys():
+                    df['time'] = 0
                 return df
             else:
                 print("Classification file corresponds to a different dataset.")
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
-                # file_iteration = find_filename_iteration(string_tested)
                 file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
 
         
@@ -708,8 +707,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         page,grid_pos = iloc_to_page_and_grid_pos(np.array(df.index) ,gridarea = self.gridarea)
         df['page'] = page
         df['grid_pos'] = grid_pos
-        # df['page'] = np.zeros(np.shape(self.listimage))
-        # df['grid_pos'] = np.zeros(np.shape(self.listimage))
+        df['time'] = np.zeros(np.shape(self.listimage))
         return df
 
     def update_grid(self):
@@ -743,7 +741,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 button.deactivate()
                 # button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
                 # raise
-
             j = j+1
             i = i+1
 
