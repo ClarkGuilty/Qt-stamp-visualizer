@@ -242,6 +242,7 @@ class SingleImage(QtWidgets.QLabel):
         # if self.is_activate:
         # if self.is_a_candidate == C_UNINTERESTING:
         self._pixmap = QPixmap(self.filepath)
+        print(f"{self.filepath = }")
         # elif self.is_a_candidate == C_LENS:
         #     self._pixmap = QPixmap(self.lens_background_path)
         # elif self.is_a_candidate == C_INTERESTING:
@@ -329,6 +330,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
+        self.scratchpath = './.temp_multiband'
+        os.makedirs(self.scratchpath,exist_ok=True)
         self.scale2funct = {'identity':identity,
                             'sqrt':np.sqrt,
                             'log':log,
@@ -347,12 +350,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.stampspath = args.path
         self.main_band = args.main_band
-        self.bands = args.color_bands.split(",")
+        self.color_bands = args.color_bands.split(",")
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         # self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
         self.random_seed = args.seed
 
-        base_band_path = join(self.stampspath, f'[{",".join(self.bands)}]')
+        base_band_path = join(self.stampspath, f'[{",".join(self.color_bands)}]')
         color_bands_path = join(self.stampspath, self.main_band)
         
         if args.fits is None:
@@ -458,8 +461,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         
         self.main_band = args.main_band
-        print(join(self.stampspath,self.main_band,self.listimage[0]))
-        test_label = SingleImage(join(self.stampspath,self.main_band,self.listimage[0]),
+        self.all_bands = [self.main_band, *self.color_bands]
+        # print(join(self.stampspath,self.main_band,self.listimage[0]))
+        print(f"{self.all_bands = }")
+        # self.object_paths = [join(self.stampspath,band_path) for band_path in self.all_bands]
+
+        test_i = 0
+        self.prepare_pngs(test_i)
+
+        test_label = SingleImage(
+                    # join(self.stampspath,self.main_band,self.listimage[0]),
+                    self.filepath(test_i,self.main_band),
                     image_width=None,
                     image_height=None,
                     )
@@ -784,37 +796,44 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.timer_0 = time()
 
-    def prepare_pngs(self):
-        scaling_factor = np.nanpercentile(image,q=90)
-        if scaling_factor == 0:
-            # scaling_factor = np.nanpercentile(image,q=99)
-            scaling_factor = 1
-        image = image / scaling_factor*300 #Rescaling for better visualization.
-        self.image = np.copy(image)
-        if scale_min is not None and scale_max is not None:
-            self.scale_min = scale_min
-            self.scale_max = scale_max
-        else:
-            self.scale_min, self.scale_max = self.scale_val(image)
-        image = self.rescale_image(image)
-        self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+    def prepare_pngs(self, i):
+        # scaling_factor = np.nanpercentile(image,q=90)
+        # if scaling_factor == 0:
+        #     # scaling_factor = np.nanpercentile(image,q=99)
+        #     scaling_factor = 1
+        # image = image / scaling_factor*300 #Rescaling for better visualization.
+        # self.image = np.copy(image)
+        # if scale_min is not None and scale_max is not None:
+        #     self.scale_min = scale_min
+        #     self.scale_max = scale_max
+        # else:
+        #     self.scale_min, self.scale_max = self.scale_val(image)
+        # image = self.rescale_image(image)
+        # self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
 
         if self.filetype == "FITS":
-            image = self.load_fits(self.filename)
-            image = self.read_fits(i)
-            scaling_factor = np.nanpercentile(image,q=90)
-            if scaling_factor == 0:
-                # scaling_factor = np.nanpercentile(image,q=99)
-                scaling_factor = 1
-            image = image / scaling_factor * 300 #Rescaling for better visualization.
-            scale_min, scale_max = self.scale_val(image)
-            image = self.rescale_image(image, scale_min, scale_max)
-            image[np.isnan(image)] = np.nanmin(image)
-            
-            plt.imsave(self.filepath(i, self.config_dict['page']),
-                    image, cmap=self.config_dict['colormap'], origin="lower")
+            images = {}
+
+            for band in self.all_bands:
+                image = self.load_fits(join(self.stampspath,band,self.listimage[i]))
+                scaling_factor = np.nanpercentile(image,q=90)
+                if scaling_factor == 0:
+                    # scaling_factor = np.nanpercentile(image,q=99)
+                    scaling_factor = 1
+                image = image / scaling_factor * 300 #Rescaling for better visualization.
+                scale_min, scale_max = self.scale_val(image)
+                image = self.rescale_image(image, scale_min, scale_max)
+                image[np.isnan(image)] = np.nanmin(image)
+                
+                images[band] = np.copy(image)
+                mpimg.imsave(self.filepath(i, band),
+                        image, cmap=self.config_dict['colormap'], origin="lower")
         else:
             return path_to_image
+
+    def filepath(self, i, band):
+        return join(self.scratchpath,
+                    f"{str(i+1)}_{band}_{self.config_dict['scale']}_{self.config_dict['colormap']}.png")
 
     @Slot()
     def prefetch_legacysurvey(self):
@@ -1071,13 +1090,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         vmax = np.nanmax([image_array[i][xmin:xmax, ymin:ymax] for i in range(len(image_array))])
         return vmin*1.0, vmax*1.3 #vmin is 1 sigma of noise.
 
-    def rescale_image(self, image):
-            factor = self.scale(self.scale_max - self.scale_min)
-            image = image.clip(min=self.scale_min, max=self.scale_max)
+    def rescale_image(self, image, scale_min, scale_max):
+            factor = self.scale(scale_max - scale_min)
+            image = image.clip(min=scale_min, max=scale_max)
             #image = (image - self.scale_min) / factor
-            indices0 = np.where(image < self.scale_min)
-            indices1 = np.where((image >= self.scale_min) & (image <= self.scale_max))
-            indices2 = np.where(image > self.scale_max)
+            indices0 = np.where(image < scale_min)
+            indices1 = np.where((image >= scale_min) & (image <= scale_max))
+            indices2 = np.where(image > scale_max)
             image[indices0] = 0.0
             image[indices2] = 1.0
             image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
