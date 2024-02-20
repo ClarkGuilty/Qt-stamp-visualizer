@@ -21,7 +21,7 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut
+from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QClipboard
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -43,8 +43,8 @@ parser.add_argument('-N',"--name", help="name of the classifying session.",
                     default=None)
 parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
                     default="VIS")
-parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Blue to Red. Example: "J,H,K"',
-                    default="J,H,Y")
+parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
+                    default="Y,J,H")
 parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
 parser.add_argument("--verbose", help="activates loging to terminal",
@@ -91,8 +91,11 @@ def log(x):
 #     "Simple log base 1000 function that ignores numbers less than 0"
 #     return np.log(a*x+1) / np.log(a)
 
+# def log(x):
+#     return np.arcsinh(10*x)/3
+
 def asinh2(x):
-    return np.arcsinh(x/2)
+    return np.arcsinh(10*x)/3
 
 
 def natural_sort(l): 
@@ -190,7 +193,11 @@ class FetchThread(QThread):
         w = WCS(header,fix=False)
         sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
         image_pixel_size = np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600
-        return sky[0][0], sky[1][0], np.round(image_pixel_size,decimals=4), np.max(w.array_shape)
+        return (sky[0][0], sky[1][0],
+                np.round(image_pixel_size,decimals=4),
+                np.max(w.array_shape)
+               )
+
 
     def interrupt(self):
         self._active = False
@@ -201,7 +208,7 @@ class FetchThread(QThread):
         while self._active and index < len(self.df): 
             stamp = self.df.iloc[index]
             if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
-                f = join(self.stampspath,self.listimage[index])
+                f = join(self.stampspath,self.main_band,self.listimage[index])
                 ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
             else:
                 ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
@@ -232,6 +239,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'colormap':'gist_gray',
                     'scale':'log',
                     'keyboardshortcuts':False,
+                    'colorbandsvisible':False
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -344,13 +352,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
-        # self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
-
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
         self.plot_layout_area = QtWidgets.QGridLayout()
         self.plot_layout_0 = QtWidgets.QHBoxLayout()
-        self.plot_layout_1 = QtWidgets.QHBoxLayout()
+        self.plot_layout_1_Widget = QtWidgets.QWidget()
+        self.plot_layout_1 = QtWidgets.QHBoxLayout(self.plot_layout_1_Widget)
         button_layout = QtWidgets.QVBoxLayout()
         button_row0_layout = QtWidgets.QHBoxLayout()
         button_row10_layout = QtWidgets.QHBoxLayout()
@@ -369,7 +376,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             font[band].setPointSize(16)
             self.label_plot[band].setFont(font[band])
 
-        self.label_layout.addWidget(self.label_plot[self.all_bands[0]])
+        # self.label_layout.addWidget(self.label_plot[self.all_bands[0]])
+        self.label_layout.addWidget(self.label_plot[_LEGACY_SURVEY_KEY])
+        self.label_layout.addWidget(self.label_plot[self.main_band])
 
 
         self.plot_layout_area.setSpacing(0)
@@ -398,6 +407,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot_layout_0.addWidget(self.canvas[band])
 
         for band in self.color_bands:
+            print(band)
             self.canvas[band].setStyleSheet('background-color: black')
             self.plot_layout_1.addWidget(self.canvas[band])
 
@@ -436,28 +446,49 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bds9.setEnabled(False)
         list_button_row0_layout.append(self.bds9)
 
-        self.bviewls = QtWidgets.QPushButton('View LS')
+        self.bviewls = QtWidgets.QPushButton('Open LS')
         self.bviewls.clicked.connect(self.viewls)
         if self.filetype != 'FITS':
             self.bviewls.setEnabled(False)
         list_button_row0_layout.append(self.bviewls)
 
+        self.bviewESA = QtWidgets.QPushButton('Open ESASky')
+        self.bviewESA.clicked.connect(self.viewESASky)
+        if self.filetype != 'FITS':
+            self.bviewESA.setEnabled(False)
+        list_button_row0_layout.append(self.bviewESA)
+
+        self.bhidecolorbands = QtWidgets.QCheckBox('Show color bands')
+        self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
+        if self.filetype == 'FITS':
+            if not self.config_dict['colorbandsvisible']:
+                    self.plot_layout_1_Widget.hide()
+            else:
+                    self.plot_layout_1_Widget.show()
+                    self.bhidecolorbands.toggle()
+        else:
+            self.config_dict['colorbandsvisible'] = False
+            self.bhidecolorbands.setEnabled(False)
+            self.plot_layout_1_Widget.hide()
+
+        list_button_row0_layout.append(self.bhidecolorbands)
+
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        # if self.filetype == 'FITS':
-        #     if not self.config_dict['legacysurvey']:
-        #             self.label_plot[1].hide()
-        #             self.canvas[1].hide()
-        #     else:
-        #             self.label_plot[1].show()
-        #             self.canvas[1].show()
-        #             self.blegsur.toggle()
-        #             self.set_legacy_survey()
-        # else:
-        #     self.config_dict['legacysurvey'] = False
-        #     self.blegsur.setEnabled(False)
-        #     self.label_plot[1].hide()
-        #     self.canvas[1].hide()
+        if self.filetype == 'FITS':
+            if not self.config_dict['legacysurvey']:
+                    self.label_plot[_LEGACY_SURVEY_KEY].hide()
+                    self.canvas[_LEGACY_SURVEY_KEY].hide()
+            else:
+                    self.label_plot[_LEGACY_SURVEY_KEY].show()
+                    self.canvas[_LEGACY_SURVEY_KEY].show()
+                    self.blegsur.toggle()
+                    self.set_legacy_survey()
+        else:
+            self.config_dict['legacysurvey'] = False
+            self.blegsur.setEnabled(False)
+            self.label_plot[_LEGACY_SURVEY_KEY].hide()
+            self.canvas[_LEGACY_SURVEY_KEY].hide()
         list_button_row0_layout.append(self.blegsur)
 
 
@@ -682,6 +713,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.kEdgeon = QShortcut(QKeySequence('h'), self)
         self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
+        self.kCopyRADec = QShortcut(QKeySequence(QKeySequence.Copy), self)
+        self.kCopyRADec.activated.connect(self.copy_RADec_to_keyboard)
+
+        self.kCopyRADec = QShortcut(QKeySequence('c'), self)
+        self.kCopyRADec.activated.connect(self.copy_filename_to_keyboard)
+
         for button in list_button_row0_layout:
             button_row0_layout.addWidget(button)
 
@@ -711,7 +748,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
-        self.plot_layout_area.addLayout(self.plot_layout_1,0,0)
+        # self.plot_layout_area.addLayout(self.plot_layout_1,0,0)
+        self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
 
         main_layout.addLayout(self.label_layout, 2)
         main_layout.addLayout(self.plot_layout_area, 88)
@@ -745,6 +783,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 temp_dict = json.load(f)
                 if temp_dict['colormap'] == 'gray':
                     temp_dict['colormap'] = "gist_gray"
+                for key in self.defaults.keys():
+                    if key not in temp_dict.keys():
+                        temp_dict[key] = self.defaults[key]
                 return temp_dict
         except FileNotFoundError:
             return self.defaults
@@ -754,10 +795,26 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 #        self.config_dict['counter']+1
         self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
 
+    @Slot()
     def keyClassify(self, grade, subgrade):
         if self.config_dict['keyboardshortcuts'] == True:
             self.classify(grade, subgrade)
         
+    @Slot()
+    def copy_RADec_to_keyboard(self):
+        clipboard = QClipboard()
+        to_copy = f"{self.ra},{self.dec}"
+        clipboard.setText(to_copy)
+        self.status.showMessage(f'RA,Dec copied to clipboard: {self.ra},{self.dec}',10000)
+
+
+    @Slot()
+    def copy_filename_to_keyboard(self):
+        clipboard = QClipboard()
+        to_copy = f"{self.filename}"
+        clipboard.setText(to_copy)
+        self.status.showMessage(f'Filename copied to clipboard: {self.filename}',10000)
+
     @Slot()
     def classify(self, grade, subgrade):
         cnt = self.config_dict['counter']# - 1
@@ -770,7 +827,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
         self.df.at[cnt,'pixel_size'] = self.image_pixel_size
-        # self.df.at[cnt,'image_dim'] = int(np.max(self.image.shape))
+        self.df.at[cnt,'image_dim'] = self.image_size
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
         # print(self.df.image_dim)
@@ -813,10 +870,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.canvas[_LEGACY_SURVEY_KEY].draw()
 
     def plot_no_legacy_survey(self, title='Waiting for data',
-                            canvas_id = 1, colormap='Greys_r'):
+                            colormap='Greys_r'):
         self.label_plot[_LEGACY_SURVEY_KEY].setText(title)
         self.ax[_LEGACY_SURVEY_KEY].cla()
-        self.ax[_LEGACY_SURVEY_KEY].imshow(np.zeros((66,66)), cmap=colormap)
+        self.ax[_LEGACY_SURVEY_KEY].imshow(np.zeros(self.images[self.main_band].shape), cmap=colormap)
         self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
         self.canvas[_LEGACY_SURVEY_KEY].draw()
 
@@ -825,7 +882,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # pixscale = '0.524' if self.config_dict['legacybigarea'] else '0.262'
         pixscale = str(LEGACY_SURVEY_PIXEL_SIZE)
         n_pixels_in_ls, pixels_big_fov_ls = legacy_survey_number_of_pixels(self.image_pixel_size, 
-                                    np.max(self.image.shape),
+                                    np.max(self.images[self.main_band].shape),
                                     pixels_big_fov_ls=488)
 
         size = pixels_big_fov_ls if self.config_dict['legacybigarea'] else n_pixels_in_ls
@@ -855,7 +912,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
             self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
             self.singleFetchWorker.failed_download.connect(partial(self.plot_no_legacy_survey,title='No Legacy Survey data available',
-                            canvas_id = 1, colormap='viridis'))
+                            colormap='viridis'))
             self.workerThread.finished.connect(self.workerThread.deleteLater)
             self.workerThread.setTerminationEnabled(True)
 
@@ -873,16 +930,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
     @Slot()
+    def checkbox_show_color_bands(self):
+        if self.config_dict['colorbandsvisible']:
+                self.plot_layout_1_Widget.hide()
+        else:
+                self.plot_layout_1_Widget.show()
+        self.config_dict['colorbandsvisible'] = not self.config_dict['colorbandsvisible']
+
+    @Slot()
     def checkbox_legacy_survey(self):
         if self.config_dict['legacysurvey']:
-        # if self.blegsur.isChecked():
                 self.label_plot[_LEGACY_SURVEY_KEY].hide()
                 self.canvas[_LEGACY_SURVEY_KEY].hide()
         else:
                 self.label_plot[_LEGACY_SURVEY_KEY].show()
                 self.canvas[_LEGACY_SURVEY_KEY].show()
                 self.set_legacy_survey()
-
         self.config_dict['legacysurvey'] = not self.config_dict['legacysurvey']
 
     @Slot()
@@ -909,13 +972,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def open_ds9(self):
-        filenames = [f"{join(self.stampspath,band,self.filename)}" for band in [self.main_band, *self.color_bands]]
-        subprocess.Popen(["ds9", '-fits',*filenames, '-zoom','8'  ])
+        band2zoom = {'VIS': 4,
+                    'H':12,
+                    'J':12,
+                    'Y':12,
+                    }
+        arguments = ["ds9", '-fits']
+        for band in [self.main_band, *self.color_bands]:
+            filename = f"{join(self.stampspath,band,self.filename)}"
+            arguments += [filename, '-zoom', 'to',str(band2zoom[band]), '-colorbar', 'no']
+        print(" ".join(arguments))
+        subprocess.Popen(arguments)
 
     @Slot()
     def viewls(self):
         webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10-grz&zoom=16&spectra".format(self.ra,self.dec))
-        #subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
+
+    @Slot()
+    def viewESASky(self):
+        website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.02&cooframe=J2000&sci=true&lang=en&"
+        # website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.022474915620381506&cooframe=J2000&sci=true&lang=en&euclid_image=perseus"
+        webbrowser.open(website)
+
 
     @Slot()
     def set_scale(self, button, scale):
@@ -959,16 +1037,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return std
 
     def scale_val(self,image_array):
-        if image_array.shape[0] > 170:
-            box_size_vmin = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
-            box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
+        if len(np.shape(image_array)) == 2:
+            image_array = [image_array]
+
+        if image_array[0].shape[0] > 170:
+            box_size_vmin = np.round(np.sqrt(np.prod(image_array[0].shape) * 0.001)).astype(int)
+            box_size_vmax = np.round(np.sqrt(np.prod(image_array[0].shape) * 0.01)).astype(int)
         else:
             #Sensible default values
             box_size_vmin = 5
             box_size_vmax = 14
 
-        if len(np.shape(image_array)) == 2:
-            image_array = [image_array]
         vmin = np.nanmin([self.background_rms_image(box_size_vmin, image_array[i]) for i in range(len(image_array))])
         
         xl, yl = np.shape(image_array[0])
@@ -1009,15 +1088,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # print(f"{len(indices1[0])}, {len(indices1[0])/np.prod(image.shape)}, {np.prod(image.shape)}")
             return image
 
-    def load_fits(self,filepath):
+    def load_fits(self,filepath, get_radec=False):
         opened_fits = fits.open(filepath)
-        self.ra,self.dec = self.get_ra_dec(opened_fits[0].header)
+        if get_radec:
+            self.ra,self.dec = self.get_ra_dec(opened_fits[0].header)
         return opened_fits[0].data
 
     def get_ra_dec(self,header):
         w = WCS(header,fix=False)
         sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
         self.image_pixel_size = np.round(np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600, decimals=4)
+        self.image_size = np.max(w.array_shape)
         return sky[0][0], sky[1][0]#, image_pixel_size
 
     def plot(self, scale_min = None, scale_max = None, band = None):
@@ -1032,8 +1113,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def plot_band(self, band, scale_min = None, scale_max = None):
         self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
+        get_radec = True if band == self.main_band else False
         if self.filetype == 'FITS':
-            image = self.load_fits(join(self.stampspath, band, self.filename))
+            image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
             scaling_factor = np.nanpercentile(image,q=90)
             if scaling_factor == 0:
                 # scaling_factor = np.nanpercentile(image,q=99)
@@ -1059,8 +1141,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(f"RGB image requires exactly 3 images. Bands provided: {base_bands}")
         self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
-        scale_min = max([self.scale_mins[band] for band in base_bands])
-        scale_max = max([self.scale_maxs[band] for band in base_bands])
+        
+        scale_min, scale_max = self.scale_val([self.images[band] for band in base_bands])
+        # scale_min = max([self.scale_mins[band] for band in base_bands])
+        # scale_max = max([self.scale_maxs[band] for band in base_bands])
         if self.filetype == 'FITS':
             image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
             for i, band  in enumerate(base_bands):
@@ -1074,15 +1158,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[composite_band].set_axis_off() #Always before .draw()!
         self.canvas[composite_band].draw()
 
-    def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
+    def replot(self, scale_min = None, scale_max = None):
         for band in self.all_bands:
-            if self.band_types[band] == COMPOSITE_BAND:
+            if self.band_types[band] in [COMPOSITE_BAND,
+                                         EXTERNAL_BAND]:
                 continue
             self.replot_band(band)
         for band in self.composite_bands:
             self.plot_composite_band(band)
 
-    def replot_band(self, band, scale_min = None, scale_max = None,canvas_id = 0):
+    def replot_band(self, band, scale_min = None, scale_max = None):
         self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         image = np.copy(self.images[band])
