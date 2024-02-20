@@ -69,6 +69,8 @@ LEGACY_SURVEY_PIXEL_SIZE=0.262
 SINGLE_BAND = 'single_band'
 MAIN_BAND = 'main_band'
 COMPOSITE_BAND = 'composite_band'
+EXTERNAL_BAND = 'external_band'
+_LEGACY_SURVEY_KEY = "Legacy Survey"
 
 if args.reset_config:
     os.remove('.config.json')
@@ -319,14 +321,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
-        
 
         self.main_band = args.main_band
         self.composite_bands = ["".join(self.color_bands[::-1])] #For now, only one composite band.
-        self.all_bands = [self.main_band, *self.composite_bands, *self.color_bands]
+        self.external_bands = [_LEGACY_SURVEY_KEY]
+        self.all_bands = [self.main_band,
+                          *self.composite_bands,
+                          *self.color_bands,
+                          *self.external_bands]
         self.band_types = ({self.main_band: MAIN_BAND} |
                           {band: COMPOSITE_BAND for band in self.composite_bands} |
-                          {band: SINGLE_BAND for band in self.color_bands})
+                          {band: SINGLE_BAND for band in self.color_bands} | 
+                          {band: EXTERNAL_BAND for band in self.external_bands})
 
         self.df = self.obtain_df()
 
@@ -357,8 +363,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
         self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
         self.counter_widget.setStyleSheet("font-size: 14px")
-#        self.status.addPermanentWidget(self.counter_widget)
-        # self.label_plot = [QtWidgets.QLabel(self.listimage[self.config_dict['counter']], alignment=Qt.AlignCenter),QtWidgets.QLabel("Legacy Survey", alignment=Qt.AlignCenter)]
+        
         self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
 
         font = {band: self.label_plot[band].font() for band in self.all_bands}
@@ -391,18 +396,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         for band in [self.main_band, *self.composite_bands]:
-            self.canvas[band].setStyleSheet('background-color: blue')
+            self.canvas[band].setStyleSheet('background-color: black')
             self.plot_layout_0.addWidget(self.canvas[band])
 
         for band in self.color_bands:
-            self.canvas[band].setStyleSheet('background-color: blue')
+            self.canvas[band].setStyleSheet('background-color: black')
             self.plot_layout_1.addWidget(self.canvas[band])
 
+        for band in self.external_bands:
+            self.canvas[band].setStyleSheet('background-color: black')
+            self.plot_layout_0.addWidget(self.canvas[band])
 
-        # self.canvas[0].setStyleSheet('background-color: blue')
-        # self.plot_layout.addWidget(self.canvas[0])
-
-        # print(join(self.stampspath,self.main_band,self.listimage[0]))
         print(f"{self.all_bands = }")
 
         self.ax = {band: self.figure[band].subplots() for band in self.all_bands}
@@ -874,11 +878,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def checkbox_legacy_survey(self):
         if self.config_dict['legacysurvey']:
         # if self.blegsur.isChecked():
-                self.label_plot[1].hide()
-                self.canvas[1].hide()
+                self.label_plot[_LEGACY_SURVEY_KEY].hide()
+                self.canvas[_LEGACY_SURVEY_KEY].hide()
         else:
-                self.label_plot[1].show()
-                self.canvas[1].show()
+                self.label_plot[_LEGACY_SURVEY_KEY].show()
+                self.canvas[_LEGACY_SURVEY_KEY].show()
                 self.set_legacy_survey()
 
         self.config_dict['legacysurvey'] = not self.config_dict['legacysurvey']
@@ -907,7 +911,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def open_ds9(self):
-        subprocess.Popen(["ds9", '-fits',self.filename, '-zoom','8'  ])
+        filenames = [f"{join(self.stampspath,band,self.filename)}" for band in [self.main_band, *self.color_bands]]
+        subprocess.Popen(["ds9", '-fits',*filenames, '-zoom','8'  ])
 
     @Slot()
     def viewls(self):
@@ -1019,7 +1024,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def plot(self, scale_min = None, scale_max = None, band = None):
         for band in self.all_bands:
-            if self.band_types[band] == COMPOSITE_BAND:
+            if self.band_types[band] in [COMPOSITE_BAND,
+                                         EXTERNAL_BAND]:
                 continue
             self.plot_band(band)
         for band in self.composite_bands:
