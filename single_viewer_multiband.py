@@ -27,8 +27,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib import image as mpimg
 
-
-
 import os
 from os.path import join
 
@@ -68,6 +66,10 @@ args = parser.parse_args()
 LEGACY_SURVEY_PATH = './Legacy_survey/'
 LEGACY_SURVEY_PIXEL_SIZE=0.262
 
+SINGLE_BAND = 'single_band'
+MAIN_BAND = 'main_band'
+COMPOSITE_BAND = 'composite_band'
+
 if args.reset_config:
     os.remove('.config.json')
 
@@ -79,12 +81,13 @@ if args.clean:
 def identity(x):
     return x
 
-# def log(x):
-#     return np.emath.logn(1000,x) #base 1000 like ds9
-
 def log(x):
     "Simple log base 1000 function that ignores numbers less than 0"
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
+
+# def log(x,a=1000):
+#     "Simple log base 1000 function that ignores numbers less than 0"
+#     return np.log(a*x+1) / np.log(a)
 
 def asinh2(x):
     return np.arcsinh(x/2)
@@ -153,7 +156,6 @@ class SingleFetchWorker(QObject):
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
-#            super().__init__(parent)
             QThread.__init__(self, parent)
 
             self.df = df
@@ -212,97 +214,6 @@ class FetchThread(QThread):
             index+=1
         return 0
 
-
-class SingleImage(QtWidgets.QLabel):
-    # clicked = Signal(str)
-    def __init__(self,
-                    filepath,
-                    # status,
-                    # activation,
-                    # update_df_func,
-                    image_width=None,
-                    image_height=None,
-                    parent=None):
-        QtWidgets.QLabel.__init__(self, parent)
-        self.filepath = filepath
-        self.is_activate=True
-        # self.deactivated_path = deactivated_path
-        # self.is_a_candidate = status
-        # self.update_df_func = update_df_func
-
-        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
-        sizePolicy = QtWidgets.QSizePolicy.Ignored
-        self.setSizePolicy(sizePolicy,sizePolicy)
-
-        args.resize = False
-        args.minimum_size = 200
-
-        self.setScaledContents(args.resize)
-
-        # if self.is_activate:
-        # if self.is_a_candidate == C_UNINTERESTING:
-        self._pixmap = QPixmap(self.filepath)
-        print(f"{self.filepath = }")
-        # elif self.is_a_candidate == C_LENS:
-        #     self._pixmap = QPixmap(self.lens_background_path)
-        # elif self.is_a_candidate == C_INTERESTING:
-        #     self._pixmap = QPixmap(self.interesting_background_path)
-        # else:
-        #     self._pixmap = QPixmap(self.deactivated_path)
-        
-        self.target_width = 66 #At the very least, should be the initial size
-        self.target_height = 66 #
-
-        self.user_minimum_size = 66 if args.minimum_size is None else args.minimum_size
-        self.setMinimumSize(self.user_minimum_size,self.user_minimum_size)
-
-        if image_width is not None:
-            self.target_width = image_width
-        if image_height is not None:
-            self.target_height = image_height
-
-        self.aspectRatioPolicy = Qt.KeepAspectRatio
-        # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding #Makes the problem even worse.
-        
-
-        self.setPixmap(self._pixmap.scaled(
-            self.target_width, self.target_height,
-            self.aspectRatioPolicy))
-
-    def activate(self):
-        self.is_activate = True
-
-    def deactivate(self):
-        self.change_and_paint_pixmap(self.deactivated_path)
-        self.is_activate = False
-
-    def change_and_paint_pixmap(self, filepath):
-        if self.is_activate:
-            self.filepath = filepath
-            self._pixmap = QPixmap(self.filepath)
-            self.setPixmap(self._pixmap.scaled(
-                self.width(), self.height(),
-                self.aspectRatioPolicy))
-
-    def paint_pixmap(self):
-        if self.is_activate:
-            self.setPixmap(self._pixmap.scaled(
-                # self.target_width, self.target_height,
-                self.width(), self.height(),
-                self.aspectRatioPolicy
-                ))
-            # self.setPixmap(self._pixmap)
-
-    def change_pixmap(self, filepath):
-        self.filepath = filepath
-        self._pixmap = QPixmap(self.filepath)
-
-    def resizeEvent(self, event):
-        self.setPixmap(self._pixmap.scaled(
-            self.width(), self.height(),
-            self.aspectRatioPolicy))
-
-
 class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -330,8 +241,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
-        self.scratchpath = './.temp_multiband'
-        os.makedirs(self.scratchpath,exist_ok=True)
+        # self.scratchpath = './.temp_multiband'
+        # os.makedirs(self.scratchpath,exist_ok=True)
         self.scale2funct = {'identity':identity,
                             'sqrt':np.sqrt,
                             'log':log,
@@ -410,12 +321,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             rng.shuffle(self.listimage) #inplace shuffling
         
 
+        self.main_band = args.main_band
+        self.composite_bands = ["".join(self.color_bands[::-1])] #For now, only one composite band.
+        self.all_bands = [self.main_band, *self.composite_bands, *self.color_bands]
+        self.band_types = ({self.main_band: MAIN_BAND} |
+                          {band: COMPOSITE_BAND for band in self.composite_bands} |
+                          {band: SINGLE_BAND for band in self.color_bands})
+
         self.df = self.obtain_df()
 
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
-        self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
+        # self.filename = join(self.stampspath, 'VIS',self.listimage[self.config_dict['counter']])
+        self.filename = join(self.listimage[self.config_dict['counter']])
         # self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
@@ -425,7 +344,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
-        self.plot_layout = QtWidgets.QHBoxLayout()
+        self.plot_layout_area = QtWidgets.QGridLayout()
+        self.plot_layout_0 = QtWidgets.QHBoxLayout()
+        self.plot_layout_1 = QtWidgets.QHBoxLayout()
         button_layout = QtWidgets.QVBoxLayout()
         button_row0_layout = QtWidgets.QHBoxLayout()
         button_row10_layout = QtWidgets.QHBoxLayout()
@@ -434,57 +355,63 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row3_layout = QtWidgets.QHBoxLayout()
 
         self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
+        self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
         self.counter_widget.setStyleSheet("font-size: 14px")
 #        self.status.addPermanentWidget(self.counter_widget)
+        # self.label_plot = [QtWidgets.QLabel(self.listimage[self.config_dict['counter']], alignment=Qt.AlignCenter),QtWidgets.QLabel("Legacy Survey", alignment=Qt.AlignCenter)]
+        self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
+
+        font = {band: self.label_plot[band].font() for band in self.all_bands}
+        for band in self.all_bands:
+            font[band].setPointSize(16)
+            self.label_plot[band].setFont(font[band])
+
+        self.label_layout.addWidget(self.label_plot[self.all_bands[0]])
 
 
-        self.label_plot = [QtWidgets.QLabel(self.listimage[self.config_dict['counter']], alignment=Qt.AlignCenter),
-                            QtWidgets.QLabel("Legacy Survey", alignment=Qt.AlignCenter)]
-        font = [x.font() for x in self.label_plot]
-        for i in range(len(font)):
-            font[i].setPointSize(16)
-            self.label_plot[i].setFont(font[i])
-        self.label_layout.addWidget(self.label_plot[0])
+        self.plot_layout_area.setSpacing(0)
+        self.plot_layout_area.setContentsMargins(0,0,0,0)
+        self.plot_layout_0.setSpacing(0)
+        self.plot_layout_0.setContentsMargins(0,0,0,0)
+        self.plot_layout_1.setSpacing(0)
+        self.plot_layout_1.setContentsMargins(0,0,0,0)
 
-        self.plot_layout.setSpacing(0)
-        self.plot_layout.setContentsMargins(0,0,0,0)
 
-        self.figure = [Figure(figsize=(5,3),layout="constrained",facecolor='black'),
-            Figure(figsize=(5,3),layout="constrained",facecolor='black')]
-        #self.figure = [Figure(),Figure(figsize=(5,3))]
-#        self.figure[0].tight_layout()
+        self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
+        self.canvas = {band: FigureCanvas(self.figure[band]) for band in self.all_bands}
+        
+        # bands_positions = {
+        #                 'VIS': (0,0),
+        #                 'J': (1,0),
+        #                 'H': (1,1),
+        #                 'Y': (1,2),
+        # }
+        # for band in self.all_bands:
+            # self.plot_layout_0.addWidget(self.canvas[band], *bands_positions[band]) #Use this if the layout is a grid
 
-        self.canvas = [FigureCanvas(self.figure[0]),FigureCanvas(self.figure[1])]
-        self.canvas[0].setStyleSheet('background-color: blue')
+
+        for band in [self.main_band, *self.composite_bands]:
+            self.canvas[band].setStyleSheet('background-color: blue')
+            self.plot_layout_0.addWidget(self.canvas[band])
+
+        for band in self.color_bands:
+            self.canvas[band].setStyleSheet('background-color: blue')
+            self.plot_layout_1.addWidget(self.canvas[band])
+
+
+        # self.canvas[0].setStyleSheet('background-color: blue')
         # self.plot_layout.addWidget(self.canvas[0])
 
-
-        
-        self.main_band = args.main_band
-        self.all_bands = [self.main_band, *self.color_bands]
         # print(join(self.stampspath,self.main_band,self.listimage[0]))
         print(f"{self.all_bands = }")
-        # self.object_paths = [join(self.stampspath,band_path) for band_path in self.all_bands]
 
-        test_i = 0
-        self.prepare_pngs(test_i)
-
-        test_label = SingleImage(
-                    # join(self.stampspath,self.main_band,self.listimage[0]),
-                    self.filepath(test_i,self.main_band),
-                    image_width=None,
-                    image_height=None,
-                    )
+        self.ax = {band: self.figure[band].subplots() for band in self.all_bands}
+        self.images = {}
+        self.scale_mins = {}
+        self.scale_maxs = {}
 
 
-        self.plot_layout.addWidget(test_label)
-        self.ax = [self.figure[0].subplots(),self.figure[1].subplots()]
-
-
-        self.label_layout.addWidget(self.label_plot[1])
-        self.plot_layout.addWidget(self.canvas[1])
-
-        # self.plot()
+        self.plot()
 
 
         list_button_row0_layout=[]
@@ -515,20 +442,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        if self.filetype == 'FITS':
-            if not self.config_dict['legacysurvey']:
-                    self.label_plot[1].hide()
-                    self.canvas[1].hide()
-            else:
-                    self.label_plot[1].show()
-                    self.canvas[1].show()
-                    self.blegsur.toggle()
-                    self.set_legacy_survey()
-        else:
-            self.config_dict['legacysurvey'] = False
-            self.blegsur.setEnabled(False)
-            self.label_plot[1].hide()
-            self.canvas[1].hide()
+        # if self.filetype == 'FITS':
+        #     if not self.config_dict['legacysurvey']:
+        #             self.label_plot[1].hide()
+        #             self.canvas[1].hide()
+        #     else:
+        #             self.label_plot[1].show()
+        #             self.canvas[1].show()
+        #             self.blegsur.toggle()
+        #             self.set_legacy_survey()
+        # else:
+        #     self.config_dict['legacysurvey'] = False
+        #     self.blegsur.setEnabled(False)
+        #     self.label_plot[1].hide()
+        #     self.canvas[1].hide()
         list_button_row0_layout.append(self.blegsur)
 
 
@@ -670,11 +597,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.blog.clicked.connect(partial(self.set_scale,self.blog,'log'))
         list_scales_buttons.append(self.blog)
 
-        # self.basinh = QtWidgets.QPushButton('Asinh')
-        # self.basinh.clicked.connect(self.set_scale_asinh)
-        # self.basinh.clicked.connect(partial(self.set_scale,self.basinh,'asinh2'))
-        # list_scales_buttons.append(self.basinh)
-
         list_colormap_buttons = []
         self.bInverted = QtWidgets.QPushButton('Inverted')
         self.bInverted.clicked.connect(partial(self.set_colormap,self.bInverted,'gist_yarg'))
@@ -775,65 +697,29 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for button in list_colormap_buttons:
             button_row3_layout.addWidget(button)
 
-        # button_row3_layout.addWidget(self.bInverted)
-        # button_row3_layout.addWidget(self.bBb8)
-        # button_row3_layout.addWidget(self.bGray)
-        # button_row3_layout.addWidget(self.bViridis)
-
-        button_layout.addLayout(button_row0_layout, 25)
-        button_layout.addLayout(button_row10_layout, 25)
-        button_layout.addLayout(button_row11_layout, 25)
+        button_layout_spacing = 0
+        button_layout.addLayout(button_row0_layout, button_layout_spacing)
+        button_layout.addLayout(button_row10_layout, button_layout_spacing)
+        button_layout.addLayout(button_row11_layout, button_layout_spacing)
         if self.filetype == 'FITS':
-            button_layout.addLayout(button_row2_layout, 25)
-            button_layout.addLayout(button_row3_layout, 25)
+            button_layout.addLayout(button_row2_layout, button_layout_spacing)
+            button_layout.addLayout(button_row3_layout, button_layout_spacing)
         else:
             print("Use fits images to change colormap and colorscale.")
 
 
+        self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
+        self.plot_layout_area.addLayout(self.plot_layout_1,0,0)
+
         main_layout.addLayout(self.label_layout, 2)
-        main_layout.addLayout(self.plot_layout, 88)
+        main_layout.addLayout(self.plot_layout_area, 88)
         main_layout.addLayout(button_layout, 10)
 
         self.timer_0 = time()
 
-    def prepare_pngs(self, i):
-        # scaling_factor = np.nanpercentile(image,q=90)
-        # if scaling_factor == 0:
-        #     # scaling_factor = np.nanpercentile(image,q=99)
-        #     scaling_factor = 1
-        # image = image / scaling_factor*300 #Rescaling for better visualization.
-        # self.image = np.copy(image)
-        # if scale_min is not None and scale_max is not None:
-        #     self.scale_min = scale_min
-        #     self.scale_max = scale_max
-        # else:
-        #     self.scale_min, self.scale_max = self.scale_val(image)
-        # image = self.rescale_image(image)
-        # self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
-
-        if self.filetype == "FITS":
-            images = {}
-
-            for band in self.all_bands:
-                image = self.load_fits(join(self.stampspath,band,self.listimage[i]))
-                scaling_factor = np.nanpercentile(image,q=90)
-                if scaling_factor == 0:
-                    # scaling_factor = np.nanpercentile(image,q=99)
-                    scaling_factor = 1
-                image = image / scaling_factor * 300 #Rescaling for better visualization.
-                scale_min, scale_max = self.scale_val(image)
-                image = self.rescale_image(image, scale_min, scale_max)
-                image[np.isnan(image)] = np.nanmin(image)
-                
-                images[band] = np.copy(image)
-                mpimg.imsave(self.filepath(i, band),
-                        image, cmap=self.config_dict['colormap'], origin="lower")
-        else:
-            return path_to_image
-
-    def filepath(self, i, band):
-        return join(self.scratchpath,
-                    f"{str(i+1)}_{band}_{self.config_dict['scale']}_{self.config_dict['colormap']}.png")
+    # def filepath(self, i, band):
+    #     return join(self.scratchpath,
+    #                 f"{str(i+1)}_{band}_{self.config_dict['scale']}_{self.config_dict['colormap']}.png")
 
     @Slot()
     def prefetch_legacysurvey(self):
@@ -882,7 +768,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.df.at[cnt,'dec'] = self.dec
         self.df.at[cnt,'comment'] = grade
         self.df.at[cnt,'pixel_size'] = self.image_pixel_size
-        self.df.at[cnt,'image_dim'] = int(np.max(self.image.shape))
+        # self.df.at[cnt,'image_dim'] = int(np.max(self.image.shape))
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
         # print(self.df.image_dim)
@@ -1090,6 +976,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         vmax = np.nanmax([image_array[i][xmin:xmax, ymin:ymax] for i in range(len(image_array))])
         return vmin*1.0, vmax*1.3 #vmin is 1 sigma of noise.
 
+    def rescale_image_composite(self, image, scale_min, scale_max, composite = False):
+            factor = self.scale(scale_max - scale_min)
+            image = np.clip(image, scale_min, scale_max)
+            image -= image.min()
+
+            # indices0 = np.where(image <= 0)
+            indices1 = np.where(image > 0)
+
+            # image[indices0] = 0 #if not composite else scale_min
+            # image[indices2] = 1.0
+            image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
+            return image
+
     def rescale_image(self, image, scale_min, scale_max):
             factor = self.scale(scale_max - scale_min)
             image = image.clip(min=scale_min, max=scale_max)
@@ -1097,9 +996,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             indices0 = np.where(image < scale_min)
             indices1 = np.where((image >= scale_min) & (image <= scale_max))
             indices2 = np.where(image > scale_max)
-            image[indices0] = 0.0
-            image[indices2] = 1.0
+            # image = image - scale_min
+            image[indices0] = 0.0 #Why would there be a value below scale_min?
+            image[indices2] = 1.0 #This is probably useless
             image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
+
+            # condition = (image >= scale_min) #* (image <= scale_max)
+            # print(len(indices1[0]))
+            # print(f"{len(indices1[0])}, {len(indices1[0])/np.prod(image.shape)}, {np.prod(image.shape)}")
             return image
 
     def load_fits(self,filepath):
@@ -1113,42 +1017,78 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.image_pixel_size = np.round(np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600, decimals=4)
         return sky[0][0], sky[1][0]#, image_pixel_size
 
-    def plot(self, scale_min = None, scale_max = None, canvas_id = 0):
-        self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
-        self.ax[canvas_id].cla()
+    def plot(self, scale_min = None, scale_max = None, band = None):
+        for band in self.all_bands:
+            if self.band_types[band] == COMPOSITE_BAND:
+                continue
+            self.plot_band(band)
+        for band in self.composite_bands:
+            self.plot_composite_band(band)
+
+    def plot_band(self, band, scale_min = None, scale_max = None):
+        self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
+        self.ax[band].cla()
         if self.filetype == 'FITS':
-            image = self.load_fits(self.filename)
+            image = self.load_fits(join(self.stampspath, band, self.filename))
             scaling_factor = np.nanpercentile(image,q=90)
             if scaling_factor == 0:
                 # scaling_factor = np.nanpercentile(image,q=99)
                 scaling_factor = 1
             image = image / scaling_factor*300 #Rescaling for better visualization.
-            self.image = np.copy(image)
-            if scale_min is not None and scale_max is not None:
-                self.scale_min = scale_min
-                self.scale_max = scale_max
-            else:
-                self.scale_min, self.scale_max = self.scale_val(image)
-            image = self.rescale_image(image)
-            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+            self.images[band] = np.copy(image)
+            if scale_min is None or scale_max is None:
+                scale_min, scale_max = self.scale_val(image)
+            self.scale_mins[band] = scale_min
+            self.scale_maxs[band] = scale_max
+            image = self.rescale_image(image, scale_min, scale_max)
+            self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
             image = np.asarray(Image.open(self.filename))
             self.image = np.copy(image)
-            self.ax[canvas_id].imshow(image, origin='upper') #For pngs this is best.
-        self.ax[canvas_id].set_axis_off() #Always before .draw()!
-        self.canvas[canvas_id].draw()
+            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
+        self.ax[band].set_axis_off() #Always before .draw()!
+        self.canvas[band].draw()
+
+    def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
+        base_bands = list(composite_band)
+        if len(base_bands) != 3:
+            print(f"RGB image requires exactly 3 images. Bands provided: {base_bands}")
+        self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
+        self.ax[composite_band].cla()
+        scale_min = max([self.scale_mins[band] for band in base_bands])
+        scale_max = max([self.scale_maxs[band] for band in base_bands])
+        if self.filetype == 'FITS':
+            image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
+            for i, band  in enumerate(base_bands):
+                image[:,:, i] = self.rescale_image_composite(self.images[band], scale_min, scale_max)
+                print(f"Band: {band}, limits:" , image.min(), image.max())
+            self.ax[composite_band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        else:
+            image = np.asarray(Image.open(self.filename))
+            self.image = np.copy(image)
+            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
+        self.ax[composite_band].set_axis_off() #Always before .draw()!
+        self.canvas[composite_band].draw()
 
     def replot(self, scale_min = None, scale_max = None,canvas_id = 0):
-        self.label_plot[canvas_id].setText(self.listimage[self.config_dict['counter']])
-        self.ax[canvas_id].cla()
-        image = np.copy(self.image)
+        for band in self.all_bands:
+            if self.band_types[band] == COMPOSITE_BAND:
+                continue
+            self.replot_band(band)
+        for band in self.composite_bands:
+            self.plot_composite_band(band)
+
+    def replot_band(self, band, scale_min = None, scale_max = None,canvas_id = 0):
+        self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
+        self.ax[band].cla()
+        image = np.copy(self.images[band])
         if self.filetype == 'FITS':
-            image = self.rescale_image(image)
-            self.ax[canvas_id].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+            image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
+            self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.ax[canvas_id].imshow(image, origin='lower')
-        self.ax[canvas_id].set_axis_off()
-        self.canvas[canvas_id].draw()
+            self.ax[band].imshow(image, origin='lower')
+        self.ax[band].set_axis_off()
+        self.canvas[band].draw()
 
 
     def obtain_df(self):
@@ -1207,12 +1147,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
         df['comment'] = ['Empty'] * len(self.listimage)
-        df['image_dim'] = np.full(len(self.listimage),pd.NA)
+        # df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0)
         return df
 
     def go_to_counter_page(self):
-        self.filename = join(self.stampspath, self.listimage[self.config_dict['counter']])
+        self.filename = self.listimage[self.config_dict['counter']]
         self.plot()
         if self.config_dict['legacysurvey']:
             self.set_legacy_survey()
@@ -1225,7 +1165,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def goto(self):
-        i, ok = QtWidgets.QInputDialog.getInt(self, 'Visual inspection', '',self.config_dict['counter']+1,1,self.COUNTER_MAX+1)
+        i, ok = QtWidgets.QInputDialog.getInt(self,
+                                             'Visual inspection',
+                                             '',
+                                             self.config_dict['counter']+1,
+                                             1,
+                                             self.COUNTER_MAX+1)
         if ok:
             self.config_dict['counter'] = i-1
             self.go_to_counter_page()
