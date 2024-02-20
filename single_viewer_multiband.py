@@ -344,9 +344,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
-        self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
-#        pixmap = QPixmap()
-        #self.figure.gca().set_facecolor('black')
+        # self.legacy_survey_qlabel = QtWidgets.QLabel(alignment=Qt.AlignCenter)
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
@@ -805,22 +803,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             return '{0:.2f} x {0:.2f}'.format(size_in_sky.to(units))
         return "{0:.2f} x {0:.2f}".format(size_in_sky.to(units))
 
-    def plot_legacy_survey(self, savefile, title, canvas_id = 1):
-        self.label_plot[canvas_id].setText(title)
-        self.ax[canvas_id].cla()
+    def plot_legacy_survey(self, savefile, title):
+        self.label_plot[_LEGACY_SURVEY_KEY].setText(title)
+        self.ax[_LEGACY_SURVEY_KEY].cla()
         if savefile != self.legacy_filename:
             return
-        self.ax[canvas_id].imshow(mpimg.imread(savefile))
-        self.ax[canvas_id].set_axis_off()
-        self.canvas[canvas_id].draw()
+        self.ax[_LEGACY_SURVEY_KEY].imshow(mpimg.imread(savefile))
+        self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
+        self.canvas[_LEGACY_SURVEY_KEY].draw()
 
     def plot_no_legacy_survey(self, title='Waiting for data',
                             canvas_id = 1, colormap='Greys_r'):
-        self.label_plot[canvas_id].setText(title)
-        self.ax[canvas_id].cla()
-        self.ax[canvas_id].imshow(np.zeros((66,66)), cmap=colormap)
-        self.ax[canvas_id].set_axis_off()
-        self.canvas[canvas_id].draw()
+        self.label_plot[_LEGACY_SURVEY_KEY].setText(title)
+        self.ax[_LEGACY_SURVEY_KEY].cla()
+        self.ax[_LEGACY_SURVEY_KEY].imshow(np.zeros((66,66)), cmap=colormap)
+        self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
+        self.canvas[_LEGACY_SURVEY_KEY].draw()
 
     @Slot()
     def set_legacy_survey(self):
