@@ -83,19 +83,57 @@ if args.clean:
 def identity(x):
     return x
 
-def log(x):
-    "Simple log base 1000 function that ignores numbers less than 0"
-    return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
-
-# def log(x,a=1000):
+# def log(x):
 #     "Simple log base 1000 function that ignores numbers less than 0"
-#     return np.log(a*x+1) / np.log(a)
+#     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
+
+def log(x,a=100):
+    "Simple log base 1000 function that ignores numbers less than 0"
+    return np.log(a*x+1) / np.log(a)
 
 # def log(x):
 #     return np.arcsinh(10*x)/3
 
 def asinh2(x):
     return np.arcsinh(10*x)/3
+
+
+def print_range(image):
+    return f"{image.min() = }, {image.max() = }"
+
+def get_value_range(x, p=98):
+    q = (100 - p)/2
+    low = np.nanpercentile(x, q)
+    high = np.nanpercentile(x, 100-q)
+    return low, high
+
+def get_value_range_asymmetric(x, q_low=1, q_high=1):
+    low = np.nanpercentile(x, q_low)
+    high = np.nanpercentile(x, 100-q_high)
+    return low, high
+
+def clip_normalize(x, low=None, high=None):
+    x = np.clip(x, low, high)
+    x = (x - low)/(high - low)
+    return x 
+
+def contrast_bias_scale(x, contrast, bias):
+    x = ((x - bias) * contrast + 0.5 )
+    x = np.clip(x, 0, 1)
+    return x
+
+def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min, scale_max, scale):
+    bkg_level = clip_normalize(value_at_min, scale_min, scale_max)
+    bkg_level = scale(bkg_level)
+    contrast = (bkg_color - 1) / (bkg_level - 1) # with bkg_level != 1 and bkg_color != 1
+    bias = 1 - (bkg_level-1)/(2*(bkg_color-1))
+    return contrast, bias
+# 0 = (bkg_level - bias) * contrast + 0.5
+
+# y = ((x - bias) * contrast + 0.5 )
+# 0 = (0 - bias) * contrast + 0.5
+# bias*contrast = 0.5 (setting it to 0)
+
 
 
 def natural_sort(l): 
@@ -817,6 +855,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def classify(self, grade, subgrade):
+        t0 = time()
         cnt = self.config_dict['counter']# - 1
 #        self.df.at[cnt,'file_name'] = self.filename
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
@@ -834,8 +873,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.to_csv(self.df_name)
 
         self.update_classification_buttoms()
+        print(time()-t0)
         if self.config_dict['autonext']:
             self.next()
+        
 
     def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.262',residual=False,size=47):
         # pixscale = '0.262'
@@ -960,7 +1001,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['legacysurvey']:
             self.set_legacy_survey()
 
-
     @Slot()
     def checkbox_auto_next(self):
         self.config_dict['autonext'] = not self.config_dict['autonext']
@@ -968,7 +1008,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def checkbox_keyboard_shortcuts(self):
         self.config_dict['keyboardshortcuts'] = not self.config_dict['keyboardshortcuts']
-
 
     @Slot()
     def open_ds9(self):
@@ -993,7 +1032,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.02&cooframe=J2000&sci=true&lang=en&"
         # website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.022474915620381506&cooframe=J2000&sci=true&lang=en&euclid_image=perseus"
         webbrowser.open(website)
-
 
     @Slot()
     def set_scale(self, button, scale):
@@ -1035,7 +1073,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             std = np.nanstd([cut0, cut1, cut2, cut3])
         return std
-
+    
     def scale_val(self,image_array):
         if len(np.shape(image_array)) == 2:
             image_array = [image_array]
@@ -1047,7 +1085,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #Sensible default values
             box_size_vmin = 5
             box_size_vmax = 14
-
         vmin = np.nanmin([self.background_rms_image(box_size_vmin, image_array[i]) for i in range(len(image_array))])
         
         xl, yl = np.shape(image_array[0])
@@ -1055,26 +1092,46 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         xmax = int((xl) / 2. + (box_size_vmax / 2.))
         ymin = int((yl) / 2. - (box_size_vmax / 2.))
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
-        vmax = np.nanmax([image_array[i][xmin:xmax, ymin:ymax] for i in range(len(image_array))])
+        vmax = np.nanmax([image[xmin:xmax, ymin:ymax] for image in image_array])
         return vmin*1.0, vmax*1.3 #vmin is 1 sigma of noise.
 
     def rescale_image_composite(self, image, scale_min, scale_max, composite = False):
-            factor = self.scale(scale_max - scale_min)
-            image = np.clip(image, scale_min, scale_max)
-            image -= image.min()
+        factor = self.scale(scale_max - scale_min)
+        # print(f"{scale_min = }, {scale_max = }")
+        image = np.clip(image, scale_min, scale_max)
+        image -= scale_min
 
-            # indices0 = np.where(image <= 0)
-            indices1 = np.where(image > 0)
+        indices1 = np.where(image > 0)
+        image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
+        return image
 
-            # image[indices0] = 0 #if not composite else scale_min
-            # image[indices2] = 1.0
-            image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
-            return image
+    def rescale_image_composite2(self, image,
+                                p = 98,
+                                value_at_min = 0,
+                                color_bkg_level = -0.05):
+        # scale_min, scale_max = get_value_range(image,p)
+        scale_min, scale_max = get_value_range_asymmetric(image,1,0.1)
+
+        image = clip_normalize(image,scale_min,scale_max)
+        image = self.scale(image)
+        contrast, bias = get_contrast_bias_reasonable_assumptions(
+                                                                    # 0,
+                                                                    max(value_at_min,scale_min),
+                                                                    color_bkg_level,
+                                                                    scale_min,
+                                                                    scale_max,
+                                                                    self.scale)
+        image = contrast_bias_scale(image, contrast, bias)
+
+        return image
+
+    def prepare_composite_image(self, images):
+        image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
+
 
     def rescale_image(self, image, scale_min, scale_max):
             factor = self.scale(scale_max - scale_min)
             image = image.clip(min=scale_min, max=scale_max)
-            #image = (image - self.scale_min) / factor
             indices0 = np.where(image < scale_min)
             indices1 = np.where((image >= scale_min) & (image <= scale_max))
             indices2 = np.where(image > scale_max)
@@ -1083,9 +1140,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image[indices2] = 1.0 #This is probably useless
             image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
 
-            # condition = (image >= scale_min) #* (image <= scale_max)
-            # print(len(indices1[0]))
-            # print(f"{len(indices1[0])}, {len(indices1[0])/np.prod(image.shape)}, {np.prod(image.shape)}")
             return image
 
     def load_fits(self,filepath, get_radec=False):
@@ -1102,10 +1156,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return sky[0][0], sky[1][0]#, image_pixel_size
 
     def plot(self, scale_min = None, scale_max = None, band = None):
-        for band in self.all_bands:
-            if self.band_types[band] in [COMPOSITE_BAND,
-                                         EXTERNAL_BAND]:
-                continue
+        for band in [self.main_band, *self.color_bands]:
             self.plot_band(band)
         for band in self.composite_bands:
             self.plot_composite_band(band)
@@ -1124,6 +1175,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.images[band] = np.copy(image)
             if scale_min is None or scale_max is None:
                 scale_min, scale_max = self.scale_val(image)
+            print(f"{band}: {scale_min = }, {scale_max = }, {image.max()}")
             self.scale_mins[band] = scale_min
             self.scale_maxs[band] = scale_max
             image = self.rescale_image(image, scale_min, scale_max)
@@ -1142,15 +1194,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
         
-        scale_min, scale_max = self.scale_val([self.images[band] for band in base_bands])
         # scale_min = max([self.scale_mins[band] for band in base_bands])
         # scale_max = max([self.scale_maxs[band] for band in base_bands])
         if self.filetype == 'FITS':
+            scale_min, scale_max = self.scale_val([self.images[band] for band in base_bands])
             image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
             for i, band  in enumerate(base_bands):
                 image[:,:, i] = self.rescale_image_composite(self.images[band], scale_min, scale_max)
-                print(f"Band: {band}, limits:" , image.min(), image.max())
-            self.ax[composite_band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+                # image[:,:, i] = self.rescale_image_composite2(self.images[band])
+                # print(f"Band: {band}, limits:" , image[:,:, i].min(), image[:,:, i].max())
+            self.ax[composite_band].imshow(image, origin='lower')
         else:
             image = np.asarray(Image.open(self.filename))
             self.image = np.copy(image)
@@ -1236,7 +1289,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
         df['comment'] = ['Empty'] * len(self.listimage)
-        # df['image_dim'] = np.full(len(self.listimage),pd.NA)
+        df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0)
         return df
 
