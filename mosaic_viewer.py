@@ -81,9 +81,13 @@ C_UNINTERESTING = 0
 def identity(x):
     return x
 
-def log(x):
+def log_0(x):
     "Simple log base 1000 function that ignores numbers less than 0"
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
+
+def log(x,a=100):
+    "Simple log base 1000 function that ignores numbers less than 0"
+    return np.log(a*x+1) / np.log(a)
 
 def asinh2(x):
     return np.arcsinh(x/2)
@@ -836,6 +840,25 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return np.nanpercentile(image_array,p_min),np.nanpercentile(image_array,p_max)
 
     def background_rms_image(self, cb, image):
+        xg, yg = np.shape(image)
+        cb=10
+        cut0 = image[0:cb, 0:cb]
+        cut1 = image[xg - cb:xg, 0:cb]
+        cut2 = image[0:cb, yg - cb:yg]
+        cut3 = image[xg - cb:xg, yg - cb:yg]
+        l = [cut0, cut1, cut2, cut3]
+        while len(l) > 1:
+            m = np.nanmean(np.nanmean(l, axis=1), axis=1)
+            if max(m) > 5 * min(m):
+                s = np.sort(l, axis=0)
+                l = s[:-1]
+            else:
+                std = np.nanstd(l)
+                return std
+        std = np.nanstd(l)
+        return std
+
+    def background_rms_image_old(self, cb, image):
         xg, yg = np.shape(image)
         cut0 = image[0:cb, 0:cb]
         cut1 = image[xg - cb:xg, 0:cb]

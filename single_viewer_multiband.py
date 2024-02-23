@@ -107,9 +107,26 @@ def get_value_range(x, p=98):
     high = np.nanpercentile(x, 100-q)
     return low, high
 
-def get_value_range_asymmetric(x, q_low=1, q_high=1):
+def get_value_range_asymmetric(x, q_low=1, q_high=1,
+                              pixel_boxsize_low = None):
+    
     low = np.nanpercentile(x, q_low)
-    high = np.nanpercentile(x, 100-q_high)
+    
+    # if pixel_boxsize_low is :
+    # if pixel_boxsize_low is None:
+    #     high = np.nanpercentile(x, 100-q_high)
+    # else:
+    if x.shape[0] > 80:
+        pixel_boxsize_low = np.round(np.sqrt(np.prod(x.shape) * 0.01)).astype(int)
+    else:
+        pixel_boxsize_low = 8
+    xl, yl, _ = np.shape(x)
+    xmin = int((xl) / 2. - (pixel_boxsize_low / 2.))
+    xmax = int((xl) / 2. + (pixel_boxsize_low / 2.))
+    ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
+    ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
+    high = np.nanpercentile(x[xmin:xmax,ymin:ymax], 100-q_high)
+    # print(pixel_boxsize_low)
     return low, high
 
 def clip_normalize(x, low=None, high=None):
@@ -1054,6 +1071,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bactivatedcolormap = button
             self.save_dict()
 
+    def background_rms_image_1(self, cb, image):
+        xg, yg = np.shape(image)
+        cb=10
+        cut0 = image[0:cb, 0:cb]
+        cut1 = image[xg - cb:xg, 0:cb]
+        cut2 = image[0:cb, yg - cb:yg]
+        cut3 = image[xg - cb:xg, yg - cb:yg]
+        l = [cut0, cut1, cut2, cut3]
+        while len(l) > 1:
+            m = np.nanmean(np.nanmean(l, axis=1), axis=1)
+            if max(m) > 5 * min(m):
+                s = np.sort(l, axis=0)
+                l = s[:-1]
+            else:
+                std = np.nanstd(l)
+                return std
+        std = np.nanstd(l)
+        return std
+
     def background_rms_image(self,cb, image):
         xg, yg = np.shape(image)
         cut0 = image[0:cb, 0:cb]
@@ -1085,8 +1121,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #Sensible default values
             box_size_vmin = 5
             box_size_vmax = 14
-        vmin = np.nanmin([self.background_rms_image(box_size_vmin, image_array[i]) for i in range(len(image_array))])
+        # print(len(image_array))
+        vmin = np.nanmin([self.background_rms_image(box_size_vmin, image) for image in image_array])
         
+        # print(f"{box_size_vmin = }, {box_size_vmax = }")
         xl, yl = np.shape(image_array[0])
         xmin = int((xl) / 2. - (box_size_vmax / 2.))
         xmax = int((xl) / 2. + (box_size_vmax / 2.))
@@ -1106,11 +1144,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return image
 
     def rescale_image_composite2(self, image,
-                                p = 98,
+                                p = 99,
                                 value_at_min = 0,
                                 color_bkg_level = -0.05):
         # scale_min, scale_max = get_value_range(image,p)
-        scale_min, scale_max = get_value_range_asymmetric(image,1,0.1)
+        scale_min, scale_max = get_value_range_asymmetric(image,0.1,0.0)
 
         image = clip_normalize(image,scale_min,scale_max)
         image = self.scale(image)
@@ -1125,8 +1163,44 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         return image
 
-    def prepare_composite_image(self, images):
-        image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
+    def rescale_single_band(self, image,
+                            scale_min,
+                            scale_max,
+                            value_at_min=0,
+                            color_bkg_level=-0.05):
+
+        image = clip_normalize(image,scale_min,scale_max)
+        image = self.scale(image)
+        contrast, bias = get_contrast_bias_reasonable_assumptions(
+                                                                    max(value_at_min,scale_min),
+                                                                    color_bkg_level,
+                                                                    scale_min,
+                                                                    scale_max,
+                                                                    self.scale)
+        return contrast_bias_scale(image, contrast, bias)
+
+    def prepare_composite_image(self, images,
+                                p_low=1, p_high=0.0,
+                                value_at_min=0,
+                                color_bkg_level=0.05,
+                                ):
+        # composite_image = np.zeros((*images[0].shape, 3),
+        #                             dtype=float)
+        composite_image = np.zeros_like(images,
+                                    dtype=float)
+        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high,
+                    pixel_boxsize_low=None)
+        # print(f"{scale_min = }, {scale_max = }")
+        # for i, image in enumerate(images):
+        # print(images.shape)
+        for i in range(images.shape[-1]):
+            composite_image[:,:,i] = self.rescale_single_band(
+                            images[:,:,i],
+                            scale_min,
+                            scale_max,
+                            value_at_min,
+                            color_bkg_level)
+        return composite_image
 
 
     def rescale_image(self, image, scale_min, scale_max):
@@ -1175,7 +1249,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.images[band] = np.copy(image)
             if scale_min is None or scale_max is None:
                 scale_min, scale_max = self.scale_val(image)
-            print(f"{band}: {scale_min = }, {scale_max = }, {image.max()}")
+            # print(f"{band}: {scale_min = }, {scale_max = }, {image.max()}")
             self.scale_mins[band] = scale_min
             self.scale_maxs[band] = scale_max
             image = self.rescale_image(image, scale_min, scale_max)
@@ -1197,12 +1271,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # scale_min = max([self.scale_mins[band] for band in base_bands])
         # scale_max = max([self.scale_maxs[band] for band in base_bands])
         if self.filetype == 'FITS':
-            scale_min, scale_max = self.scale_val([self.images[band] for band in base_bands])
-            image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
-            for i, band  in enumerate(base_bands):
-                image[:,:, i] = self.rescale_image_composite(self.images[band], scale_min, scale_max)
-                # image[:,:, i] = self.rescale_image_composite2(self.images[band])
-                # print(f"Band: {band}, limits:" , image[:,:, i].min(), image[:,:, i].max())
+            # scale_min, scale_max = self.scale_val([self.images[band] for band in base_bands])
+            # image = np.zeros((self.images[base_bands[0]].shape[0], self.images[base_bands[0]].shape[1], 3), dtype=float)
+            # for i, band  in enumerate(base_bands):
+            #     # image[:,:, i] = self.rescale_image_composite(self.images[band], scale_min, scale_max)
+            #     # image[:,:, i] = self.rescale_image_composite2(self.images[band])
+            # image = self.prepare_composite_image([self.images[band] for band in base_bands])
+            image = self.prepare_composite_image(np.stack([self.images[band] for band in base_bands],axis=2))
+
             self.ax[composite_band].imshow(image, origin='lower')
         else:
             image = np.asarray(Image.open(self.filename))
