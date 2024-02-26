@@ -328,7 +328,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
-        
         if args.fits is None:
             print("No filetype was specified, defaulting to .fits")
             # print(join(self.stampspath, f'[{",".join(self.bands)}]','*.fits'))
@@ -343,12 +342,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             if len(self.listimage) == 0:
                 print("No fits files were found, trying with .png, .jpg, and .jpeg")
                 self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(self.base_band_path, '*.png')) +
-                                          glob.glob(join(self.base_band_path, '*.jpg')) +
-                                          glob.glob(join(self.base_band_path, '*.jpeg')) +
-                                          glob.glob(join(self.color_bands_path, '*.png')) +
-                                          glob.glob(join(self.color_bands_path, '*.jpg')) +
-                                          glob.glob(join(self.color_bands_path, '*.jpeg'))
+                                for x in (glob.glob(join(base_band_path, '*.png')) +
+                                          glob.glob(join(base_band_path, '*.jpg')) +
+                                          glob.glob(join(base_band_path, '*.jpeg')) +
+                                          glob.glob(join(color_bands_path, '*.png')) +
+                                          glob.glob(join(color_bands_path, '*.jpg')) +
+                                          glob.glob(join(color_bands_path, '*.jpeg'))
                                          )])
                 self.filetype='COMPRESSED'
 
@@ -360,12 +359,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.filetype='FITS'
         else:
             self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(self.base_band_path, '*.png')) +
-                                          glob.glob(join(self.base_band_path, '*.jpg')) +
-                                          glob.glob(join(self.base_band_path, '*.jpeg')) +
-                                          glob.glob(join(self.color_bands_path, '*.png')) +
-                                          glob.glob(join(self.color_bands_path, '*.jpg')) +
-                                          glob.glob(join(self.color_bands_path, '*.jpeg'))
+                                for x in (glob.glob(join(base_band_path, '*.png')) +
+                                          glob.glob(join(base_band_path, '*.jpg')) +
+                                          glob.glob(join(base_band_path, '*.jpeg')) +
+                                          glob.glob(join(color_bands_path, '*.png')) +
+                                          glob.glob(join(color_bands_path, '*.jpg')) +
+                                          glob.glob(join(color_bands_path, '*.jpeg'))
                                          )])
             self.filetype='COMPRESSED'
 

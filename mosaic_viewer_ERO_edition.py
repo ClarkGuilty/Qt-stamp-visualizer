@@ -40,11 +40,15 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect.",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default=None)
+parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
+                    default="VIS")
+parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
+                    default="Y,J,H")
 parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page.",type=int,
-                    default=10)
+                    default=5)
 parser.add_argument('-m',"--nrows", 
                     help="Number of rows per page. Leave unset if you want a squared grid",type=int,
-                    default=None)
+                    default=8)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
 parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The optimal value depends on your screen and the stampsize.",type=int,
@@ -78,6 +82,13 @@ C_INTERESTING = 2
 C_LENS = 1
 C_UNINTERESTING = 0
 
+
+SINGLE_BAND = 'single_band'
+MAIN_BAND = 'main_band'
+COMPOSITE_BAND = 'composite_band'
+EXTERNAL_BAND = 'external_band'
+_VIS_RESAMPLED_BAND = 'I'
+
 def identity(x):
     return x
 
@@ -90,7 +101,43 @@ def log(x,a=100):
     return np.log(a*x+1) / np.log(a)
 
 def asinh2(x):
-    return np.arcsinh(x/2)
+    return np.arcsinh(10*x)/3
+
+
+def get_value_range_asymmetric(x, q_low=1, q_high=1,
+                              pixel_boxsize_low = None):
+    
+    low = np.nanpercentile(x, q_low)
+    
+    if x.shape[0] > 80:
+        pixel_boxsize_low = np.round(np.sqrt(np.prod(x.shape) * 0.01)).astype(int)
+    else:
+        pixel_boxsize_low = 8
+    xl, yl, _ = np.shape(x)
+    xmin = int((xl) / 2. - (pixel_boxsize_low / 2.))
+    xmax = int((xl) / 2. + (pixel_boxsize_low / 2.))
+    ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
+    ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
+    high = np.nanpercentile(x[xmin:xmax,ymin:ymax], 100-q_high)
+    # print(pixel_boxsize_low)
+    return low, high
+
+def clip_normalize(x, low=None, high=None):
+    x = np.clip(x, low, high)
+    x = (x - low)/(high - low)
+    return x 
+
+def contrast_bias_scale(x, contrast, bias):
+    x = ((x - bias) * contrast + 0.5 )
+    x = np.clip(x, 0, 1)
+    return x
+
+def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min, scale_max, scale):
+    bkg_level = clip_normalize(value_at_min, scale_min, scale_max)
+    bkg_level = scale(bkg_level)
+    contrast = (bkg_color - 1) / (bkg_level - 1) # with bkg_level != 1 and bkg_color != 1
+    bias = 1 - (bkg_level-1)/(2*(bkg_color-1))
+    return contrast, bias
 
 def natural_sort(l): 
     "https://stackoverflow.com/a/4836734"
@@ -222,7 +269,9 @@ class MiniMosaicLabels(QtWidgets.QLabel):
 class MiniMosaics(QtWidgets.QLabel):
     clicked = Signal(str)
     "Widget to hold the image Qlabels"
-    def __init__(self, filepath, bands, lens_background_path,
+    def __init__(self,
+                    filepaths,
+                    bands, lens_background_path,
                     interesting_background_path, deactivated_path, i,
                     status, activation, update_df_func,
                     image_width=None,
@@ -230,7 +279,7 @@ class MiniMosaics(QtWidgets.QLabel):
                     parent=None):
         # QtWidgets.QWidget.__init__(self, parent)
         QtWidgets.QLabel.__init__(self, parent)
-        self.filepath = filepath
+        self.filepaths = filepaths
         self.bands = bands
         self.n_bands = len(self.bands)
         self.is_activate = activation
@@ -275,7 +324,7 @@ class MiniMosaics(QtWidgets.QLabel):
         if self.is_activate:
             
             if self.is_a_candidate == C_UNINTERESTING:
-                self.change_pixmaps([self.filepath]*self.n_bands)
+                self.change_pixmaps(self.filepaths)
             elif self.is_a_candidate == C_LENS:
                 self.change_pixmaps([self.lens_background_path]*self.n_bands)
             elif self.is_a_candidate == C_INTERESTING:
@@ -306,25 +355,25 @@ class MiniMosaics(QtWidgets.QLabel):
     def activate(self):
         self.is_activate = True
 
-    def change_filepath(self, filepath):
-        self.filepath = filepath
-        self.change_pixmaps([self.filepath]*self.n_bands)
+    def change_filepath(self, filepaths):
+        self.filepaths = filepaths
+        self.change_pixmaps(self.filepaths)
 
-    def change_and_paint_pixmap(self, filepath):
+    def change_and_paint_pixmap(self, filepaths):
         if self.is_activate:
-            self.filepath = filepath
-            self.change_pixmaps([self.filepath]*self.n_bands)
+            self.filepaths = filepaths
+            self.change_pixmaps(self.filepaths)
             self.repaint_pixmaps()
             
     def repaint_pixmaps(self):
         for qlabel in self.qlabels:        
-            qlabel.setPixmap(qlabel._pixmap.scaled(
+            qlabel.setPixmap(qlabel._pixmap.scaled( 
                 qlabel.width(), qlabel.height(),
                 self.aspectRatioPolicy))
 
-    def deactivate(self):
-        self.change_and_paint_pixmap(self.deactivated_path)
-        self.is_activate = False
+    def deactivate(self): 
+        self.change_and_paint_pixmap(self.deactivated_path) 
+        self.is_activate = False 
 
     def set_candidate_status(self, status):
         if self.is_activate:
@@ -353,7 +402,7 @@ class MiniMosaics(QtWidgets.QLabel):
             modifiers = event.modifiers()
             # print('local:' ,modifiers)
             if self.is_a_candidate != C_UNINTERESTING:
-                self.change_and_paint_pixmap(self.filepath)
+                self.change_and_paint_pixmap(self.filepaths)
                 new_class = C_UNINTERESTING
             else:
                 if modifiers in [Qt.ControlModifier, Qt.ShiftModifier]:
@@ -388,39 +437,70 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.random_seed = args.seed            
         self.stampspath = path_to_the_stamps
+
+        self.main_band = args.main_band
+        self.color_bands = args.color_bands.split(",")
+        self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
+        self.all_single_bands = (self.main_band, _VIS_RESAMPLED_BAND, *self.color_bands)
+        self.composite_bands = [
+                                "".join(self.color_bands_vis[::-1]),
+                                "".join(self.color_bands[::-1]),
+                                ]
+        self.bands_to_plot = [self.main_band, *self.composite_bands]
+
+        print(f"{self.main_band}")
+        print(f"{self.color_bands}")
+        print(f"{self.color_bands_vis}")
+        print(f"{self.all_single_bands}")
+        print(f"{self.composite_bands}")
         self.scratchpath = './.temp'
         self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_dir(self.scratchpath)
+
+        color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
+        base_band_path = join(self.stampspath, self.main_band)
         if args.fits is None:
             print("No filetype was specified, defaulting to .fits")
-            self.listimage = sorted([os.path.basename(x)
-                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+            # print(join(self.stampspath, f'[{",".join(self.bands)}]','*.fits'))
+            self.listimage = sorted(set([os.path.basename(x) for x in (
+                                            glob.glob(join(color_bands_path, "*.fits"))+
+                                            glob.glob(join(base_band_path,'*.fits')) 
+                                            )]))
             self.filetype='FITS'
+            print(f"Classifying {len(self.listimage)} sources.")
             if len(self.listimage) == 0:
                 print("No fits files were found, trying with .png, .jpg, and .jpeg")
                 self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(self.stampspath, '*.png')) +
-                                          glob.glob(join(self.stampspath, '*.jpg')) +
-                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                for x in (glob.glob(join(base_band_path, '*.png')) +
+                                          glob.glob(join(base_band_path, '*.jpg')) +
+                                          glob.glob(join(base_band_path, '*.jpeg')) +
+                                          glob.glob(join(color_bands_path, '*.png')) +
+                                          glob.glob(join(color_bands_path, '*.jpg')) +
+                                          glob.glob(join(color_bands_path, '*.jpeg'))
                                          )])
                 self.filetype='COMPRESSED'
 
         elif args.fits:
-            self.listimage = sorted([os.path.basename(x)
-                                for x in glob.glob(join(self.stampspath, '*.fits'))])
+            self.listimage = sorted(set([os.path.basename(x) for x in (
+                                            glob.glob(join(color_bands_path, "*.fits"))+
+                                            glob.glob(join(base_band_path,'*.fits')) 
+                                            )]))
             self.filetype='FITS'
         else:
             self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(self.stampspath, '*.png')) +
-                                          glob.glob(join(self.stampspath, '*.jpg')) +
-                                          glob.glob(join(self.stampspath, '*.jpeg'))
+                                for x in (glob.glob(join(base_band_path, '*.png')) +
+                                          glob.glob(join(base_band_path, '*.jpg')) +
+                                          glob.glob(join(base_band_path, '*.jpeg')) +
+                                          glob.glob(join(color_bands_path, '*.png')) +
+                                          glob.glob(join(color_bands_path, '*.jpg')) +
+                                          glob.glob(join(color_bands_path, '*.jpeg'))
                                          )])
             self.filetype='COMPRESSED'
 
-
-        if len(self.listimage) == 0:
-            print("No suitable files were found in {self.stampspath}")
+        if len(self.listimage) < 1:
+            print("No suitable files were found in {self.base_band_path} or {color_bands_path}")
+            sys.exit()
 
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
@@ -463,10 +543,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             'name': self.name,
             'ncols': self.ncols,
             'nrows': self.nrows,
+            'nvisiblebands':3,
             # 'gridsize': self.nrows, #Just for retrocompatibility.
         }
         self.config_dict = self.load_dict()
-        self.scale = self.scale2funct[self.config_dict['scale']]
         
         self.interesting_background_path = '.background_interesting.png'
         self.lens_background_path = '.background.png'
@@ -488,7 +568,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.bcounter.setInputText(0)
             self.goto()
             
-        self.prepare_png(self.gridarea)
+        self.prepare_pngs(self.gridarea)
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         stamp_grid_layout = QtWidgets.QGridLayout()
@@ -564,7 +644,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         start = self.config_dict['page']*self.gridarea
 
         for i in range(start,start+self.gridarea):
-            filepath = self.filepath(i, self.config_dict['page'])
             try:
                 classification = self.df.iloc[i,self.df.columns.get_loc('classification')]
                 activation = True
@@ -572,7 +651,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 classification = False
                 activation = False
 
-            button = MiniMosaics(filepath, ['VIS','H'], self.lens_background_path,
+            button = MiniMosaics(
+                                    self.filepaths(i, self.config_dict['page']),
+                                    self.bands_to_plot[:self.config_dict['nvisiblebands']],
+                                    self.lens_background_path,
                                     self.interesting_background_path,
                                     self.deactivated_path,
                                     i-start, classification, activation,
@@ -666,8 +748,17 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.df.to_csv(
                 self.df_name, index=False)
 
-    def filepath(self, i, page):
-        return join(self.scratchpath, str(i+1)+self.config_dict['scale'] + self.config_dict['colormap'] + str(page)+'.png')
+    def filepath(self, i, page, band = ''):
+        return join(self.scratchpath, (str(i+1)+self.config_dict['scale']+
+                                       self.config_dict['colormap']+
+                                       str(page)+
+                                       str(band)+
+                                       '.png')
+                                        )
+
+    def filepaths(self, i, page):
+        return [self.filepath(i,page,band) 
+                    for band in self.bands_to_plot[:self.config_dict['nvisiblebands']]]
 
     def save_dict(self):
         with open('.config_mosaic.json', 'w') as f:
@@ -694,6 +785,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     temp_dict['scale'] = 'log'
                 if temp_dict['colormap'] == 'gray':
                     temp_dict['colormap'] = 'gist_gray'
+                for key in self.defaults.keys():
+                    if key not in temp_dict.keys():
+                        temp_dict[key] = self.defaults[key]
                 return temp_dict
         except FileNotFoundError:
             print("Loaded default configuration.")
@@ -754,7 +848,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def update_grid(self):
         start = self.config_dict['page']*self.gridarea
         n_images = self.gridarea
-        self.prepare_png(n_images)
+        self.prepare_pngs(n_images)
         i = start
         j = 0
         for button in self.buttons:
@@ -763,11 +857,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 status = self.df.iloc[object_index,self.df.columns.get_loc('classification')]
                 if status == 0:
                     button.activate()
-                    button.change_and_paint_pixmap(self.filepath(i,self.config_dict['page']))
+                    # print(self.filepaths(i,self.config_dict['page']))
+                    button.change_and_paint_pixmap(self.filepaths(i,self.config_dict['page']))
                     button.set_candidate_status(status)
                 else:
                     button.activate()
-                    button.change_filepath(self.filepath(i,self.config_dict['page']))
+                    # print(self.filepaths(i,self.config_dict['page']))
+                    button.change_filepath(self.filepaths(i,self.config_dict['page']))
                     button.paint_background_pixmap(self.status2background_dict[status])
                     button.set_candidate_status(status)
 
@@ -785,51 +881,111 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             j = j+1
             i = i+1
 
-    def prepare_png(self, number):
+    def prepare_pngs(self, number):
             "Generates the png files from the fits."
             start = self.config_dict['page']*self.gridarea
             for i in np.arange(start, start + number + 0): 
                 if i < len(self.listimage):
-                    if self.filetype == 'FITS':
-                        try:
-                            image = self.read_fits(i)
-                            scaling_factor = np.nanpercentile(image,q=90)
-                            if scaling_factor == 0:
-                                # scaling_factor = np.nanpercentile(image,q=99)
-                                scaling_factor = 1
-                            image = image / scaling_factor * 300 #Rescaling for better visualization.
-                            scale_min, scale_max = self.scale_val(image)
-                            image = self.rescale_image(image, scale_min, scale_max)
-                            image[np.isnan(image)] = np.nanmin(image)
-                            
-                            plt.imsave(self.filepath(i, self.config_dict['page']),
-                                    image, cmap=self.config_dict['colormap'], origin="lower")
-                        except Exception as E:
-                            # raise
-                            print(f"WARNING: exception saving file {E}")
-                            image = np.zeros((66, 66))# * 0.0000001
-                            plt.imsave(self.filepath(i, self.config_dict['page']),
-                                image, cmap=self.config_dict['colormap'], origin="lower")
-                    elif self.filetype == 'COMPRESSED':
-                        if i < len(self.listimage):
-                            try:
-                                original_filepath = join(self.stampspath, self.listimage[i])
-                                shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
-                            except:
-                                print('file not found: {}'.format(original_filepath))
+                    self.prepare_png(i)
                 else:
                     image = np.zeros((66, 66))# * 0.0000001
                     plt.imsave(self.filepath(i, self.config_dict['page']),
                         image, cmap=self.config_dict['colormap'], origin="lower")
+
+    def prepare_png(self, i):
+        if self.filetype == 'FITS':
+            band_images = {band: self.read_fits(i,band) for band in self.all_single_bands}
+            
+            image = self.prepare_single_band(band_images[self.main_band])
+            plt.imsave(self.filepath(i, self.config_dict['page'], band=self.main_band),
+                    image, cmap=self.config_dict['colormap'], origin="lower")
+
+            for composite_band in self.composite_bands:
+                bands = list(composite_band)
+                composite_image = self.prepare_composite_band(np.stack([band_images[band] for band in bands],axis=-1))
+                plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
+                    composite_image, cmap=self.config_dict['colormap'], origin="lower")
+
+    def prepare_single_band(self, image):
+        scale_min, scale_max = self.scale_val(image)
+        image = self.rescale_image(image, scale_min, scale_max)
+        image[np.isnan(image)] = np.nanmin(image)
+        return image
+            
+
+    def prepare_composite_band(self,images,
+                                p_low=2, p_high=0.1,
+                                value_at_min=0,
+                                color_bkg_level=0.015,):
+        
+        composite_image = np.zeros_like(images,
+                                    dtype=float)
+        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high,
+                    pixel_boxsize_low=None)
+        
+        for i in range(images.shape[-1]):
+            composite_image[:,:,i] = self.rescale_single_band(
+                            images[:,:,i],
+                            scale_min,
+                            scale_max,
+                            value_at_min,
+                            color_bkg_level)
+        return composite_image
+
+    def rescale_single_band(self, image,
+                            scale_min,
+                            scale_max,
+                            value_at_min=0,
+                            color_bkg_level=-0.05):
+
+        image = clip_normalize(image,scale_min,scale_max)
+        image = self.scale2funct[self.config_dict['scale']](image)
+        contrast, bias = get_contrast_bias_reasonable_assumptions(
+                                                                    max(value_at_min,scale_min),
+                                                                    color_bkg_level,
+                                                                    scale_min,
+                                                                    scale_max,
+                                                                    self.scale2funct[self.config_dict['scale']])
+        return contrast_bias_scale(image, contrast, bias)
+
+
+
+    def heh(self):
+            try:
+                image = self.read_fits(i)
+                scaling_factor = np.nanpercentile(image,q=90)
+                if scaling_factor == 0:
+                    # scaling_factor = np.nanpercentile(image,q=99)
+                    scaling_factor = 1
+                image = image / scaling_factor * 300 #Rescaling for better visualization.
+                scale_min, scale_max = self.scale_val(image)
+                image = self.rescale_image(image, scale_min, scale_max)
+                image[np.isnan(image)] = np.nanmin(image)
                 
+                plt.imsave(self.filepath(i, self.config_dict['page']),
+                        image, cmap=self.config_dict['colormap'], origin="lower")
+            except Exception as E:
+                # raise
+                print(f"WARNING: exception saving file {E}")
+                image = np.zeros((66, 66))# * 0.0000001
+                plt.imsave(self.filepath(i, self.config_dict['page']),
+                    image, cmap=self.config_dict['colormap'], origin="lower")
+        # elif self.filetype == 'COMPRESSED':
+            if i < len(self.listimage):
+                try:
+                    original_filepath = join(self.stampspath, self.listimage[i])
+                    shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
+                except:
+                    print('file not found: {}'.format(original_filepath))
+
 
     def clean_dir(self, path_dir):
         "Removes everything in the scratch folder."
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
 
-    def read_fits(self, i):
-        file = join(self.stampspath, self.listimage[i])
+    def read_fits(self, i, band = ''):
+        file = join(self.stampspath, band, self.listimage[i])
         # Note : memmap=False is much faster when opening/closing many small files
         with fits.open(file, memmap=False) as hdu_list:
             image = hdu_list[0].data
