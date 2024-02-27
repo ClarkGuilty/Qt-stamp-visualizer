@@ -1,5 +1,6 @@
 # This Python file uses the following encoding: utf-8
 import argparse
+from astropy.units.physical import _standardize_physical_type_names
 
 from astropy.wcs import WCS
 from astropy.io import fits
@@ -250,9 +251,9 @@ class MiniMosaicLabels(QtWidgets.QLabel):
         QtWidgets.QLabel.__init__(self, parent)
         self.aspectRatioPolicy = Qt.KeepAspectRatio
         # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
-        self.setMinimumSize(minimum_size,minimum_size)
+        # self.setMinimumSize(minimum_size,minimum_size)
         # print()
-        self.setSizePolicy(sizePolicy,sizePolicy)    
+        # self.setSizePolicy(sizePolicy,sizePolicy)    
         # print(f"{self.sizePolicy()}")
         # print(self.parent())
         self.setScaledContents(False)
@@ -287,7 +288,7 @@ class MiniMosaics(QtWidgets.QLabel):
         self.interesting_background_path = interesting_background_path
 
         self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setSpacing(1.5) #TODO: FIND A GOOD VALUE/RECIPE
+        self.layout.setSpacing(0) #TODO: FIND A GOOD VALUE/RECIPE
         self.layout.setContentsMargins(0,0,0,0)
 
         self.deactivated_path = deactivated_path
@@ -295,14 +296,15 @@ class MiniMosaics(QtWidgets.QLabel):
         self.update_df_func = update_df_func
         self.i = i
 
-        sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
-        sizePolicy = QtWidgets.QSizePolicy.Expanding
+        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        # sizePolicy = QtWidgets.QSizePolicy.Expanding
         # sizePolicy = QtWidgets.QSizePolicy.Ignored
-        self.setMinimumSize(10,10)
-        self.setSizePolicy(sizePolicy,sizePolicy)
+        # self.setMinimumSize(10,10)
+        # self.setSizePolicy(sizePolicy,sizePolicy)
 
         # self.setScaledContents(args.resize)
         
+        # print(self.minimumSize())
 
         self.target_width = 66 #At the very least, should be the initial size
         self.target_height = 66 #
@@ -313,9 +315,12 @@ class MiniMosaics(QtWidgets.QLabel):
             self.target_height = image_height
 
         self.aspectRatioPolicy = Qt.KeepAspectRatio
-        qlabelSizePolicy = QtWidgets.QSizePolicy.MinimumExpanding    
-        # qlabelSizePolicy = QtWidgets.QSizePolicy.Expanding         
-        # qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.MinimumExpanding    
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Expanding 
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Maximum   
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Ignored 
+        # print(f"{self.sizeHint() = }")
+        qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
         self.qlabels = [MiniMosaicLabels(self.aspectRatioPolicy,
                                         self.user_minimum_size,
                                         qlabelSizePolicy,
@@ -331,7 +336,7 @@ class MiniMosaics(QtWidgets.QLabel):
                 self.change_pixmaps([self.interesting_background_path]*self.n_bands)
         else:
             self.change_pixmaps([self.self.deactivated_path]*self.n_bands)
-
+            print([self.self.deactivated_path]*self.n_bands)
         
 
         for qlabel in self.qlabels:   
@@ -343,9 +348,12 @@ class MiniMosaics(QtWidgets.QLabel):
             qlabel.setPixmap(qlabel._pixmap.scaled(
                 self.target_width, self.target_height,
                 self.aspectRatioPolicy))
-            self.layout.addWidget(qlabel)
+            # self.layout.addWidget(qlabel, 1./len(self.qlabels))
+            self.layout.addWidget(qlabel,Qt.AlignHCenter)
 
 
+    # def sizeHint(self):
+    #     return QSize(100,100)
 
     def change_pixmaps(self, paths_to_pixmap):
         # self._pixmaps = [QPixmap(path_to_pixmap) for path_to_pixmap in paths_to_pixmap]
@@ -416,6 +424,15 @@ class MiniMosaics(QtWidgets.QLabel):
             self.is_a_candidate = new_class
         else:
             print('Inactive button')
+
+    def change_nvisiblebands(self, nvisiblebands):
+        # print(self.qlabels[:nvisiblebands])
+        # print(self.qlabels[nvisiblebands:])
+        for qlabel in self.qlabels[nvisiblebands:]:
+            qlabel.hide()
+        for qlabel in self.qlabels[:nvisiblebands]:
+            # print("heh")
+            qlabel.show()
 
     # def resizeEvent(self, event):
     #     # self.repaint_pixmaps()
@@ -543,7 +560,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             'name': self.name,
             'ncols': self.ncols,
             'nrows': self.nrows,
-            'nvisiblebands':3,
+            'nvisiblebands':'3',
             # 'gridsize': self.nrows, #Just for retrocompatibility.
         }
         self.config_dict = self.load_dict()
@@ -611,6 +628,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbcolormap.setStyleSheet('background-color: gray')
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
+        self.cbnvisibleimages = QtWidgets.QComboBox()
+        delegate = AlignDelegate(self.cbnvisibleimages)
+        self.cbnvisibleimages.setItemDelegate(delegate)
+        # self.cbcolormap.setEditable(True)
+        self.cbnvisibleimages.setFont(QFont("Arial",20))
+        line_edit = self.cbnvisibleimages.lineEdit()
+        # line_edit.setAlignment(Qt.AlignCenter)
+        # line_edit.setReadOnly(True)
+        self.listscales = ["1","2","3"]
+        self.cbnvisibleimages.addItems(self.listscales)
+        self.cbnvisibleimages.setCurrentIndex(self.listscales.index(self.config_dict['nvisiblebands']))
+        self.cbnvisibleimages.setStyleSheet('background-color: gray')
+        self.cbnvisibleimages.currentIndexChanged.connect(self.change_nvisiblebands)
+
 
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
@@ -635,6 +666,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         button_bar_layout.addWidget(self.cbscale)
         button_bar_layout.addWidget(self.cbcolormap)
+        button_bar_layout.addWidget(self.cbnvisibleimages)
         button_bar_layout.addWidget(self.bprev)
         button_bar_layout.addWidget(self.bnext)
         page_counter_layout.addWidget(self.bclickcounter)
@@ -653,7 +685,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
             button = MiniMosaics(
                                     self.filepaths(i, self.config_dict['page']),
-                                    self.bands_to_plot[:self.config_dict['nvisiblebands']],
+                                    self.bands_to_plot,
+                                    # self.bands_to_plot[:int(self.config_dict['nvisiblebands'])],
                                     self.lens_background_path,
                                     self.interesting_background_path,
                                     self.deactivated_path,
@@ -662,10 +695,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                     # image_width=66,
                                     # image_height=66,
                                     )
+            button.change_nvisiblebands(int(self.config_dict['nvisiblebands']))
             stamp_grid_layout.addWidget(
                 button, i % self.nrows, i // self.nrows)
             self.buttons.append(button)
             button.setAlignment(Qt.AlignCenter) #TODO CHECK HOW TO REACTIVATE THIS. (OR IF IT'S NEEDED)
+
             # button.adjustSize()
         if self.filetype != 'FITS':
             self.cbscale.setEnabled(False)
@@ -721,7 +756,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     def change_colormap(self,i):
         self.config_dict['colormap'] = self.cbcolormap.currentText()
-        self.update_grid()
+        self.update_grid(single_band_only=True)
+        self.save_dict()
+
+    def change_nvisiblebands(self,i):
+        self.config_dict['nvisiblebands'] = self.cbnvisibleimages.currentText()
+        self.update_grid(single_band_only=True,change_nvisiblebands=True)
         self.save_dict()
 
     def my_label_clicked(self, event, i, new_class):
@@ -749,16 +789,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 self.df_name, index=False)
 
     def filepath(self, i, page, band = ''):
+        colormap = self.config_dict['colormap'] if band == '' else ''
         return join(self.scratchpath, (str(i+1)+self.config_dict['scale']+
-                                       self.config_dict['colormap']+
+                                    #    self.config_dict['colormap']+
+                                       colormap+
                                        str(page)+
                                        str(band)+
                                        '.png')
                                         )
 
-    def filepaths(self, i, page):
+    def filepaths(self, i, page,nvisiblebands = None):
+        if nvisiblebands is None:
+            nvisiblebands = len(self.bands_to_plot)
         return [self.filepath(i,page,band) 
-                    for band in self.bands_to_plot[:self.config_dict['nvisiblebands']]]
+                    for band in self.bands_to_plot[:nvisiblebands]]
 
     def save_dict(self):
         with open('.config_mosaic.json', 'w') as f:
@@ -845,10 +889,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         df['time'] = np.zeros(np.shape(self.listimage))
         return df
 
-    def update_grid(self):
+    def update_grid(self, single_band_only = False, change_nvisiblebands=False):
         start = self.config_dict['page']*self.gridarea
         n_images = self.gridarea
-        self.prepare_pngs(n_images)
+        self.prepare_pngs(n_images, single_band_only)
         i = start
         j = 0
         for button in self.buttons:
@@ -867,6 +911,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     button.paint_background_pixmap(self.status2background_dict[status])
                     button.set_candidate_status(status)
 
+                if change_nvisiblebands:
+                    button.change_nvisiblebands(int(self.config_dict['nvisiblebands']))
                 self.df.iloc[object_index,
                              self.df.columns.get_loc('grid_pos')] = j
 
@@ -881,18 +927,18 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             j = j+1
             i = i+1
 
-    def prepare_pngs(self, number):
+    def prepare_pngs(self, number, single_band_only = False):
             "Generates the png files from the fits."
             start = self.config_dict['page']*self.gridarea
             for i in np.arange(start, start + number + 0): 
                 if i < len(self.listimage):
-                    self.prepare_png(i)
+                    self.prepare_png(i, single_band_only)
                 else:
                     image = np.zeros((66, 66))# * 0.0000001
                     plt.imsave(self.filepath(i, self.config_dict['page']),
                         image, cmap=self.config_dict['colormap'], origin="lower")
 
-    def prepare_png(self, i):
+    def prepare_png(self, i, single_band_only):
         if self.filetype == 'FITS':
             band_images = {band: self.read_fits(i,band) for band in self.all_single_bands}
             
@@ -900,11 +946,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             plt.imsave(self.filepath(i, self.config_dict['page'], band=self.main_band),
                     image, cmap=self.config_dict['colormap'], origin="lower")
 
-            for composite_band in self.composite_bands:
-                bands = list(composite_band)
-                composite_image = self.prepare_composite_band(np.stack([band_images[band] for band in bands],axis=-1))
-                plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
-                    composite_image, cmap=self.config_dict['colormap'], origin="lower")
+            if not single_band_only:
+                for composite_band in self.composite_bands:
+                    bands = list(composite_band)
+                    composite_image = self.prepare_composite_band(np.stack([band_images[band] for band in bands],axis=-1))
+                    plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
+                        composite_image, cmap=self.config_dict['colormap'], origin="lower")
 
     def prepare_single_band(self, image):
         scale_min, scale_max = self.scale_val(image)
@@ -914,7 +961,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             
 
     def prepare_composite_band(self,images,
-                                p_low=2, p_high=0.1,
+                                p_low=1, p_high=0.1,
                                 value_at_min=0,
                                 color_bkg_level=0.015,):
         
