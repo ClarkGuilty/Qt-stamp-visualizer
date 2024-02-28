@@ -289,7 +289,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'colormap':'gist_gray',
                     'scale':'log',
                     'keyboardshortcuts':False,
-                    'colorbandsvisible':False
+                    'colorbandsvisible':False,
+                    'nisprgbvisible':True,
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -516,7 +517,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bviewESA.setEnabled(False)
         list_button_row0_layout.append(self.bviewESA)
 
-        self.bhidecolorbands = QtWidgets.QCheckBox('Show color bands')
+        self.bhidecolorbands = QtWidgets.QCheckBox('Show NISP bands')
         self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
         if self.filetype == 'FITS':
             if not self.config_dict['colorbandsvisible']:
@@ -528,8 +529,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['colorbandsvisible'] = False
             self.bhidecolorbands.setEnabled(False)
             self.plot_layout_1_Widget.hide()
-
         list_button_row0_layout.append(self.bhidecolorbands)
+
+
+        self.bshownisprgb = QtWidgets.QCheckBox('Show NISP RGB')
+        self.bshownisprgb.clicked.connect(self.checkbox_show_nisp_band)
+        if self.filetype == 'FITS':
+            if not self.config_dict['nisprgbvisible']:
+                    self.canvas[self.composite_bands[-1]].hide()
+            else:
+                    self.canvas[self.composite_bands[-1]].show()
+                    self.bshownisprgb.toggle()
+        else:
+            self.config_dict['nisprgbvisible'] = False
+            self.bshownisprgb.setEnabled(False)
+            self.canvas[self.composite_bands[-1]].hide()
+        list_button_row0_layout.append(self.bshownisprgb)
 
         # self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
         # self.blegsur.clicked.connect(self.checkbox_legacy_survey)
@@ -998,6 +1013,43 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.plot()
                 self.color_bands_already_plotted = True
             self.plot_layout_1_Widget.show()
+
+
+    @Slot()
+    def checkbox_show_nisp_band(self):
+        self.config_dict['nisprgbvisible'] = not self.config_dict['nisprgbvisible']
+        if not self.config_dict['nisprgbvisible']:
+            # print(self.canvas[self.composite_bands[-1]].sizePolicy())
+            # print(self.canvas[self.composite_bands[-1]].size())
+            self.canvas[self.composite_bands[-1]].hide()
+                # self.updateGeometry()
+
+            # for band in [self.main_band, *self.composite_bands]:
+            #     self.plot_layout_0.removeWidget(self.canvas[band])
+            #     self.canvas[band].hide()
+            # for band in [self.main_band, *self.composite_bands[:-1]]:
+            #     self.canvas[band].setStyleSheet('background-color: black')
+            #     self.plot_layout_0.addWidget(self.canvas[band])
+            #     self.canvas[band].show()
+
+        else:
+            self.canvas[self.composite_bands[-1]].show()
+            # self.canvas[self.composite_bands[-1]].resize(self.canvas[self.main_band].width(),
+            #                                              self.canvas[self.main_band].height())
+            
+            # for band in [self.main_band, *self.composite_bands]:
+            #     self.plot_layout_0.removeWidget(self.canvas[band])
+            #     self.canvas[band].hide()
+
+            # for band in [self.main_band, *self.composite_bands]:
+            #     self.canvas[band].show()
+                
+            # for band in [self.main_band, *self.composite_bands]:
+            #     self.canvas[band].setStyleSheet('background-color: black')
+            #     self.plot_layout_0.addWidget(self.canvas[band])
+        # self.updateGeometry()
+            
+
 
     @Slot()
     def checkbox_legacy_survey(self):

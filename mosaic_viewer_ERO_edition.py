@@ -658,7 +658,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.filetype='COMPRESSED'
 
         if len(self.listimage) < 1:
-            print("No suitable files were found in {self.base_band_path} or {color_bands_path}")
+            print(f"No suitable files were found in {self.base_band_path} or {color_bands_path}")
             sys.exit()
 
         if self.random_seed is not None:
@@ -1000,8 +1000,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         # string_to_glob = './Classifications/classification_mosaic_autosave_{}_{}_{}_{}*.csv'.format(
         #                             self.name,len(self.listimage),self.gridsize, str(self.random_seed))
-        class_file = natural_sort(glob.glob(
-            string_to_glob)) #better to use natural sort.
+        # class_file = natural_sort(glob.glob(
+        #     string_to_glob)) #better to use natural sort.
+        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
         file_iteration = ""
         if len(class_file) >= 1:
             file_index = 0
