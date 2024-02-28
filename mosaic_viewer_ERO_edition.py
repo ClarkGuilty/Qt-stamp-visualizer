@@ -97,7 +97,7 @@ def log_0(x):
     "Simple log base 1000 function that ignores numbers less than 0"
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
 
-def log(x,a=100):
+def log(x,a=1000):
     "Simple log base 1000 function that ignores numbers less than 0"
     return np.log(a*x+1) / np.log(a)
 
@@ -106,7 +106,7 @@ def asinh2(x):
 
 
 def get_value_range_asymmetric(x, q_low=1, q_high=1,
-                              pixel_boxsize_low = None):
+                              ):
     
     low = np.nanpercentile(x, q_low)
     
@@ -120,7 +120,6 @@ def get_value_range_asymmetric(x, q_low=1, q_high=1,
     ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
     ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
     high = np.nanpercentile(x[xmin:xmax,ymin:ymax], 100-q_high)
-    # print(pixel_boxsize_low)
     return low, high
 
 def clip_normalize(x, low=None, high=None):
@@ -247,26 +246,109 @@ class MiniMosaicLabels(QtWidgets.QLabel):
                 aspectRatioPolicy,
                 minimum_size,
                 sizePolicy,
+                name = None,
                 parent=None):
         QtWidgets.QLabel.__init__(self, parent)
-        self.aspectRatioPolicy = Qt.KeepAspectRatio
+        self.name = name
+        # test_sizePolicy = QtWidgets.QSizePolicy(sizePolicy,sizePolicy)
+
+        # test_sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed)
+        # test_sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        # test_sizePolicy.setHeightForWidth(True)
+        # test_sizePolicy.transpose()
+        # self.aspectRatioPolicy = Qt.KeepAspectRatio
+        # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding
         # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
+        self.aspectRatioPolicy = aspectRatioPolicy
         # self.setMinimumSize(minimum_size,minimum_size)
         # print()
-        # self.setSizePolicy(sizePolicy,sizePolicy)    
+        self.setSizePolicy(sizePolicy,sizePolicy)    
+        # self.setSizePolicy(test_sizePolicy)    
+        # print(self.name,f"{self.hasHeightForWidth() = }")
         # print(f"{self.sizePolicy()}")
         # print(self.parent())
+        # print(self.name, self.maximumSize())
         self.setScaledContents(False)
+        self.updateGeometry()
 
+    # def sizeHint(self):
+    #     limiting_size = self.scaledPixmap().size().toTuple()
+    #     return min(limiting_size)
+        
     def resizeEvent(self, event):
+        # pixmap_length = min(self.size().toTuple())
+        # pixmap_size = QSize(pixmap_length, pixmap_length)
         self.setPixmap(self._pixmap.scaled(
-            self.width(), self.height(),
-            # 10, 50,
-            self.aspectRatioPolicy
-            # Qt.IgnoreAspectRatio,
-            ))
+                            self.width(), self.height(),
+                            # 10, 50,
+                            # pixmap_length, pixmap_length,
+                            self.aspectRatioPolicy
+                            # Qt.IgnoreAspectRatio,
+                            ))
+        # self.setPixmap(self.scaledPixmap())
+        # self.updateGeometry()
+        # print(self.name)
 
-# class MiniMosaics(QtWidgets.QWidget):
+    # def scaledPixmap(self):
+    #     # print(f"About to scale {self.size().toTuple() = }")
+    #     return self._pixmap.scaled(self.size(),
+    #                                       Qt.KeepAspectRatio)
+
+    # def heightForWidth(self, width: int):
+    #     h =  0 if self._pixmap.isNull() else self._pixmap.height() * width / self._pixmap.width()
+    #     return min(h,self._pixmap.height())
+
+        # self.aspect_ratio = 1
+        # self.adjusted_to_size = (-1,-1)
+        # self.ratio=1
+
+    # def resizeEvent(self, event):
+    #     size = event.size()
+    #     if size == self.adjusted_to_size:
+    #         # Avoid infinite recursion. I suspect Qt does this for you,
+    #         # but it's best to be safe.
+    #         return
+    #     self.adjusted_to_size = size
+
+    #     # print(f"{self.name} {self.size() = }")
+    #     scaled_pixmap = self._pixmap.scaled(
+    #                         self.width(), self.height(),
+    #                         # 10, 50,
+    #                         self.aspectRatioPolicy
+    #                         # Qt.IgnoreAspectRatio,
+    #                         )
+    #     self.setPixmap(scaled_pixmap)
+
+    #     full_width = size.width()
+    #     full_height = size.height()
+    #     width = min(full_width, scaled_pixmap.size().width())
+    #     height = min(full_height, scaled_pixmap.size().height())
+    #     print(QSize(height,width))
+    #     self.resize(QSize(height,width))
+
+    # def resizeEvent(self, event):
+    #     print(f"{self.name} {self.size() = }")
+    #     scaled_pixmap = self._pixmap.scaled(
+    #                         self.width(), self.height(),
+    #                         # 10, 50,
+    #                         self.aspectRatioPolicy
+    #                         # Qt.IgnoreAspectRatio,
+    #                         )
+    #     self.setPixmap(scaled_pixmap)
+        
+    #     if self.size() == scaled_pixmap.size():
+    #         return
+    #     print(self.size() == scaled_pixmap.size())
+    #     smallest_dim = min(scaled_pixmap.size().width(), scaled_pixmap.size().height())
+    #     target_size = QSize(smallest_dim,smallest_dim)
+    #     self.resize(target_size)
+    #     # self.(scaled_pixmap.size())
+    #     # self.setMaximumSize(QSize(16777215,16777215))
+    
+    # def sizeHint(self):
+        # m_pixmap.size();
+        # return QSize(5,5)
+
 class MiniMosaics(QtWidgets.QLabel):
     clicked = Signal(str)
     "Widget to hold the image Qlabels"
@@ -278,7 +360,6 @@ class MiniMosaics(QtWidgets.QLabel):
                     image_width=None,
                     image_height=None,
                     parent=None):
-        # QtWidgets.QWidget.__init__(self, parent)
         QtWidgets.QLabel.__init__(self, parent)
         self.filepaths = filepaths
         self.bands = bands
@@ -287,24 +368,18 @@ class MiniMosaics(QtWidgets.QLabel):
         self.lens_background_path = lens_background_path
         self.interesting_background_path = interesting_background_path
 
-        self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setSpacing(0) #TODO: FIND A GOOD VALUE/RECIPE
-        self.layout.setContentsMargins(0,0,0,0)
+        self.mini_layout = QtWidgets.QHBoxLayout(self)
+        self.mini_layout.setSpacing(0) #TODO: FIND A GOOD VALUE/RECIPE
+        self.mini_layout.setContentsMargins(0,0,0,0)
 
         self.deactivated_path = deactivated_path
         self.is_a_candidate = status
         self.update_df_func = update_df_func
         self.i = i
 
-        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
-        # sizePolicy = QtWidgets.QSizePolicy.Expanding
-        # sizePolicy = QtWidgets.QSizePolicy.Ignored
-        # self.setMinimumSize(10,10)
-        # self.setSizePolicy(sizePolicy,sizePolicy)
-
-        # self.setScaledContents(args.resize)
         
         # print(self.minimumSize())
+        # print(self.hasHeightForWidth())
 
         self.target_width = 66 #At the very least, should be the initial size
         self.target_height = 66 #
@@ -315,19 +390,35 @@ class MiniMosaics(QtWidgets.QLabel):
             self.target_height = image_height
 
         self.aspectRatioPolicy = Qt.KeepAspectRatio
+        # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding
+        # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
+
+        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        # sizePolicy = QtWidgets.QSizePolicy.Expanding
+        # sizePolicy = QtWidgets.QSizePolicy.Ignored
+        # self.setMinimumSize(10,10)
+        # self.setSizePolicy(sizePolicy,sizePolicy)
+
+        # self.setScaledContents(args.resize)
+        
         # qlabelSizePolicy = QtWidgets.QSizePolicy.MinimumExpanding    
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Minimum
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Expanding 
+        qlabelSizePolicy = QtWidgets.QSizePolicy.Preferred
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Maximum   
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Ignored 
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
         # print(f"{self.sizeHint() = }")
-        qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
+
+        names = ['VIS','HYI','HJY','bak']
         self.qlabels = [MiniMosaicLabels(self.aspectRatioPolicy,
                                         self.user_minimum_size,
                                         qlabelSizePolicy,
-                                        # self,
-                                        ) for _ in self.bands]
+                                        name = names[i],
+                                        # parent = self
+                                        ) for i,_ in enumerate(self.bands)]
+        
         if self.is_activate:
-            
             if self.is_a_candidate == C_UNINTERESTING:
                 self.change_pixmaps(self.filepaths)
             elif self.is_a_candidate == C_LENS:
@@ -336,7 +427,7 @@ class MiniMosaics(QtWidgets.QLabel):
                 self.change_pixmaps([self.interesting_background_path]*self.n_bands)
         else:
             self.change_pixmaps([self.self.deactivated_path]*self.n_bands)
-            print([self.self.deactivated_path]*self.n_bands)
+            # print([self.self.deactivated_path]*self.n_bands)
         
 
         for qlabel in self.qlabels:   
@@ -348,9 +439,30 @@ class MiniMosaics(QtWidgets.QLabel):
             qlabel.setPixmap(qlabel._pixmap.scaled(
                 self.target_width, self.target_height,
                 self.aspectRatioPolicy))
-            # self.layout.addWidget(qlabel, 1./len(self.qlabels))
-            self.layout.addWidget(qlabel,Qt.AlignHCenter)
+            # self.mini_layout.addWidget(qlabel, 1./len(self.qlabels))
+            # self.mini_layout.addWidget(qlabel,Qt.AlignHCenter)
+            self.mini_layout.addWidget(qlabel,Qt.AlignLeft)
 
+        # self.black_rectangle = MiniMosaicLabels(Qt.IgnoreAspectRatio,
+        #                                     99,
+        #                                     QtWidgets.QSizePolicy.Ignored,
+        #                                     'bak'
+        #                                     )
+        # self.black_rectangle._pixmap = QPixmap(self.deactivated_path)
+
+        # spacer_scaling = QtWidgets.QSizePolicy.Minimum
+        # spacer_scaling = QtWidgets.QSizePolicy.Ignored
+        spacer_scaling = QtWidgets.QSizePolicy.Expanding
+
+        spacer = QtWidgets.QSpacerItem(
+                                        # 40,20,
+                                        10,0,
+                                        QtWidgets.QSizePolicy.Ignored,
+                                        QtWidgets.QSizePolicy.Ignored
+                                        )
+                                        
+        # self.mini_layout.addStretch()
+        # self.mini_layout.addSpacerItem(spacer)
 
     # def sizeHint(self):
     #     return QSize(100,100)
@@ -433,6 +545,36 @@ class MiniMosaics(QtWidgets.QLabel):
         for qlabel in self.qlabels[:nvisiblebands]:
             # print("heh")
             qlabel.show()
+        self.nvisiblebands = nvisiblebands
+
+    # def resizeEvent(self, event):
+    #     print(self.qlabels[0].width(), self.width())
+
+    # def resizeEvent(self, event):
+    #     for qlabel in self.qlabels[:self.nvisiblebands]:
+    #         # print(qlabel.name, qlabel.size().toTuple())
+    #         pixmap_length = min(qlabel.size().toTuple())
+    #         # height = min(full_height, scaled_pixmap.size().height())
+    #         qlabel.resize(QSize(pixmap_length,pixmap_length))
+        
+
+    # def resizeEvent(self, event):
+        
+    #     w = event.size().width()
+    #     h = event.size().height()
+
+    #     if w / h > self.aspect_ratio:  # too wide
+    #         widget_stretch = h * self.aspect_ratio
+    #         outer_stretch = (w - widget_stretch) / 1 + 0.5
+    #         # outer_stretch = (w - widget_stretch) / 2 + 0.5
+    #     # else:  # too tall
+    #     #     self.layout().setDirection(QBoxLayout.TopToBottom)
+    #     #     widget_stretch = w / self.aspect_ratio
+    #     #     outer_stretch = (h - widget_stretch) / 2 + 0.5
+
+    #     # self.layout().setStretch(0, outer_stretch)
+    #     # self.layout().setStretch(1, widget_stretch)
+    #     self.layout.setStretch(-1, outer_stretch)
 
     # def resizeEvent(self, event):
     #     # self.repaint_pixmaps()
@@ -465,11 +607,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                 ]
         self.bands_to_plot = [self.main_band, *self.composite_bands]
 
-        print(f"{self.main_band}")
-        print(f"{self.color_bands}")
-        print(f"{self.color_bands_vis}")
-        print(f"{self.all_single_bands}")
-        print(f"{self.composite_bands}")
+        # print(f"{self.main_band}")
+        # print(f"{self.color_bands}")
+        # print(f"{self.color_bands_vis}")
+        # print(f"{self.all_single_bands}")
+        # print(f"{self.composite_bands}")
         self.scratchpath = './.temp'
         self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
@@ -708,7 +850,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         
         self.time_0 = time()
 
-    def go_to_counter_page(self, target_page):
+    def go_to_page(self, target_page):
         range_low = self.config_dict['page']*self.gridarea
         range_high = min(len(self.df),(self.config_dict['page']+1)*(self.gridarea))
         if hasattr(self, 'time_0'):
@@ -735,19 +877,19 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.status.showMessage('WARNING: Pages go from 1 to {}.'.format(
                 self.PAGE_MAX+1),10000)
         else:
-            self.go_to_counter_page(self.bcounter.getValue())
+            self.go_to_page(self.bcounter.getValue())
     @Slot()
     def next(self):
         if self.config_dict['page']+1 >= self.PAGE_MAX:
             self.status.showMessage('You are already at the last page',10000)
         else:
-            self.go_to_counter_page(self.config_dict['page'] + 1)
+            self.go_to_page(self.config_dict['page'] + 1)
     @Slot()
     def prev(self):
         if self.config_dict['page'] -1 < 0:
             self.status.showMessage('You are already at the first page',10000)
         else:
-            self.go_to_counter_page(self.config_dict['page'] - 1)
+            self.go_to_page(self.config_dict['page'] - 1)
 
     def change_scale(self,i):
         self.config_dict['scale'] = self.cbscale.currentText()
@@ -815,6 +957,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 if ((temp_dict['name'] != self.name) 
                     ):
                     temp_dict['name'] = self.name
+                    temp_dict['page'] = 0
                 if (('nrows' not in temp_dict) or
                   ('ncols' not in temp_dict) or
                   (temp_dict['nrows'] != self.nrows) or
@@ -822,9 +965,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
                     temp_dict['nrows'] = self.nrows
                     temp_dict['ncols'] = self.ncols
+                    temp_dict['page'] = 0
+
                     # temp_dict['name'] = args.gridsize #I commented this on 06-02-2024.
                 if args.page is not None:
-                    temp_dict['page'] = args.page
+                    temp_dict['page'] = min(args.page - 1, 0)
                 if temp_dict['scale'] == 'log10':
                     temp_dict['scale'] = 'log'
                 if temp_dict['colormap'] == 'gray':
@@ -878,6 +1023,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = './Classifications/{}{}.csv'.format(base_filename,file_iteration)
         print('A new csv will be created', self.df_name)
+        # self.config_dict['page'] = 1
+        
         if file_iteration != "":
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
         df = pd.DataFrame(columns=self.dfc)
@@ -967,8 +1114,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         
         composite_image = np.zeros_like(images,
                                     dtype=float)
-        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high,
-                    pixel_boxsize_low=None)
+        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high)
         
         for i in range(images.shape[-1]):
             composite_image[:,:,i] = self.rescale_single_band(
