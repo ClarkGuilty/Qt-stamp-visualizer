@@ -73,8 +73,11 @@ EXTERNAL_BAND = 'external_band'
 _LEGACY_SURVEY_KEY = "Legacy Survey"
 _VIS_RESAMPLED_BAND = 'I'
 
+PATH_TO_CONFIG_FILE = ".config.json"
+
 if args.reset_config:
-    os.remove('.config.json')
+    if os.path.exists(PATH_TO_CONFIG_FILE):
+        os.remove(PATH_TO_CONFIG_FILE)
 
 if args.clean:
     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
@@ -209,6 +212,39 @@ class SingleFetchWorker(QObject):
                 self.failed_download.emit()
         self.has_finished.emit()
 
+
+class BandNamesLabel(QtWidgets.QLabel):
+    def __init__(self,
+                main_band,
+                color_bands,
+                standard_color_band,
+                resampled_color_band,
+                *args,
+                **kwargs
+                ):
+        QtWidgets.QLabel.__init__(self, *args, **kwargs)
+        self.main_band = main_band
+        self.color_bands = color_bands
+        self.standard_color_band = standard_color_band
+        self.resampled_color_band = resampled_color_band
+
+    def updateText(self,
+                    color_bands_status,
+                    standard_color_band_status):
+        label = ''
+        if color_bands_status:
+            for band in self.color_bands:
+                label += f"{band}-"
+            label = label[:-1]+'\n'
+
+        label += f'{self.main_band}-'
+        label += self.resampled_color_band.replace(_VIS_RESAMPLED_BAND,self.main_band)
+
+        if standard_color_band_status:
+            label += f'-{self.standard_color_band}'
+
+        self.setText(label)
+
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
             QThread.__init__(self, parent)
@@ -290,7 +326,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'scale':'log',
                     'keyboardshortcuts':False,
                     'colorbandsvisible':False,
-                    'nisprgbvisible':True,
+                    'nisprgbvisible':False,
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -312,7 +348,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
-        title_strings = ["Sequential stamp visualizer"]
+        title_strings = ["1-by-1 classifier ERO edition"]
         if args.name is not None:
             self.name = args.name
             title_strings.append(self.name)
@@ -376,7 +412,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['counter'] = 0
         
         if self.random_seed is not None:
-            print("Shuffling with seed {self.random_seed}")
+            print(f"Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
 
@@ -409,7 +445,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
-        self.plot_layout_area = QtWidgets.QGridLayout()
+        # self.plot_layout_area = QtWidgets.QGridLayout()
+        self.plot_layout_area = QtWidgets.QVBoxLayout()
         self.plot_layout_0 = QtWidgets.QHBoxLayout()
         self.plot_layout_1_Widget = QtWidgets.QWidget()
         self.plot_layout_1 = QtWidgets.QHBoxLayout(self.plot_layout_1_Widget)
@@ -428,10 +465,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         band2bandname_dict = {band: band for band in self.all_bands}
         band2bandname_dict['HYI'] = 'HYVIS'
 
-        self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in self.all_bands}
+        # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _VIS_RESAMPLED_BAND]}
+        self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
+        self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(self.main_band,
+                                                             self.color_bands,
+                                                             self.composite_bands[0],
+                                                             self.composite_bands[1],
+                                                             alignment=Qt.AlignCenter)
         # print(f"{self.all_bands = }")
-        font = {band: self.label_plot[band].font() for band in self.all_bands}
-        for band in self.all_bands:
+        font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
+        for band in [self.main_band, _VIS_RESAMPLED_BAND]:
             font[band].setPointSize(16)
             self.label_plot[band].setFont(font[band])
 
@@ -464,15 +507,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # print(f"{self.composite_bands = }")
         for band in [self.main_band, *self.composite_bands]:
             self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band])
+            self.plot_layout_0.addWidget(self.canvas[band],1)
 
         for band in self.color_bands:
             self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_1.addWidget(self.canvas[band])
+            self.plot_layout_1.addWidget(self.canvas[band],1)
 
         for band in self.external_bands:
             self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band])
+            self.plot_layout_0.addWidget(self.canvas[band],1)
 
         # print(f"{self.all_bands = }")
 
@@ -505,11 +548,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bds9.setEnabled(False)
         list_button_row0_layout.append(self.bds9)
 
-        self.bviewls = QtWidgets.QPushButton('Open LS')
-        self.bviewls.clicked.connect(self.viewls)
-        if self.filetype != 'FITS':
-            self.bviewls.setEnabled(False)
-        list_button_row0_layout.append(self.bviewls)
+        # self.bviewls = QtWidgets.QPushButton('Open LS')
+        # self.bviewls.clicked.connect(self.viewls)
+        # if self.filetype != 'FITS':
+        #     self.bviewls.setEnabled(False)
+        # list_button_row0_layout.append(self.bviewls)
 
         self.bviewESA = QtWidgets.QPushButton('Open ESASky')
         self.bviewESA.clicked.connect(self.viewESASky)
@@ -751,16 +794,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
 
         #Keyboard shortcuts
-        self.ksurelens = QShortcut(QKeySequence('q'), self)
+        self.ksurelens = QShortcut(QKeySequence('1'), self)
         self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
 
-        self.kmaybelens = QShortcut(QKeySequence('w'), self)
+        self.kmaybelens = QShortcut(QKeySequence('2'), self)
         self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
-        self.kflexion = QShortcut(QKeySequence('e'), self)
+        self.kflexion = QShortcut(QKeySequence('3'), self)
         self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
-        self.knonlens = QShortcut(QKeySequence('r'), self)
+        self.knonlens = QShortcut(QKeySequence('4'), self)
         self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
 #         self.kMerger = QShortcut(QKeySequence('a'), self)
@@ -787,6 +830,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToNextPage), self)
         self.kNext.activated.connect(self.next)
+
+        self.kNext = QShortcut(QKeySequence('k'), self)
+        self.kNext.activated.connect(self.prev)
+
+        self.kNext = QShortcut(QKeySequence('j'), self)
+        self.kNext.activated.connect(self.next)
+
 
         self.kCopyRADec = QShortcut(QKeySequence(QKeySequence.Copy), self)
         self.kCopyRADec.activated.connect(self.copy_RADec_to_keyboard)
@@ -822,9 +872,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("Use fits images to change colormap and colorscale.")
 
 
-        self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
-        # self.plot_layout_area.addLayout(self.plot_layout_1,0,0)
-        self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
+        # self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
+        # self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
+
+        self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
+        self.plot_layout_area.addLayout(self.plot_layout_0,1,)
 
         main_layout.addLayout(self.label_layout, 2)
         main_layout.addLayout(self.plot_layout_area, 88)
@@ -845,12 +897,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['prefetch'] = True
 
     def save_dict(self):
-        with open('.config.json', 'w') as f:
+        with open(PATH_TO_CONFIG_FILE, 'w') as f:
             json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
 
     def load_dict(self):
         try:
-            with open('.config.json', ) as f:
+            with open(PATH_TO_CONFIG_FILE, ) as f:
                 temp_dict = json.load(f)
                 if temp_dict['colormap'] == 'gray':
                     temp_dict['colormap'] = "gist_gray"
@@ -1018,35 +1070,46 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def checkbox_show_nisp_band(self):
         self.config_dict['nisprgbvisible'] = not self.config_dict['nisprgbvisible']
+        relevantWidget = self.canvas[self.composite_bands[-1]]
         if not self.config_dict['nisprgbvisible']:
             # print(self.canvas[self.composite_bands[-1]].sizePolicy())
             # print(self.canvas[self.composite_bands[-1]].size())
-            self.canvas[self.composite_bands[-1]].hide()
-                # self.updateGeometry()
+            
+            relevantWidget.hide()
+            self.plot_layout_0.removeWidget(relevantWidget)
+            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+                                                        self.config_dict['nisprgbvisible'])
+            # for band in [self.main_band, *self.composite_bands]:
+            #     widget = self.canvas[band]
+            #     print(band, widget.minimumSize(), widget.sizeHint(), widget.sizePolicy())
 
             # for band in [self.main_band, *self.composite_bands]:
-            #     self.plot_layout_0.removeWidget(self.canvas[band])
             #     self.canvas[band].hide()
+            #     self.plot_layout_0.removeWidget(self.canvas[band])
             # for band in [self.main_band, *self.composite_bands[:-1]]:
             #     self.canvas[band].setStyleSheet('background-color: black')
             #     self.plot_layout_0.addWidget(self.canvas[band])
             #     self.canvas[band].show()
 
         else:
-            self.canvas[self.composite_bands[-1]].show()
+            relevantWidget.show()
+            self.plot_layout_0.addWidget(relevantWidget,1)
+            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+                                                        self.config_dict['nisprgbvisible'])
+            # self.clear_layout()
+            # relevantWidget.
             # self.canvas[self.composite_bands[-1]].resize(self.canvas[self.main_band].width(),
             #                                              self.canvas[self.main_band].height())
             
             # for band in [self.main_band, *self.composite_bands]:
-            #     self.plot_layout_0.removeWidget(self.canvas[band])
             #     self.canvas[band].hide()
+            #     self.plot_layout_0.removeWidget(self.canvas[band])
 
             # for band in [self.main_band, *self.composite_bands]:
             #     self.canvas[band].show()
                 
             # for band in [self.main_band, *self.composite_bands]:
-            #     self.canvas[band].setStyleSheet('background-color: black')
-            #     self.plot_layout_0.addWidget(self.canvas[band])
+            #     self.plot_layout_0.addWidget(self.canvas[band],1)
         # self.updateGeometry()
             
 
@@ -1289,16 +1352,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def plot(self, scale_min = None, scale_max = None, band = None):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
-        label = ""
+        # label = ""
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.plot_band(band)
-                label += f"{band}-" 
+                # label += f"{band}-" 
             self.color_bands_already_plotted = True
-            label = label[:-1]+'\n'
+            # label = label[:-1]+'\n'
         else:
             self.color_bands_already_plotted = False
-        label += f'{self.main_band}-'
+        # label += f'{self.main_band}-'
         
         if not self.bottom_row_bands_already_plotted:
             for band in [self.main_band]:
@@ -1307,11 +1370,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.plot_composite_band(band)
             self.bottom_row_bands_already_plotted = True
         
-        for band in self.composite_bands:
+        for band in self.composite_bands[:-1]:
             band = band.replace(_VIS_RESAMPLED_BAND,self.main_band)
-            label += f'{band}-'
+            # label += f'{band}-'
         
-        self.label_plot[_VIS_RESAMPLED_BAND].setText(label[:-1])
+        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+                                                        self.config_dict['nisprgbvisible'])
+        # self.label_plot[_VIS_RESAMPLED_BAND].setText(label[:-1])
+        # print(self.label_plot[_VIS_RESAMPLED_BAND].text())
 
     def plot_band(self, band, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
@@ -1346,7 +1412,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(base_bands) != 3:
             print(f"RGB image requires exactly 3 images. Bands provided: {base_bands}")
         
-        self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
+        # self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
         
         if self.filetype == 'FITS':

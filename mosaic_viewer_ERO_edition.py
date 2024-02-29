@@ -175,25 +175,25 @@ class LabelledIntField(QtWidgets.QWidget):
         QtWidgets.QWidget.__init__(self)
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
-        
+        self.fontsize = 18
         self.label = QtWidgets.QLabel()
         self.label.setText(title)
         # self.label.setFixedWidth(100)
-        self.label.setFont(QFont("Arial",20,weight=QFont.Bold))
+        self.label.setFont(QFont("Arial",self.fontsize,weight=QFont.Bold))
         layout.addWidget(self.label)
         
         self.lineEdit = QtWidgets.QLineEdit(self)
         self.lineEdit.setFixedWidth(50)
         self.lineEdit.setValidator(QIntValidator(1,total_pages))
         self.lineEdit.setText(str(initial_value+1))
-        self.lineEdit.setFont(QFont("Arial",20))
+        self.lineEdit.setFont(QFont("Arial",self.fontsize))
         self.lineEdit.setStyleSheet('background-color: black; color: gray')
         self.lineEdit.setAlignment(Qt.AlignRight)
         layout.addWidget(self.lineEdit)
 
         self.total_pages = QtWidgets.QLabel()
         self.total_pages.setText("/ "+str(total_pages))
-        self.total_pages.setFont(QFont("Arial",20))
+        self.total_pages.setFont(QFont("Arial",self.fontsize))
         layout.addWidget(self.total_pages)
 
         # layout.addStretch()
@@ -211,18 +211,19 @@ class NamedLabel(QtWidgets.QWidget):
         QtWidgets.QWidget.__init__(self)
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
+        self.fontsize = 18
         
         self.name = QtWidgets.QLabel()
         self.name.setText(title)
         # self.title.setFixedWidth(100)
-        self.name.setFont(QFont("Arial",20,weight=QFont.Bold))
+        self.name.setFont(QFont("Arial",self.fontsize,weight=QFont.Bold))
         layout.addWidget(self.name)
         
         self.label = QtWidgets.QLineEdit(self)
         self.label.setFixedWidth(50)
         self.label.setEnabled(False)
         self.label.setText(str(initial_value))
-        self.label.setFont(QFont("Arial",20))
+        self.label.setFont(QFont("Arial",self.fontsize))
         self.label.setStyleSheet('background-color: black; color: gray')
         self.label.setAlignment(Qt.AlignRight)
         layout.addWidget(self.label)
@@ -260,7 +261,7 @@ class MiniMosaicLabels(QtWidgets.QLabel):
         # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding
         # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
         self.aspectRatioPolicy = aspectRatioPolicy
-        # self.setMinimumSize(minimum_size,minimum_size)
+        self.setMinimumSize(minimum_size,minimum_size)
         # print()
         self.setSizePolicy(sizePolicy,sizePolicy)    
         # self.setSizePolicy(test_sizePolicy)    
@@ -393,11 +394,11 @@ class MiniMosaics(QtWidgets.QLabel):
         # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding
         # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
 
-        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
         # sizePolicy = QtWidgets.QSizePolicy.Expanding
         # sizePolicy = QtWidgets.QSizePolicy.Ignored
-        # self.setMinimumSize(10,10)
-        # self.setSizePolicy(sizePolicy,sizePolicy)
+        self.setMinimumSize(self.user_minimum_size*3,self.user_minimum_size)
+        self.setSizePolicy(sizePolicy,sizePolicy)
 
         # self.setScaledContents(args.resize)
         
@@ -439,9 +440,9 @@ class MiniMosaics(QtWidgets.QLabel):
             qlabel.setPixmap(qlabel._pixmap.scaled(
                 self.target_width, self.target_height,
                 self.aspectRatioPolicy))
-            # self.mini_layout.addWidget(qlabel, 1./len(self.qlabels))
+            self.mini_layout.addWidget(qlabel, 1)
             # self.mini_layout.addWidget(qlabel,Qt.AlignHCenter)
-            self.mini_layout.addWidget(qlabel,Qt.AlignLeft)
+            # self.mini_layout.addWidget(qlabel,Qt.AlignHCenter)
 
         # self.black_rectangle = MiniMosaicLabels(Qt.IgnoreAspectRatio,
         #                                     99,
@@ -461,7 +462,7 @@ class MiniMosaics(QtWidgets.QLabel):
                                         QtWidgets.QSizePolicy.Ignored
                                         )
                                         
-        # self.mini_layout.addStretch()
+        self.mini_layout.addStretch()
         # self.mini_layout.addSpacerItem(spacer)
 
     # def sizeHint(self):
@@ -546,6 +547,8 @@ class MiniMosaics(QtWidgets.QLabel):
             # print("heh")
             qlabel.show()
         self.nvisiblebands = nvisiblebands
+        self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
+        self.updateGeometry()
 
     # def resizeEvent(self, event):
     #     print(self.qlabels[0].width(), self.width())
@@ -658,7 +661,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.filetype='COMPRESSED'
 
         if len(self.listimage) < 1:
-            print(f"No suitable files were found in {self.base_band_path} or {color_bands_path}")
+            print(f"No suitable files were found in {base_band_path} or {color_bands_path}")
             sys.exit()
 
         if self.random_seed is not None:
@@ -684,6 +687,22 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                             'cbrt': np.cbrt,
                             'log': log,
                             'asinh': asinh2}
+
+        self.cmname2cm = {
+                            'gray':'gist_gray',
+                            'gist_gray':'gist_gray',
+                            'viridis':'viridis',
+                            'yarg':'gist_yarg',
+                            'gist_yarg':'gist_yarg',
+                            'hot':'hot'
+        }
+
+        self.cm2cmname = {
+                            'gist_gray':'gray',
+                            'viridis':'viridis',
+                            'gist_yarg':'yarg',
+                            'hot':'hot'
+        }
 
         title_strings = ["Mosaic stamp visualizer"]
         if args.name is not None:
@@ -764,9 +783,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         line_edit = self.cbcolormap.lineEdit()
         # line_edit.setAlignment(Qt.AlignCenter)
         # line_edit.setReadOnly(True)
-        self.listscales = ['gist_gray','viridis','gist_yarg','hot']
+        self.listscales = ['gray','viridis','yarg','hot']
         self.cbcolormap.addItems(self.listscales)
-        self.cbcolormap.setCurrentIndex(self.listscales.index(self.config_dict['colormap']))
+        self.cbcolormap.setCurrentIndex(self.listscales.index(self.cm2cmname[self.config_dict['colormap']]))
         self.cbcolormap.setStyleSheet('background-color: gray')
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
@@ -1084,7 +1103,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 else:
                     image = np.zeros((66, 66))# * 0.0000001
                     plt.imsave(self.filepath(i, self.config_dict['page']),
-                        image, cmap=self.config_dict['colormap'], origin="lower")
+                        image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
     def prepare_png(self, i, single_band_only):
         if self.filetype == 'FITS':
@@ -1092,14 +1111,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             
             image = self.prepare_single_band(band_images[self.main_band])
             plt.imsave(self.filepath(i, self.config_dict['page'], band=self.main_band),
-                    image, cmap=self.config_dict['colormap'], origin="lower")
+                    image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
             if not single_band_only:
                 for composite_band in self.composite_bands:
                     bands = list(composite_band)
                     composite_image = self.prepare_composite_band(np.stack([band_images[band] for band in bands],axis=-1))
                     plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
-                        composite_image, cmap=self.config_dict['colormap'], origin="lower")
+                        composite_image, origin="lower")
 
     def prepare_single_band(self, image):
         scale_min, scale_max = self.scale_val(image)
@@ -1157,13 +1176,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 image[np.isnan(image)] = np.nanmin(image)
                 
                 plt.imsave(self.filepath(i, self.config_dict['page']),
-                        image, cmap=self.config_dict['colormap'], origin="lower")
+                        image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
             except Exception as E:
                 # raise
                 print(f"WARNING: exception saving file {E}")
                 image = np.zeros((66, 66))# * 0.0000001
                 plt.imsave(self.filepath(i, self.config_dict['page']),
-                    image, cmap=self.config_dict['colormap'], origin="lower")
+                    image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
         # elif self.filetype == 'COMPRESSED':
             if i < len(self.listimage):
                 try:
