@@ -41,14 +41,14 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect.",
                     default="Stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default=None)
-parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
-                    default="VIS")
-parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
-                    default="Y,J,H")
-parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page.",type=int,
+# parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
+#                     default="VIS")
+# parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
+#                     default="Y,J,H")
+parser.add_argument('-l',"--ncols", help="Number of columns per page. Find the optimal value before classifying. Once you start the classification do not change this.",type=int,
                     default=5)
 parser.add_argument('-m',"--nrows", 
-                    help="Number of rows per page. Leave unset if you want a squared grid",type=int,
+                    help="Number of rows per page. Find the optimal value before classifying. Once you start the classification do not change this.",type=int,
                     default=8)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
@@ -59,18 +59,18 @@ parser.add_argument("--printname", help="Whether to print the name when you clic
                     default=False)
 parser.add_argument("--page", help="Initial page.",type=int,
                     default=None)
-parser.add_argument('--resize',
-                    help="Set to allow the resizing of the stamps with the window.",
-                    action=argparse.BooleanOptionalAction,
-                    default=False)
-parser.add_argument('--fits',
-                    help=("forces app to only use fits (--fits) "+
-                          "or png/jp(e)g (--no-fits). "+
-                          "If unset, the app searches for fits files "+
-                          "in the path, but defaults to png/jp(e)g "+
-                          "if no fits files are found."),
-                    action=argparse.BooleanOptionalAction,
-                    default=None)
+# parser.add_argument('--resize',
+#                     help="Set to allow the resizing of the stamps with the window.",
+#                     action=argparse.BooleanOptionalAction,
+#                     default=False)
+# parser.add_argument('--fits',
+#                     help=("forces app to only use fits (--fits) "+
+#                           "or png/jp(e)g (--no-fits). "+
+#                           "If unset, the app searches for fits files "+
+#                           "in the path, but defaults to png/jp(e)g "+
+#                           "if no fits files are found."),
+#                     action=argparse.BooleanOptionalAction,
+#                     default=None)
 # parser.add_argument('--crop',
 #                     help="Lenth of the side of the cropped cutout in arcsec. Defaults to the whole frame",
 #                     type=float,
@@ -78,6 +78,10 @@ parser.add_argument('--fits',
 
 
 args = parser.parse_args()
+args.fits = 'None'
+args.resize = False
+args.main_band = "VIS"
+args.color_bands = "Y,J,H"
 
 C_INTERESTING = 2
 C_LENS = 1
@@ -394,9 +398,9 @@ class MiniMosaics(QtWidgets.QLabel):
         # self.aspectRatioPolicy = Qt.KeepAspectRatioByExpanding
         # self.aspectRatioPolicy = Qt.IgnoreAspectRatio
 
-        sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
+        # sizePolicy = QtWidgets.QSizePolicy.MinimumExpanding
         # sizePolicy = QtWidgets.QSizePolicy.Expanding
-        # sizePolicy = QtWidgets.QSizePolicy.Ignored
+        sizePolicy = QtWidgets.QSizePolicy.Ignored
         self.setMinimumSize(self.user_minimum_size*3,self.user_minimum_size)
         self.setSizePolicy(sizePolicy,sizePolicy)
 
@@ -405,9 +409,9 @@ class MiniMosaics(QtWidgets.QLabel):
         # qlabelSizePolicy = QtWidgets.QSizePolicy.MinimumExpanding    
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Minimum
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Expanding 
-        qlabelSizePolicy = QtWidgets.QSizePolicy.Preferred
+        # qlabelSizePolicy = QtWidgets.QSizePolicy.Preferred
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Maximum   
-        # qlabelSizePolicy = QtWidgets.QSizePolicy.Ignored 
+        qlabelSizePolicy = QtWidgets.QSizePolicy.Ignored 
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
         # print(f"{self.sizeHint() = }")
 
@@ -547,6 +551,7 @@ class MiniMosaics(QtWidgets.QLabel):
             # print("heh")
             qlabel.show()
         self.nvisiblebands = nvisiblebands
+        # self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
         self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
         self.updateGeometry()
 
@@ -818,10 +823,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
 
         ##### Keyboard shortcuts
-        self.knext = QShortcut(QKeySequence('f'), self)
+        self.knext = QShortcut(QKeySequence('j'), self)
         self.knext.activated.connect(self.next)
 
-        self.kprev = QShortcut(QKeySequence('d'), self)
+        self.kprev = QShortcut(QKeySequence('k'), self)
         self.kprev.activated.connect(self.prev)
 
 
