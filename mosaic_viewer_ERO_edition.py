@@ -45,14 +45,14 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
 #                     default="VIS")
 # parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
 #                     default="Y,J,H")
-parser.add_argument('-l',"--ncols", help="Number of columns per page. Find the optimal value before classifying. Once you start the classification do not change this.",type=int,
+parser.add_argument('-l',"--ncols", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
                     default=5)
 parser.add_argument('-m',"--nrows", 
-                    help="Number of rows per page. Find the optimal value before classifying. Once you start the classification do not change this.",type=int,
+                    help="Number of rows per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
                     default=8)
 parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
                     default=None)
-parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The optimal value depends on your screen and the stampsize.",type=int,
+parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The default (66) should be good enough, but you can try smaller values if the mosaic is too big for your screen. You can change this even after you started a classification.",type=int,
                     default=None)
 parser.add_argument("--printname", help="Whether to print the name when you click.",
                     action=argparse.BooleanOptionalAction,
@@ -431,7 +431,7 @@ class MiniMosaics(QtWidgets.QLabel):
             elif self.is_a_candidate == C_INTERESTING:
                 self.change_pixmaps([self.interesting_background_path]*self.n_bands)
         else:
-            self.change_pixmaps([self.self.deactivated_path]*self.n_bands)
+            self.change_pixmaps([self.deactivated_path]*self.n_bands)
             # print([self.self.deactivated_path]*self.n_bands)
         
 
@@ -703,9 +703,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.cm2cmname = {
                             'gist_gray':'gray',
+                            'gray':'gray',
                             'viridis':'viridis',
+                            'yarg':'yarg',
                             'gist_yarg':'yarg',
-                            'hot':'hot'
+                            'hot':'hot',
+
+
         }
 
         title_strings = ["Mosaic stamp visualizer"]
@@ -1000,7 +1004,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
                     # temp_dict['name'] = args.gridsize #I commented this on 06-02-2024.
                 if args.page is not None:
-                    temp_dict['page'] = min(args.page - 1, 0)
+                    temp_dict['page'] = max(min(args.page - 1,self.PAGE_MAX), 0)
                 if temp_dict['scale'] == 'log10':
                     temp_dict['scale'] = 'log'
                 if temp_dict['colormap'] == 'gray':

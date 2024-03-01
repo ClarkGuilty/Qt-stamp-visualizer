@@ -477,8 +477,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
         self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(self.main_band,
                                                              self.color_bands,
-                                                             self.composite_bands[0],
                                                              self.composite_bands[1],
+                                                             self.composite_bands[0],
                                                              alignment=Qt.AlignCenter)
         # print(f"{self.all_bands = }")
         font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
