@@ -41,26 +41,31 @@ parser.add_argument('-p',"--path", help="path to the images to inspect",
                     default="Color_stamps_to_inspect")
 parser.add_argument('-N',"--name", help="name of the classifying session.",
                     default=None)
-parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
-                    default="VIS")
-parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
-                    default="Y,J,H")
+# parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
+#                     default="VIS")
+# parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
+#                     default="Y,J,H")
 parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
-parser.add_argument("--verbose", help="activates loging to terminal",
-                    action="store_true", default=False)
-parser.add_argument("--clean", help="cleans the legacy survey folder.",
-                    action="store_true")
-parser.add_argument('--fits',
-                    help=("forces app to only use fits (--fits) or png/jp(e)g (--no-fits). "+
-                    "If unset, the app searches for fits files in the path, but defaults to "+
-                    "png/jp(e)g if no fits files are found."),
-                    action=argparse.BooleanOptionalAction,
-                    default=None)
+# parser.add_argument("--verbose", help="activates loging to terminal",
+#                     action="store_true", default=False)
+# parser.add_argument("--clean", help="cleans the legacy survey folder.",
+#                     action="store_true")
+# parser.add_argument('--fits',
+#                     help=("forces app to only use fits (--fits) or png/jp(e)g (--no-fits). "+
+#                     "If unset, the app searches for fits files in the path, but defaults to "+
+#                     "png/jp(e)g if no fits files are found."),
+#                     action=argparse.BooleanOptionalAction,
+#                     default=None)
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 
 args = parser.parse_args()
+
+args.main_band = 'VIS'
+args.color_bands = 'Y,J,H'
+args.verbose = False
+args.fits = None
 
 
 LEGACY_SURVEY_PATH = './Legacy_survey/'
@@ -79,10 +84,10 @@ if args.reset_config:
     if os.path.exists(PATH_TO_CONFIG_FILE):
         os.remove(PATH_TO_CONFIG_FILE)
 
-if args.clean:
-    for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
-        if os.path.exists(f):
-            os.remove(f)
+# if args.clean:
+#     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
+#         if os.path.exists(f):
+#             os.remove(f)
 
 def identity(x):
     return x
@@ -315,7 +320,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
+
+        title_strings = ["1-by-1 classifier ERO edition"]
+        if args.name is not None:
+            self.name = args.name
+            title_strings.append(self.name)
+        else:
+            self.name = ''
+        self.setWindowTitle(' - '.join(title_strings))
+        
         self.defaults = {
+                    'name': self.name,
                     'counter':0,
                     'legacysurvey':False,
                     'legacybigarea':False,
@@ -348,13 +363,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             'asinh2':asinh2}
         self.scale = self.scale2funct[self.config_dict['scale']]
 
-        title_strings = ["1-by-1 classifier ERO edition"]
-        if args.name is not None:
-            self.name = args.name
-            title_strings.append(self.name)
-        else:
-            self.name = ''
-        self.setWindowTitle(' - '.join(title_strings))
 
         self.stampspath = args.path
         self.main_band = args.main_band
@@ -906,9 +914,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 temp_dict = json.load(f)
                 if temp_dict['colormap'] == 'gray':
                     temp_dict['colormap'] = "gist_gray"
+                if 'name' in temp_dict.keys():
+                    if temp_dict['name'] != self.name:
+                        temp_dict['name'] = self.name
+                        temp_dict['counter'] = 0
                 for key in self.defaults.keys():
                     if key not in temp_dict.keys():
                         temp_dict[key] = self.defaults[key]
+                
+                
                 return temp_dict
         except FileNotFoundError:
             return self.defaults
@@ -1498,6 +1512,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
                 file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
 
+        # self.config_dict['counter'] = 0
+        # self.update_counter()
 
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'

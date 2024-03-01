@@ -548,7 +548,6 @@ class MiniMosaics(QtWidgets.QLabel):
         for qlabel in self.qlabels[nvisiblebands:]:
             qlabel.hide()
         for qlabel in self.qlabels[:nvisiblebands]:
-            # print("heh")
             qlabel.show()
         self.nvisiblebands = nvisiblebands
         # self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
@@ -722,11 +721,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             'page': 0, #Defaults to 0. Gets overwritten by --page argument.
             # 'total': -1,
             'colormap': 'gist_gray',
-            'scale': 'asinh',
+            'scale': 'log',
             'name': self.name,
             'ncols': self.ncols,
             'nrows': self.nrows,
-            'nvisiblebands':'3',
+            'nvisiblebands':'2',
             # 'gridsize': self.nrows, #Just for retrocompatibility.
         }
         self.config_dict = self.load_dict()
@@ -766,12 +765,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         main_layout.addLayout(stamp_grid_layout, 8)
         main_layout.addLayout(bottom_bar_layout, )
 
+        self.fontsize = 18
+        
         #### Buttons
         self.cbscale = QtWidgets.QComboBox()
         delegate = AlignDelegate(self.cbscale)
         self.cbscale.setItemDelegate(delegate)
         # self.cbscale.setEditable(True)
-        self.cbscale.setFont(QFont("Arial",20))
+        self.cbscale.setFont(QFont("Arial",self.fontsize))
         # Clickable(self.cbscale).connect(self.cbscale.showPopup)
         line_edit = self.cbscale.lineEdit()
         self.cbscale.addItems(self.scale2funct.keys())
@@ -784,7 +785,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         delegate = AlignDelegate(self.cbcolormap)
         self.cbcolormap.setItemDelegate(delegate)
         # self.cbcolormap.setEditable(True)
-        self.cbcolormap.setFont(QFont("Arial",20))
+        self.cbcolormap.setFont(QFont("Arial",self.fontsize))
         line_edit = self.cbcolormap.lineEdit()
         # line_edit.setAlignment(Qt.AlignCenter)
         # line_edit.setReadOnly(True)
@@ -798,7 +799,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         delegate = AlignDelegate(self.cbnvisibleimages)
         self.cbnvisibleimages.setItemDelegate(delegate)
         # self.cbcolormap.setEditable(True)
-        self.cbnvisibleimages.setFont(QFont("Arial",20))
+        self.cbnvisibleimages.setFont(QFont("Arial",self.fontsize))
         line_edit = self.cbnvisibleimages.lineEdit()
         # line_edit.setAlignment(Qt.AlignCenter)
         # line_edit.setReadOnly(True)
@@ -812,12 +813,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bprev = QtWidgets.QPushButton('Prev')
         self.bprev.clicked.connect(self.prev)
         self.bprev.setStyleSheet('background-color: gray')
-        self.bprev.setFont(QFont("Arial",20))
+        self.bprev.setFont(QFont("Arial",self.fontsize))
 
         self.bnext = QtWidgets.QPushButton('Next')
         self.bnext.clicked.connect(self.next)
         self.bnext.setStyleSheet('background-color: gray')
-        self.bnext.setFont(QFont("Arial",20))
+        self.bnext.setFont(QFont("Arial",self.fontsize))
 
         self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
@@ -827,6 +828,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.knext.activated.connect(self.next)
 
         self.kprev = QShortcut(QKeySequence('k'), self)
+        self.kprev.activated.connect(self.prev)
+
+        self.knext = QShortcut(QKeySequence('f'), self)
+        self.knext.activated.connect(self.next)
+
+        self.kprev = QShortcut(QKeySequence('d'), self)
         self.kprev.activated.connect(self.prev)
 
 
@@ -1166,35 +1173,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                                                     self.scale2funct[self.config_dict['scale']])
         return contrast_bias_scale(image, contrast, bias)
 
-
-
-    def heh(self):
-            try:
-                image = self.read_fits(i)
-                scaling_factor = np.nanpercentile(image,q=90)
-                if scaling_factor == 0:
-                    # scaling_factor = np.nanpercentile(image,q=99)
-                    scaling_factor = 1
-                image = image / scaling_factor * 300 #Rescaling for better visualization.
-                scale_min, scale_max = self.scale_val(image)
-                image = self.rescale_image(image, scale_min, scale_max)
-                image[np.isnan(image)] = np.nanmin(image)
-                
-                plt.imsave(self.filepath(i, self.config_dict['page']),
-                        image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
-            except Exception as E:
-                # raise
-                print(f"WARNING: exception saving file {E}")
-                image = np.zeros((66, 66))# * 0.0000001
-                plt.imsave(self.filepath(i, self.config_dict['page']),
-                    image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
-        # elif self.filetype == 'COMPRESSED':
-            if i < len(self.listimage):
-                try:
-                    original_filepath = join(self.stampspath, self.listimage[i])
-                    shutil.copyfile(original_filepath, self.filepath(i, self.config_dict['page']))
-                except:
-                    print('file not found: {}'.format(original_filepath))
 
 
     def clean_dir(self, path_dir):
