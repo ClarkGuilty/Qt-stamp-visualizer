@@ -1498,7 +1498,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 file_index = -2
             self.df_name = class_file[file_index]
             print('Reading '+ self.df_name)
-            df = pd.read_csv(self.df_name)
+            df = pd.read_csv(self.df_name,index_col=0)
             keys_to_drop = []
             for key in df.keys():
                 if "Unnamed:" in key:
