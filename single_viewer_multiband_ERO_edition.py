@@ -562,11 +562,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #     self.bviewls.setEnabled(False)
         # list_button_row0_layout.append(self.bviewls)
 
-        self.bviewESA = QtWidgets.QPushButton('Open ESASky')
-        self.bviewESA.clicked.connect(self.viewESASky)
-        if self.filetype != 'FITS':
-            self.bviewESA.setEnabled(False)
-        list_button_row0_layout.append(self.bviewESA)
+        # self.bviewESA = QtWidgets.QPushButton('Open ESASky')
+        # self.bviewESA.clicked.connect(self.viewESASky)
+        # if self.filetype != 'FITS':
+        #     self.bviewESA.setEnabled(False)
+        # list_button_row0_layout.append(self.bviewESA)
 
         self.bhidecolorbands = QtWidgets.QCheckBox('Show NISP bands')
         self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
@@ -753,11 +753,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_scales_buttons.append(self.blog)
 
         list_colormap_buttons = []
-        self.bInverted = QtWidgets.QPushButton('Inverted')
+        self.bInverted = QtWidgets.QPushButton('Yarg')
         self.bInverted.clicked.connect(partial(self.set_colormap,self.bInverted,'gist_yarg'))
         list_colormap_buttons.append(self.bInverted)
 
-        self.bBb8 = QtWidgets.QPushButton('Bb8')
+        self.bBb8 = QtWidgets.QPushButton('Hot')
         self.bBb8.clicked.connect(partial(self.set_colormap,self.bBb8,'hot'))
         list_colormap_buttons.append(self.bBb8)
 
@@ -1281,7 +1281,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 p_low = 1,
                                 p_high = 1,
                                 value_at_min = 0,
-                                color_bkg_level = -0.05):
+                                color_bkg_level = 0.1):
         # scale_min, scale_max = get_value_range(image,p)
         scale_min, scale_max = get_value_range_asymmetric(image,p_low,p_high)
 
@@ -1535,7 +1535,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['dec'] = np.full(len(self.listimage),np.nan)
         # df['comment'] = ['Empty'] * len(self.listimage)
         df['image_dim'] = np.full(len(self.listimage),pd.NA)
-        df['time'] = np.full(len(self.listimage),0)
+        df['time'] = np.full(len(self.listimage),0.0)
         return df
 
     def go_to_counter_page(self):
