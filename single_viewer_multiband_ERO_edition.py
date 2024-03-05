@@ -155,8 +155,6 @@ def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min,
     bias = 1 - (bkg_level-1)/(2*(bkg_color-1))
     return contrast, bias
 
-
-
 def natural_sort(l): 
     "https://stackoverflow.com/a/4836734"
     convert = lambda text: int(text) if text.isdigit() else text.lower()
@@ -216,7 +214,6 @@ class SingleFetchWorker(QObject):
                 # self.failed_download.emit('No Legacy Survey data available.')
                 self.failed_download.emit()
         self.has_finished.emit()
-
 
 class BandNamesLabel(QtWidgets.QLabel):
     def __init__(self,
