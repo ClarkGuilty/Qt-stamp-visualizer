@@ -679,6 +679,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
         list_classifications.append(self.bnonlens)
 
+
+        self.binteresting = QtWidgets.QPushButton('Interesting')
+        self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
+        list_classifications.append(self.binteresting)
+
         # list_subclassifications = []
         # self.bMerger = QtWidgets.QPushButton('Merger')
         # self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
@@ -713,6 +718,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                   'ML':self.bmaybelens,
                                   'FL':self.bflexion,
                                   'NL':self.bnonlens,
+                                  'I':self.binteresting,
 
                                  'None':None}
 
@@ -726,6 +732,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #                           'B':None,
         #                           'C':None,
         #                           'X':None,
+        #                           'I':None,
         #                           'SL':None,
         #                           'ML':None,
         #                           'FL':None,
@@ -811,6 +818,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.knonlens = QShortcut(QKeySequence('4'), self)
         self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
+        self.knonlens = QShortcut(QKeySequence('5'), self)
+        self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
+
 #         self.kMerger = QShortcut(QKeySequence('a'), self)
 #         self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
 
@@ -831,16 +841,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
-        self.kNext.activated.connect(self.prev)
+        self.kNext.activated.connect(self.keyPrev)
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToNextPage), self)
-        self.kNext.activated.connect(self.next)
+        self.kNext.activated.connect(self.keyNext)
 
         self.kNext = QShortcut(QKeySequence('k'), self)
-        self.kNext.activated.connect(self.prev)
+        self.kNext.activated.connect(self.keyPrev)
 
         self.kNext = QShortcut(QKeySequence('j'), self)
-        self.kNext.activated.connect(self.next)
+        self.kNext.activated.connect(self.keyNext)
 
 
         self.kCopyRADec = QShortcut(QKeySequence(QKeySequence.Copy), self)
@@ -933,6 +943,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['keyboardshortcuts'] == True:
             self.classify(grade, subgrade)
         
+    @Slot()
+    def keyNext(self):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.next()
+
+    @Slot()
+    def keyPrev(self):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.prev()
+
     @Slot()
     def copy_RADec_to_keyboard(self):
         clipboard = QClipboard()
