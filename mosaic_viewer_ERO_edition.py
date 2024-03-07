@@ -824,7 +824,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bnext.setStyleSheet('background-color: gray')
         self.bnext.setFont(QFont("Arial",self.fontsize))
 
-        self.bclickcounter = NamedLabel('Clicks', self.df['classification'].sum().astype(int))
+        self.bclickcounter = NamedLabel('Clicks', (self.df['classification'] == C_LENS).sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
 
         ##### Keyboard shortcuts
