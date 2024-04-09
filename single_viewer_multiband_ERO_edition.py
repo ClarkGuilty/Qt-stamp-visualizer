@@ -663,43 +663,46 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_button_row0_layout.append(self.bkeyboardshortcuts)
 
         list_classifications = []
-        self.bsurelens = QtWidgets.QPushButton('A')
-        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
+        self.bsurelens = QtWidgets.QPushButton('Sure lens')
+        self.bsurelens.clicked.connect(partial(self.classify, 'SL','SL') )
         list_classifications.append(self.bsurelens)
 
-        self.bmaybelens = QtWidgets.QPushButton('B')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
+        self.bmaybelens = QtWidgets.QPushButton('Maybe lens')
+        self.bmaybelens.clicked.connect(partial(self.classify, 'ML','ML'))
         list_classifications.append(self.bmaybelens)
 
-        self.bflexion = QtWidgets.QPushButton('C')
-        self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
-        list_classifications.append(self.bflexion)
+        # self.bflexion = QtWidgets.QPushButton('C')
+        # self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
+        # list_classifications.append(self.bflexion)
 
-        self.bnonlens = QtWidgets.QPushButton('X')
-        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
+        self.bnonlens = QtWidgets.QPushButton('Non-lens')
+        self.bnonlens.clicked.connect(partial(self.classify, 'NL','NL'))
         list_classifications.append(self.bnonlens)
 
+        # self.binteresting = QtWidgets.QPushButton('Interesting')
+        # self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
+        # list_classifications.append(self.binteresting)
 
-        self.binteresting = QtWidgets.QPushButton('Interesting')
-        self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
-        list_classifications.append(self.binteresting)
+        list_subclassifications = []
+        self.bMerger = QtWidgets.QPushButton('Merger')
+        self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
+        list_subclassifications.append(self.bMerger)
 
-        # list_subclassifications = []
-        # self.bMerger = QtWidgets.QPushButton('Merger')
-        # self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
-        # list_subclassifications.append(self.bMerger)
+        self.bSpiral = QtWidgets.QPushButton('Spiral')
+        self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
+        list_subclassifications.append(self.bSpiral)
 
-        # self.bSpiral = QtWidgets.QPushButton('Spiral')
-        # self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
-        # list_subclassifications.append(self.bSpiral)
-
-        # self.bRing = QtWidgets.QPushButton('Ring')
-        # self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
-        # list_subclassifications.append(self.bRing)
+        self.bRing = QtWidgets.QPushButton('Ring')
+        self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
+        list_subclassifications.append(self.bRing)
 
         # self.bElliptical = QtWidgets.QPushButton('Elliptical')
         # self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
         # list_subclassifications.append(self.bElliptical)
+
+        self.bLRG = QtWidgets.QPushButton('LRG')
+        self.bLRG.clicked.connect(partial(self.classify, 'X','LRG'))
+        list_subclassifications.append(self.bLRG)
 
         # self.bDisc = QtWidgets.QPushButton('Disc')
         # self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
@@ -709,35 +712,43 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
         # list_subclassifications.append(self.bEdgeon)
 
+        self.bOther = QtWidgets.QPushButton('Other')
+        self.bOther.clicked.connect(partial(self.classify, 'X','Other'))
+        list_subclassifications.append(self.bOther)
+
+
         self.dict_class2button = {
                                  'A':self.bsurelens,
                                   'B':self.bmaybelens,
-                                  'C':self.bflexion,
+                                #   'C':self.bflexion,
                                   'X':self.bnonlens,
                                  'SL':self.bsurelens,
                                   'ML':self.bmaybelens,
-                                  'FL':self.bflexion,
+                                #   'FL':self.bflexion,
                                   'NL':self.bnonlens,
-                                  'I':self.binteresting,
+                                #   'I':self.binteresting,
 
                                  'None':None}
 
-        # self.dict_subclass2button = {'Merger':self.bMerger,
-        #                           'Spiral':self.bSpiral,
-        #                           'Ring':self.bRing,
-        #                           'Elliptical':self.bElliptical,
-        #                           'Disc':self.bDisc,
-        #                           'Edge-on':self.bEdgeon,
-        #                           'A':None,
-        #                           'B':None,
-        #                           'C':None,
-        #                           'X':None,
-        #                           'I':None,
-        #                           'SL':None,
-        #                           'ML':None,
-        #                           'FL':None,
-        #                           'NL':None,
-        #                           'None':None}
+        self.dict_subclass2button = {
+                                  'Merger':self.bMerger,
+                                  'Spiral':self.bSpiral,
+                                  'Ring':self.bRing,
+                                #   'Elliptical':self.bElliptical,
+                                  'LRG':self.bLRG,
+                                #   'Disc':self.bDisc,
+                                #   'Edge-on':self.bEdgeon,
+                                  'Other':self.bOther,
+                                  'A':None,
+                                  'B':None,
+                                  'C':None,
+                                  'X':None,
+                                  'I':None,
+                                  'SL':None,
+                                  'ML':None,
+                                  'FL':None,
+                                  'NL':None,
+                                  'None':None}
 
         list_scales_buttons = []
         self.blinear = QtWidgets.QPushButton('Linear')
@@ -795,11 +806,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
-        # subgrade = self.df.at[self.config_dict['counter'],'subclassification']
-        # if subgrade is not None and subgrade != 'None' and grade != 'Empty':
-        #     self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
-        #     if self.bactivatedsubclassification is not None:
-        #         self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        if subgrade is not None and subgrade != 'None' and grade != 'Empty':
+            self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
 
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
@@ -821,23 +832,23 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.knonlens = QShortcut(QKeySequence('5'), self)
         self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
 
-#         self.kMerger = QShortcut(QKeySequence('a'), self)
-#         self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
+        self.kMerger = QShortcut(QKeySequence('a'), self)
+        self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
 
-#         self.kSpiral = QShortcut(QKeySequence('s'), self)
-#         self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
+        self.kSpiral = QShortcut(QKeySequence('s'), self)
+        self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
 
-#         self.kRing = QShortcut(QKeySequence('d'), self)
-#         self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
+        self.kRing = QShortcut(QKeySequence('d'), self)
+        self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
 
-#         self.kElliptical = QShortcut(QKeySequence('f'), self)
-#         self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
+        self.kElliptical = QShortcut(QKeySequence('f'), self)
+        self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
 
-#         self.kDisc = QShortcut(QKeySequence('g'), self)
-#         self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
+        self.kDisc = QShortcut(QKeySequence('g'), self)
+        self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
 
-#         self.kEdgeon = QShortcut(QKeySequence('h'), self)
-#         self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
+        self.kEdgeon = QShortcut(QKeySequence('h'), self)
+        self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
@@ -864,11 +875,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         button_row0_layout.addWidget(self.counter_widget,alignment=Qt.AlignRight)
 
-        for button in list_classifications:
+        for button in list_classifications[:-1]:
             button_row10_layout.addWidget(button)
 
-        # for button in list_subclassifications:
-        #     button_row11_layout.addWidget(button)
+        for button in list_subclassifications:
+            button_row11_layout.addWidget(button)
 
         for button in list_scales_buttons:
             button_row2_layout.addWidget(button)
@@ -974,7 +985,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         cnt = self.config_dict['counter']# - 1
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
-        # self.df.at[cnt,'subclassification'] = subgrade
+        self.df.at[cnt,'subclassification'] = subgrade
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
@@ -986,7 +997,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.to_csv(self.df_name)
 
         self.update_classification_buttoms()
-        # self.update_subclassification_buttoms()
+        self.update_subclassification_buttoms()
         
         if self.config_dict['autonext']:
             self.next()
@@ -1539,7 +1550,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
         self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification',
-                # 'subclassification',
+                'subclassification',
                 'ra','dec',
                 # 'comment',
                 'image_dim',
@@ -1562,7 +1573,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # if self.config_dict['legacysurvey']:
         #     self.set_legacy_survey()
         self.update_classification_buttoms()
-        # self.update_subclassification_buttoms()
+        self.update_subclassification_buttoms()
         self.update_counter()
         self.save_dict()
         cnt = self.config_dict['counter']# - 1
