@@ -817,38 +817,38 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
 
         #Keyboard shortcuts
-        self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
+        # self.ksurelens = QShortcut(QKeySequence('1'), self)
+        # self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
 
-        self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
+        # self.kmaybelens = QShortcut(QKeySequence('2'), self)
+        # self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
-        self.kflexion = QShortcut(QKeySequence('3'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
+        # self.kflexion = QShortcut(QKeySequence('3'), self)
+        # self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
-        self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
+        # self.knonlens = QShortcut(QKeySequence('4'), self)
+        # self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
-        self.knonlens = QShortcut(QKeySequence('5'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
+        # self.knonlens = QShortcut(QKeySequence('5'), self)
+        # self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
 
-        self.kMerger = QShortcut(QKeySequence('a'), self)
-        self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
+        # self.kMerger = QShortcut(QKeySequence('a'), self)
+        # self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
 
-        self.kSpiral = QShortcut(QKeySequence('s'), self)
-        self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
+        # self.kSpiral = QShortcut(QKeySequence('s'), self)
+        # self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
 
-        self.kRing = QShortcut(QKeySequence('d'), self)
-        self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
+        # self.kRing = QShortcut(QKeySequence('d'), self)
+        # self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
 
-        self.kElliptical = QShortcut(QKeySequence('f'), self)
-        self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
+        # self.kElliptical = QShortcut(QKeySequence('f'), self)
+        # self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
 
-        self.kDisc = QShortcut(QKeySequence('g'), self)
-        self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
+        # self.kDisc = QShortcut(QKeySequence('g'), self)
+        # self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
 
-        self.kEdgeon = QShortcut(QKeySequence('h'), self)
-        self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
+        # self.kEdgeon = QShortcut(QKeySequence('h'), self)
+        # self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
 
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
@@ -1558,7 +1558,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df = pd.DataFrame(columns=dfc)
         df['file_name'] = self.listimage
         df['classification'] = ['Empty'] * len(self.listimage)
-        # df['subclassification'] = ['Empty'] * len(self.listimage)
+        df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
         # df['comment'] = ['Empty'] * len(self.listimage)
