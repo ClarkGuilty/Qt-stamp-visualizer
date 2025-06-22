@@ -56,7 +56,7 @@ parser.add_argument("--reset-config", help="removes the configuration dictionary
 #                     "If unset, the app searches for fits files in the path, but defaults to "+
 #                     "png/jp(e)g if no fits files are found."),
 #                     action=argparse.BooleanOptionalAction,
-#                     default=None)
+#                     default=False) # Only jpg support for now.
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 
@@ -65,7 +65,7 @@ args = parser.parse_args()
 args.main_band = 'VIS'
 args.color_bands = 'Y,J,H'
 args.verbose = False
-args.fits = None
+args.fits = False
 
 
 LEGACY_SURVEY_PATH = './Legacy_survey/'
@@ -88,7 +88,6 @@ if args.reset_config:
 #     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
 #         if os.path.exists(f):
 #             os.remove(f)
-
 def identity(x):
     return x
 
@@ -318,7 +317,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
 
-        title_strings = ["1-by-1 classifier ERO edition"]
+        title_strings = ["One-by-one classifier RR2 edition"]
         if args.name is not None:
             self.name = args.name
             title_strings.append(self.name)
@@ -342,6 +341,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
+        
 
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
@@ -363,10 +363,31 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.stampspath = args.path
         self.main_band = args.main_band
-        self.color_bands = args.color_bands.split(",")
-        self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
+        # self.color_bands = args.color_bands.split(",")
+        # self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.random_seed = args.seed
+
+        self.pre_scalings = ['asinh', 'mtf']
+        self.bands = ['vis_only', 'vis_y', 'vis_y_h']
+
+
+        self.paths_to_images = ([join(self.stampspath, pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands])
+
+
+        if args.fits is None:
+            print("args.fits is None.")
+            sys.exit()
+        elif args.fits:
+            print("At the moment, only jpg/png files are supported")
+            sys.exit()
+        else:
+            self.listimage = sum([glob.glob(join(stamps_path,"*.jpg")) for stamps_path in self.paths_to_images], [])
+            self.listimage = list(map( lambda s: s.split('/')[-1], self.listimage)) # Removing paths.
+
+
+            self.filetype='COMPRESSED'
+
 
         color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
@@ -383,14 +404,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(f"Classifying {len(self.listimage)} sources.")
             if len(self.listimage) == 0:
                 print("No fits files were found, trying with .png, .jpg, and .jpeg")
-                self.listimage = sorted([os.path.basename(x)
+                self.listimage = sorted(set([os.path.basename(x)
                                 for x in (glob.glob(join(base_band_path, '*.png')) +
                                           glob.glob(join(base_band_path, '*.jpg')) +
                                           glob.glob(join(base_band_path, '*.jpeg')) +
                                           glob.glob(join(color_bands_path, '*.png')) +
                                           glob.glob(join(color_bands_path, '*.jpg')) +
                                           glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
+                                         )]))
                 self.filetype='COMPRESSED'
 
         elif args.fits:
@@ -400,16 +421,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                             )]))
             self.filetype='FITS'
         else:
-            self.listimage = sorted([os.path.basename(x)
+            self.listimage = sorted(set([os.path.basename(x)
                                 for x in (glob.glob(join(base_band_path, '*.png')) +
                                           glob.glob(join(base_band_path, '*.jpg')) +
                                           glob.glob(join(base_band_path, '*.jpeg')) +
                                           glob.glob(join(color_bands_path, '*.png')) +
                                           glob.glob(join(color_bands_path, '*.jpg')) +
                                           glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
+                                         )]))
             self.filetype='COMPRESSED'
-
 
         if len(self.listimage) < 1:
             sys.exit()
@@ -439,7 +459,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         # print(self.all_bands)
         self.df = self.obtain_df()
-
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
@@ -1430,6 +1449,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image = self.rescale_image(image, scale_min, scale_max)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
+            print('heh')
             image = np.asarray(Image.open(self.filename))
             self.image = np.copy(image)
             self.ax[band].imshow(image, origin='upper') #For pngs this is best.
