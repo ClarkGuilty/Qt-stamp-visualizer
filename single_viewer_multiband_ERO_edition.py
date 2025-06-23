@@ -186,32 +186,6 @@ def legacy_survey_number_of_pixels(image_pixel_size,
         pixels_big_fov_ls = 2*n_pixels_in_ls
     return n_pixels_in_ls, pixels_big_fov_ls
 
-class SingleFetchWorker(QObject):
-    successful_download = Signal()
-    failed_download = Signal()
-    has_finished = Signal()
-
-    def __init__(self, url, savefile, title):
-        super(SingleFetchWorker, self).__init__()
-        self.url = url
-        self.savefile = savefile
-        self.title = title
-    
-    @Slot()
-    def run(self):
-        if self.url == '':
-            self.successful_download.emit()
-        else:
-            try:
-                urllib.request.urlretrieve(self.url, self.savefile)
-                self.successful_download.emit()
-            except urllib.error.HTTPError:
-                with open(self.savefile,'w') as f:
-                    Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-                # self.failed_download.emit('No Legacy Survey data available.')
-                self.failed_download.emit()
-        self.has_finished.emit()
-
 class BandNamesLabel(QtWidgets.QLabel):
     def __init__(self,
                 main_band,
@@ -238,83 +212,25 @@ class BandNamesLabel(QtWidgets.QLabel):
                     color_bands_status,
                     standard_color_band_status):
         label = ''
-        if color_bands_status:
-            for band in self.color_bands:
-                label += f"{band} | "
-            label = label[:-3]+'\n'
+        # if color_bands_status:
+        #     for band in self.color_bands:
+        #         label += f"{band} | "
+        #     label = label[:-3]+'\n'
 
+        if color_bands_status:
+            label += f'{self.color_bands[0]} | '
+            label += self.color_bands[1]
+            if standard_color_band_status:
+                label += f' | {self.color_bands[2]}'
+            label += '\n'
 
         label += f'{self.main_band} | '
-        label += self.resampled_color_band.replace(_VIS_RESAMPLED_BAND,self.main_band)
+        label += self.resampled_color_band
 
         if standard_color_band_status:
             label += f' | {self.standard_color_band}'
 
         self.setText(label)
-
-class FetchThread(QThread):
-    def __init__(self, df, initial_counter, parent=None):
-            QThread.__init__(self, parent)
-
-            self.df = df
-            self.initial_counter = initial_counter
-            self.legacy_survey_path = LEGACY_SURVEY_PATH
-            self.stampspath = args.path
-            self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
-            self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-    def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale='0.262'):
-        # residual = (residual and size == 47)
-        res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
-        savefile = os.path.join(self.legacy_survey_path, savename)        
-        if os.path.exists(savefile):
-            print('File already exists:', savefile) if args.verbose else False
-            return True
-        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
-         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
-        print(url) if args.verbose else False
-        try:
-            urllib.request.urlretrieve(url, savefile)
-        except urllib.error.HTTPError:
-            with open(savefile,'w') as f:
-                self.im.save(f)
-            return False
-        
-        return True
-
-    def get_ra_dec(self,header):
-        w = WCS(header,fix=False)
-        sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
-        image_pixel_size = np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600
-        return (sky[0][0], sky[1][0],
-                np.round(image_pixel_size,decimals=4),
-                np.max(w.array_shape)
-               )
-
-
-    def interrupt(self):
-        self._active = False
-
-    def run(self):
-        index = self.initial_counter
-        self._active = True
-        while self._active and index < len(self.df): 
-            stamp = self.df.iloc[index]
-            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
-                f = join(self.stampspath,self.main_band,self.listimage[index])
-                ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
-            else:
-                ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
-            n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size, 
-                                    image_dim,
-                                    pixels_big_fov_ls=488)
-                                    
-            self.download_legacy_survey(ra,dec,size=n_pixels_ls)
-            self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
-            self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
-            # self.download_legacy_survey(ra,dec,size=n_pixels_big_ls, residual=True) #uncomment for large FoV residuals.
-            index+=1
-        return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -405,6 +321,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         if len(self.listimage) < 1:
+            print(f"Failed to find useful files in {args.path}")
             sys.exit()
         if self.config_dict['counter'] > len(self.listimage):
             self.config_dict['counter'] = 0
@@ -538,14 +455,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.filetype == 'FITS':
             if not self.config_dict['nisprgbvisible']:
                     self.canvas[self.composite_bands[-1]].hide()
+                    self.canvas[self.color_bands[-1]].hide()
             else:
                     self.canvas[self.composite_bands[-1]].show()
+                    self.canvas[self.color_bands[-1]].show()
                     self.bshownisprgb.toggle()
         else:
             if not self.config_dict['nisprgbvisible']:
                     self.canvas[self.composite_bands[-1]].hide()
+                    self.canvas[self.color_bands[-1]].hide()
             else:
                     self.canvas[self.composite_bands[-1]].show()
+                    self.canvas[self.color_bands[-1]].show()
                     self.bshownisprgb.toggle()
 
             # self.config_dict['nisprgbvisible'] = False
@@ -590,11 +511,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
         # list_classifications.append(self.binteresting)
 
-        self.bsurelens = QtWidgets.QPushButton('A/B')
+        self.bsurelens = QtWidgets.QPushButton('A/B [1]')
         self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
         list_classifications.append(self.bsurelens)
 
-        self.bnonlens = QtWidgets.QPushButton('C/X')
+        self.bnonlens = QtWidgets.QPushButton('C/X [4]')
         self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
         list_classifications.append(self.bnonlens)
 
@@ -734,7 +655,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.kflexion = QShortcut(QKeySequence('3'), self)
         # self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
-        self.knonlens = QShortcut(QKeySequence('2'), self)
+        self.knonlens = QShortcut(QKeySequence('4'), self)
         self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
 
         # self.knonlens = QShortcut(QKeySequence('5'), self)
@@ -808,8 +729,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             button_layout.addLayout(button_row3_layout, button_layout_spacing)
 
 
-        # self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
-        # self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
 
         self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
         self.plot_layout_area.addLayout(self.plot_layout_0,1,)
@@ -1011,12 +930,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def checkbox_show_nisp_band(self):
         self.config_dict['nisprgbvisible'] = not self.config_dict['nisprgbvisible']
         relevantWidget = self.canvas[self.composite_bands[-1]]
+        relevantWidget2 = self.canvas[self.color_bands[-1]]
         if not self.config_dict['nisprgbvisible']:
             # print(self.canvas[self.composite_bands[-1]].sizePolicy())
             # print(self.canvas[self.composite_bands[-1]].size())
             
             relevantWidget.hide()
             self.plot_layout_0.removeWidget(relevantWidget)
+            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+                                                        self.config_dict['nisprgbvisible'])
+
+
+            relevantWidget2.hide()
+            self.plot_layout_1.removeWidget(relevantWidget2)
             self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
             # for band in [self.main_band, *self.composite_bands]:
@@ -1034,6 +960,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             relevantWidget.show()
             self.plot_layout_0.addWidget(relevantWidget,1)
+            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+                                                        self.config_dict['nisprgbvisible'])
+
+            relevantWidget2.show()
+            self.plot_layout_1.addWidget(relevantWidget2,1)
             self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
             # self.clear_layout()
