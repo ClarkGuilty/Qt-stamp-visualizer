@@ -693,8 +693,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.kNext.activated.connect(self.keyNext)
 
 
-        self.kCopyRADec = QShortcut(QKeySequence(QKeySequence.Copy), self)
-        self.kCopyRADec.activated.connect(self.copy_RADec_to_keyboard)
+        # self.kCopyRADec = QShortcut(QKeySequence(QKeySequence.Copy), self)
+        # self.kCopyRADec.activated.connect(self.copy_RADec_to_keyboard)
 
         self.kCopyRADec = QShortcut(QKeySequence('c'), self)
         self.kCopyRADec.activated.connect(self.copy_filename_to_keyboard)
