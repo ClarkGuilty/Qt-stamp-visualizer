@@ -62,8 +62,6 @@ parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=
 
 args = parser.parse_args()
 
-args.main_band = 'VIS'
-args.color_bands = 'Y,J,H'
 args.verbose = False
 args.fits = False
 
@@ -229,20 +227,28 @@ class BandNamesLabel(QtWidgets.QLabel):
         self.standard_color_band = standard_color_band
         self.resampled_color_band = resampled_color_band
 
+        # print('band names label')
+        # print(self.main_band)
+        # print(self.color_bands)
+        # print(self.standard_color_band)
+        # print(self.resampled_color_band)
+        # print('end')
+
     def updateText(self,
                     color_bands_status,
                     standard_color_band_status):
         label = ''
         if color_bands_status:
             for band in self.color_bands:
-                label += f"{band}-"
-            label = label[:-1]+'\n'
+                label += f"{band} | "
+            label = label[:-3]+'\n'
 
-        label += f'{self.main_band}-'
+
+        label += f'{self.main_band} | '
         label += self.resampled_color_band.replace(_VIS_RESAMPLED_BAND,self.main_band)
 
         if standard_color_band_status:
-            label += f'-{self.standard_color_band}'
+            label += f' | {self.standard_color_band}'
 
         self.setText(label)
 
@@ -362,18 +368,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.stampspath = args.path
-        self.main_band = args.main_band
         # self.color_bands = args.color_bands.split(",")
-        # self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.random_seed = args.seed
 
-        self.pre_scalings = ['asinh', 'mtf']
-        self.bands = ['vis_only', 'vis_y', 'vis_y_h']
+        self.pre_scalings = ['asinh', 'mtf'] # Write first the main scaling.
+        self.bands = ['vis_only', 'vis_y', 'vis_y_h'] # Write first the main band.
+        self.main_band = self.pre_scalings[0] + '_' + self.bands[0]
 
 
         self.paths_to_images = ([join(self.stampspath, pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands])
+        self.color_bands = [self.pre_scalings[1]+'_'+band for band in self.bands]
+        self.composite_bands = [self.pre_scalings[0]+'_'+band for band in self.bands[1:]] 
+        # self.external_bands = [_LEGACY_SURVEY_KEY]
+        self.external_bands = [] #I deactivated LS for this version
 
+        self.all_bands = [(pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands]
+
+        self.band_types = ({self.main_band: MAIN_BAND} |
+                          {band: COMPOSITE_BAND for band in self.composite_bands} |
+                          {band: SINGLE_BAND for band in self.color_bands} | 
+                          {band: EXTERNAL_BAND for band in self.external_bands})
 
         if args.fits is None:
             print("args.fits is None.")
@@ -383,53 +398,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             sys.exit()
         else:
             self.listimage = sum([glob.glob(join(stamps_path,"*.jpg")) for stamps_path in self.paths_to_images], [])
-            self.listimage = list(map( lambda s: s.split('/')[-1], self.listimage)) # Removing paths.
+            self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
 
 
             self.filetype='COMPRESSED'
 
-
-        color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
-        base_band_path = join(self.stampspath, self.main_band)
-        if args.fits is None:
-            print("No filetype was specified, defaulting to .fits")
-            # print(join(self.stampspath, f'[{",".join(self.bands)}]','*.fits'))
-            
-
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-            print(f"Classifying {len(self.listimage)} sources.")
-            if len(self.listimage) == 0:
-                print("No fits files were found, trying with .png, .jpg, and .jpeg")
-                self.listimage = sorted(set([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )]))
-                self.filetype='COMPRESSED'
-
-        elif args.fits:
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-        else:
-            self.listimage = sorted(set([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )]))
-            self.filetype='COMPRESSED'
 
         if len(self.listimage) < 1:
             sys.exit()
@@ -440,24 +413,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(f"Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
+        print(len(self.listimage))
 
-        self.composite_bands = [
-                                "".join(self.color_bands_vis[::-1]),
-                                "".join(self.color_bands[::-1]),
-                                ] #For now, only one composite band.
-        # self.external_bands = [_LEGACY_SURVEY_KEY]
-        self.external_bands = [] #I deactivated LS for this version
-        self.all_bands = [self.main_band,
-                          *self.composite_bands,
-                          *self.color_bands,
-                          _VIS_RESAMPLED_BAND,
-                          *self.external_bands]
-        self.band_types = ({self.main_band: MAIN_BAND} |
-                          {band: COMPOSITE_BAND for band in self.composite_bands} |
-                          {band: SINGLE_BAND for band in self.color_bands} | 
-                          {band: EXTERNAL_BAND for band in self.external_bands})
+        
 
-        # print(self.all_bands)
         self.df = self.obtain_df()
         self.number_graded = 0
         self.COUNTER_MIN = 0
@@ -486,8 +445,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.counter_widget.setStyleSheet("font-size: 14px")
         
         # self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
-        band2bandname_dict = {band: band for band in self.all_bands}
-        band2bandname_dict['HYI'] = 'HYVIS'
 
         # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _VIS_RESAMPLED_BAND]}
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
@@ -499,7 +456,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # print(f"{self.all_bands = }")
         font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
         for band in [self.main_band, _VIS_RESAMPLED_BAND]:
-            font[band].setPointSize(16)
+            # font[band].setPointSize(16)
             self.label_plot[band].setFont(font[band])
 
         # self.label_layout.addWidget(self.label_plot[_LEGACY_SURVEY_KEY])
@@ -518,17 +475,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
         self.canvas = {band: FigureCanvas(self.figure[band]) for band in self.all_bands}
         
-        # bands_positions = {
-        #                 'VIS': (0,0),
-        #                 'J': (1,0),
-        #                 'H': (1,1),
-        #                 'Y': (1,2),
-        # }
-        # for band in self.all_bands:
-            # self.plot_layout_0.addWidget(self.canvas[band], *bands_positions[band]) #Use this if the layout is a grid
-
-
-        # print(f"{self.composite_bands = }")
         for band in [self.main_band, *self.composite_bands]:
             self.canvas[band].setStyleSheet('background-color: black')
             self.plot_layout_0.addWidget(self.canvas[band],1)
@@ -566,25 +512,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bnext.clicked.connect(self.next)
         list_button_row0_layout.append(self.bnext)
 
-        self.bds9 = QtWidgets.QPushButton('ds9')
-        self.bds9.clicked.connect(self.open_ds9)
-        if self.filetype != 'FITS':
-            self.bds9.setEnabled(False)
-        list_button_row0_layout.append(self.bds9)
-
-        # self.bviewls = QtWidgets.QPushButton('Open LS')
-        # self.bviewls.clicked.connect(self.viewls)
-        # if self.filetype != 'FITS':
-        #     self.bviewls.setEnabled(False)
-        # list_button_row0_layout.append(self.bviewls)
-
-        # self.bviewESA = QtWidgets.QPushButton('Open ESASky')
-        # self.bviewESA.clicked.connect(self.viewESASky)
-        # if self.filetype != 'FITS':
-        #     self.bviewESA.setEnabled(False)
-        # list_button_row0_layout.append(self.bviewESA)
-
-        self.bhidecolorbands = QtWidgets.QCheckBox('Show NISP bands')
+        self.bhidecolorbands = QtWidgets.QCheckBox('Show MTF scaling')
         self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
         if self.filetype == 'FITS':
             if not self.config_dict['colorbandsvisible']:
@@ -593,13 +521,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     self.plot_layout_1_Widget.show()
                     self.bhidecolorbands.toggle()
         else:
-            self.config_dict['colorbandsvisible'] = False
-            self.bhidecolorbands.setEnabled(False)
-            self.plot_layout_1_Widget.hide()
+            if not self.config_dict['colorbandsvisible']:
+                    self.plot_layout_1_Widget.hide()
+            else:
+                    self.plot_layout_1_Widget.show()
+                    self.bhidecolorbands.toggle()
+
+            # self.config_dict['colorbandsvisible'] = False
+            # self.bhidecolorbands.setEnabled(False)
+            # self.plot_layout_1_Widget.hide()
         list_button_row0_layout.append(self.bhidecolorbands)
 
 
-        self.bshownisprgb = QtWidgets.QCheckBox('Show NISP RGB')
+        self.bshownisprgb = QtWidgets.QCheckBox('Show VIS-Y-H')
         self.bshownisprgb.clicked.connect(self.checkbox_show_nisp_band)
         if self.filetype == 'FITS':
             if not self.config_dict['nisprgbvisible']:
@@ -608,66 +542,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     self.canvas[self.composite_bands[-1]].show()
                     self.bshownisprgb.toggle()
         else:
-            self.config_dict['nisprgbvisible'] = False
-            self.bshownisprgb.setEnabled(False)
-            self.canvas[self.composite_bands[-1]].hide()
+            if not self.config_dict['nisprgbvisible']:
+                    self.canvas[self.composite_bands[-1]].hide()
+            else:
+                    self.canvas[self.composite_bands[-1]].show()
+                    self.bshownisprgb.toggle()
+
+            # self.config_dict['nisprgbvisible'] = False
+            # self.bshownisprgb.setEnabled(False)
+            # self.canvas[self.composite_bands[-1]].hide()
         list_button_row0_layout.append(self.bshownisprgb)
-
-        # self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
-        # self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        # if self.filetype == 'FITS':
-        #     if not self.config_dict['legacysurvey']:
-        #             self.label_plot[_LEGACY_SURVEY_KEY].hide()
-        #             self.canvas[_LEGACY_SURVEY_KEY].hide()
-        #     else:
-        #             self.label_plot[_LEGACY_SURVEY_KEY].show()
-        #             self.canvas[_LEGACY_SURVEY_KEY].show()
-        #             self.blegsur.toggle()
-        #             self.set_legacy_survey()
-        # else:
-        #     self.config_dict['legacysurvey'] = False
-        #     self.blegsur.setEnabled(False)
-        #     self.label_plot[_LEGACY_SURVEY_KEY].hide()
-        #     self.canvas[_LEGACY_SURVEY_KEY].hide()
-        # list_button_row0_layout.append(self.blegsur)
-
-
-    #     self.blsarea = QtWidgets.QCheckBox("Large FoV")
-    #     self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['legacybigarea']:
-    #             self.blsarea.toggle()
-    #             if self.config_dict['legacysurvey']:
-    #                 self.set_legacy_survey()
-    #     else:
-    #         self.blsarea.setEnabled(False)
-    #         self.config_dict['legacybigarea'] = False
-    #     list_button_row0_layout.append(self.blsarea)
-
-    #     self.blsresidual = QtWidgets.QCheckBox("Residuals")
-    #     self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['legacyresiduals']:
-    #             self.blsresidual.toggle()
-    #             if self.config_dict['legacysurvey']:
-    #                 self.set_legacy_survey()
-    #     else:
-    #         self.blsresidual.setEnabled(False)
-    #         self.config_dict['legacyresiduals'] = False
-    #     list_button_row0_layout.append(self.blsresidual)
-
-    #     self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
-    #     self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['prefetch']:
-    #             self.config_dict['prefetch'] = False
-    #             self.prefetch_legacysurvey()
-    #             self.bprefetch.toggle()
-    #     else:
-    #         self.bprefetch.setEnabled(False)
-    #         self.config_dict['prefetch'] = False
-    #     list_button_row0_layout.append(self.bprefetch)
-
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
@@ -682,26 +566,40 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_button_row0_layout.append(self.bkeyboardshortcuts)
 
         list_classifications = []
-        self.bsurelens = QtWidgets.QPushButton('A')
-        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
+   
+   
+   
+        # self.bsurelens = QtWidgets.QPushButton('A')
+        # self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
+        # list_classifications.append(self.bsurelens)
+
+        # self.bmaybelens = QtWidgets.QPushButton('B')
+        # self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
+        # list_classifications.append(self.bmaybelens)
+
+        # self.bflexion = QtWidgets.QPushButton('C')
+        # self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
+        # list_classifications.append(self.bflexion)
+
+        # self.bnonlens = QtWidgets.QPushButton('X')
+        # self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
+        # list_classifications.append(self.bnonlens)
+
+
+        # self.binteresting = QtWidgets.QPushButton('Interesting')
+        # self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
+        # list_classifications.append(self.binteresting)
+
+        self.bsurelens = QtWidgets.QPushButton('A/B')
+        self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
         list_classifications.append(self.bsurelens)
 
-        self.bmaybelens = QtWidgets.QPushButton('B')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
-        list_classifications.append(self.bmaybelens)
-
-        self.bflexion = QtWidgets.QPushButton('C')
-        self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
-        list_classifications.append(self.bflexion)
-
-        self.bnonlens = QtWidgets.QPushButton('X')
-        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
+        self.bnonlens = QtWidgets.QPushButton('C/X')
+        self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
         list_classifications.append(self.bnonlens)
 
 
-        self.binteresting = QtWidgets.QPushButton('Interesting')
-        self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
-        list_classifications.append(self.binteresting)
+
 
         # list_subclassifications = []
         # self.bMerger = QtWidgets.QPushButton('Merger')
@@ -729,15 +627,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # list_subclassifications.append(self.bEdgeon)
 
         self.dict_class2button = {
-                                 'A':self.bsurelens,
-                                  'B':self.bmaybelens,
-                                  'C':self.bflexion,
-                                  'X':self.bnonlens,
-                                 'SL':self.bsurelens,
-                                  'ML':self.bmaybelens,
-                                  'FL':self.bflexion,
-                                  'NL':self.bnonlens,
-                                  'I':self.binteresting,
+                                #  'A':self.bsurelens,
+                                #   'B':self.bmaybelens,
+                                #   'C':self.bflexion,
+                                #   'X':self.bnonlens,
+                                #  'SL':self.bsurelens,
+                                #   'ML':self.bmaybelens,
+                                #   'FL':self.bflexion,
+                                #   'NL':self.bnonlens,
+                                #   'I':self.binteresting,
+                                    'A/B': self.bsurelens,
+                                    'C/X': self.bnonlens,
 
                                  'None':None}
 
@@ -826,19 +726,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A/B','A/B'))
 
-        self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
+        # self.kmaybelens = QShortcut(QKeySequence('2'), self)
+        # self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
-        self.kflexion = QShortcut(QKeySequence('3'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
+        # self.kflexion = QShortcut(QKeySequence('3'), self)
+        # self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
-        self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
+        self.knonlens = QShortcut(QKeySequence('2'), self)
+        self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
 
-        self.knonlens = QShortcut(QKeySequence('5'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
+        # self.knonlens = QShortcut(QKeySequence('5'), self)
+        # self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
 
 #         self.kMerger = QShortcut(QKeySequence('a'), self)
 #         self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
@@ -903,7 +803,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             button_layout.addLayout(button_row2_layout, button_layout_spacing)
             button_layout.addLayout(button_row3_layout, button_layout_spacing)
         else:
-            print("Use fits images to change colormap and colorscale.")
+            # print("Use fits images to change colormap and colorscale.")
+            # button_layout.addLayout(button_row2_layout, button_layout_spacing)
+            button_layout.addLayout(button_row3_layout, button_layout_spacing)
 
 
         # self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
@@ -917,18 +819,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(button_layout, 10)
 
         self.timer_0 = time()
-
-    @Slot()
-    def prefetch_legacysurvey(self):
-        if self.config_dict['prefetch']:
-            self.fetchthread.terminate()
-            self.config_dict['prefetch'] = False
-        else:
-            self.fetchthread = FetchThread(self.df,self.config_dict['counter'],) #Always store in an object.
-            self.fetchthread.finished.connect(self.fetchthread.deleteLater)
-            self.fetchthread.setTerminationEnabled(True)
-            self.fetchthread.start()
-            self.config_dict['prefetch'] = True
 
     def save_dict(self):
         with open(PATH_TO_CONFIG_FILE, 'w') as f:
@@ -997,14 +887,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
+            self.df.at[cnt,'pixel_size'] = self.image_pixel_size
+            self.df.at[cnt,'image_dim'] = self.image_size
         # self.df.at[cnt,'comment'] = grade
-        self.df.at[cnt,'pixel_size'] = self.image_pixel_size
-        self.df.at[cnt,'image_dim'] = self.image_size
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
         self.df.to_csv(self.df_name)
 
-        self.update_classification_buttoms()
+        self.update_classification_buttons()
         # self.update_subclassification_buttoms()
         
         if self.config_dict['autonext']:
@@ -1435,46 +1325,34 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         get_radec = True if band == self.main_band else False
         if self.filetype == 'FITS':
             image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
-            # scaling_factor = np.nanpercentile(image,q=90)
-            # if scaling_factor == 0:
-            #     # scaling_factor = np.nanpercentile(image,q=99)
-            #     scaling_factor = 1
-            # image = image / scaling_factor*300 #Rescaling for better visualization.
-            self.images[band] = np.copy(image)
-            if scale_min is None or scale_max is None:
-                scale_min, scale_max = self.scale_val(image)
-            # print(f"{band}: {scale_min = }, {scale_max = }, {image.max()}")
-            self.scale_mins[band] = scale_min
-            self.scale_maxs[band] = scale_max
-            image = self.rescale_image(image, scale_min, scale_max)
-            self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+            print('No support for FITS files')
         else:
-            print('heh')
-            image = np.asarray(Image.open(self.filename))
+            image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
             self.image = np.copy(image)
-            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
+            self.images[band] = np.copy(image)
+            self.ax[band].imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
         self.ax[band].set_axis_off() #Always before .draw()!
         self.canvas[band].draw()
 
     def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
-        # base_bands = [band if band != _VIS_RESAMPLED_BAND else 'VIS' for band in list(composite_band)]
-        base_bands = list(composite_band)
-        # print(base_bands)
-        if len(base_bands) != 3:
-            print(f"RGB image requires exactly 3 images. Bands provided: {base_bands}")
+        # base_bands = list(composite_band)
         
-        # self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
         
         if self.filetype == 'FITS':
-            if (not self.color_bands_already_plotted) or (_VIS_RESAMPLED_BAND in base_bands):
-                images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
-            else:
-                images = self.images
-            image = self.prepare_composite_image(np.stack([images[band] for band in base_bands],axis=2))
-            self.ax[composite_band].imshow(image, origin='lower')
+            print('FITS files are not supported')
+            # if (not self.color_bands_already_plotted) or (_VIS_RESAMPLED_BAND in base_bands):
+            #     images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
+            # else:
+            #     images = self.images
+
+            # image = self.prepare_composite_image(np.stack([images[band] for band in base_bands],axis=2))
+            # self.ax[composite_band].imshow(image, origin='lower')
         else:
-            raise Exception("Color RPGs in the form of PNGs are no supported in the ERO edition.")
+            image = np.asarray(Image.open(join(self.stampspath, composite_band, self.filename)))
+            self.images[composite_band] = image.copy()
+            self.ax[composite_band].imshow(image, origin='upper')
+
         self.ax[composite_band].set_axis_off() #Always before .draw()!
         self.canvas[composite_band].draw()
 
@@ -1504,7 +1382,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.ax[band].imshow(image, origin='lower')
+            self.ax[band].imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
+
         self.ax[band].set_axis_off()
         self.canvas[band].draw()
 
@@ -1560,18 +1439,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification',
                 # 'subclassification',
-                'ra','dec',
+                # 'ra','dec',
                 # 'comment',
-                'image_dim',
+                # 'image_dim',
                 'time']
         df = pd.DataFrame(columns=dfc)
         df['file_name'] = self.listimage
         df['classification'] = ['Empty'] * len(self.listimage)
         # df['subclassification'] = ['Empty'] * len(self.listimage)
-        df['ra'] = np.full(len(self.listimage),np.nan)
-        df['dec'] = np.full(len(self.listimage),np.nan)
+        if self.filetype == 'FITS':
+            print(self.filetype )
+            df['ra'] = np.full(len(self.listimage),np.nan)
+            df['dec'] = np.full(len(self.listimage),np.nan)
         # df['comment'] = ['Empty'] * len(self.listimage)
-        df['image_dim'] = np.full(len(self.listimage),pd.NA)
+        # df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0.0)
         return df
 
@@ -1581,7 +1462,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.plot()
         # if self.config_dict['legacysurvey']:
         #     self.set_legacy_survey()
-        self.update_classification_buttoms()
+        self.update_classification_buttons()
         # self.update_subclassification_buttoms()
         self.update_counter()
         self.save_dict()
@@ -1623,7 +1504,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.go_to_counter_page()
 
 
-    def update_classification_buttoms(self):
+    def update_classification_buttons(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
 
 
