@@ -314,7 +314,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             sys.exit()
         else:
             self.listimage = sum([glob.glob(join(stamps_path,"*.jpg")) for stamps_path in self.paths_to_images], [])
-            self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
+            # self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
+            self.listimage = sorted(list(set(map( os.path.basename, self.listimage)))) # Removing paths.
 
 
             self.filetype='COMPRESSED'
