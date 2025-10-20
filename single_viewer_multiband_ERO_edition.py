@@ -21,7 +21,7 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QClipboard
+from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QClipboard, QFont, QAction
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -59,6 +59,8 @@ parser.add_argument("--reset-config", help="removes the configuration dictionary
 #                     default=False) # Only jpg support for now.
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
+parser.add_argument("--extension", help="File extension for compressed images (e.g., jpg, png, jpeg)",
+                    default='jpg')
 
 args = parser.parse_args()
 
@@ -74,7 +76,11 @@ MAIN_BAND = 'main_band'
 COMPOSITE_BAND = 'composite_band'
 EXTERNAL_BAND = 'external_band'
 _LEGACY_SURVEY_KEY = "Legacy Survey"
-_VIS_RESAMPLED_BAND = 'I'
+# _VIS_RESAMPLED_BAND = 'I'
+_BAND_FILENAMES_KEY = "Bands_filenames"
+
+_FILETYPE_FITS = 'FITS'
+_FILETYPE_COMPRESSED = 'COMPRESSED'
 
 PATH_TO_CONFIG_FILE = ".config.json"
 
@@ -86,6 +92,7 @@ if args.reset_config:
 #     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
 #         if os.path.exists(f):
 #             os.remove(f)
+
 def identity(x):
     return x
 
@@ -201,6 +208,8 @@ class BandNamesLabel(QtWidgets.QLabel):
         self.standard_color_band = standard_color_band
         self.resampled_color_band = resampled_color_band
 
+        # self.bands = args
+
         # print('band names label')
         # print(self.main_band)
         # print(self.color_bands)
@@ -232,6 +241,98 @@ class BandNamesLabel(QtWidgets.QLabel):
 
         self.setText(label)
 
+class CheckableSubMenu(QtWidgets.QMenu):
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self._checkboxes = []
+
+    def add_check_item(self, text, checked=False):
+        action = QtWidgets.QWidgetAction(self)
+        box = QtWidgets.QWidget(self)
+        layout = QtWidgets.QHBoxLayout(box)
+        layout.setContentsMargins(8, 2, 8, 2)
+        cb = QtWidgets.QCheckBox(text, box)
+        cb.setChecked(checked)
+        layout.addWidget(cb)
+        action.setDefaultWidget(box)
+        self.addAction(action)
+        self._checkboxes.append(cb)
+        return cb
+
+    def selected_texts(self):
+        return [cb.text() for cb in self._checkboxes if cb.isChecked()]
+
+    def set_all(self, state):
+        for cb in self._checkboxes:
+            cb.setChecked(state)
+
+
+class MultiSelectDropdown(QtWidgets.QWidget):
+    itemToggled = Signal(str, str, bool)
+    def __init__(self, list_of_bands, parent=None):
+        super().__init__(parent)
+        self.button = QtWidgets.QToolButton(self)
+        self.button.setText("Choose...")
+        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(self.button, alignment=Qt.AlignLeft)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self.categories = {
+            "Row 1": list_of_bands,
+            "Row 2": list_of_bands,
+            "Row 3": list_of_bands,
+        }
+
+        self.menu = QtWidgets.QMenu(self.button)
+        self.button.setMenu(self.menu)
+
+        self.submenus = {}
+        self._build_menu()
+
+    def _build_menu(self):
+        for cat, items in self.categories.items():
+            sub = CheckableSubMenu(cat, self.menu)
+
+            select_all = QAction("Select all", sub)
+            clear_all = QAction("Clear all", sub)
+            select_all.triggered.connect(lambda _, s=sub: (s.set_all(True), self._update_label()))
+            clear_all.triggered.connect(lambda _, s=sub: (s.set_all(False), self._update_label()))
+            sub.addAction(select_all)
+            sub.addAction(clear_all)
+            sub.addSeparator()
+
+            for it in items:
+                cb = sub.add_check_item(it, checked=False)
+                cb.toggled.connect(self._update_label)
+                # cb.toggled.connect(lambda checked, c=cat, i=it: self.heh(c, i, checked))
+                cb.toggled.connect(lambda checked, c=cat, i=it: self.itemToggled.emit(c, i, checked))
+                
+
+
+
+            self.menu.addMenu(sub)
+            self.submenus[cat] = sub
+
+        self.menu.addSeparator()
+        done_action = QAction("Done", self.menu)
+        done_action.triggered.connect(self.menu.close)
+        self.menu.addAction(done_action)
+
+    def _update_label(self):
+        parts = []
+        for cat, sub in self.submenus.items():
+            sel = sub.selected_texts()
+            if sel:
+                parts.append(f"{cat}({len(sel)})")
+        self.button.setText(", ".join(parts) if parts else "Choose...")
+
+    def selections(self):
+        return {cat: sub.selected_texts() for cat, sub in self.submenus.items()}
+
+
+
 class ApplicationWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -239,7 +340,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
 
-        title_strings = ["One-by-one classifier RR2 edition"]
+        title_strings = ["One-by-one classifier Euclid jpg edition"]
+
         if args.name is not None:
             self.name = args.name
             title_strings.append(self.name)
@@ -260,6 +362,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'keyboardshortcuts':False,
                     'colorbandsvisible':False,
                     'nisprgbvisible':False,
+                    'no_rows': 1,
                         }
         self.config_dict = self.load_dict()
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
@@ -284,6 +387,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.stampspath = args.path
+
+        self.all_bands = os.listdir(self.stampspath)
+
         # self.color_bands = args.color_bands.split(",")
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.random_seed = args.seed
@@ -293,13 +399,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.main_band = self.pre_scalings[0] + '_' + self.bands[0]
 
 
-        self.paths_to_images = ([join(self.stampspath, pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands])
+        self.paths_to_images = ([join(self.stampspath, pre_scaling+'_'+band) 
+                                for pre_scaling in self.pre_scalings for band in self.bands])
+
+
         self.color_bands = [self.pre_scalings[1]+'_'+band for band in self.bands]
         self.composite_bands = [self.pre_scalings[0]+'_'+band for band in self.bands[1:]] 
         # self.external_bands = [_LEGACY_SURVEY_KEY]
         self.external_bands = [] #I deactivated LS for this version
 
-        self.all_bands = [(pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands]
+        # self.all_bands = [(pre_scaling+'_'+band) for pre_scaling in self.pre_scalings for band in self.bands]
 
         self.band_types = ({self.main_band: MAIN_BAND} |
                           {band: COMPOSITE_BAND for band in self.composite_bands} |
@@ -313,12 +422,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("At the moment, only jpg/png files are supported")
             sys.exit()
         else:
-            self.listimage = sum([glob.glob(join(stamps_path,"*.jpg")) for stamps_path in self.paths_to_images], [])
+            print(f"Trying to load {args.extension} files")
+            self.listimage = sum([glob.glob(join(stamps_path,f"*.{args.extension}")) for stamps_path in self.paths_to_images], [])
             # self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
-            self.listimage = sorted(list(set(map( os.path.basename, self.listimage)))) # Removing paths.
+            self.listimage = sorted(list(set(map(os.path.basename, self.listimage)))) # Removing paths and duplicates.
 
 
-            self.filetype='COMPRESSED'
+            self.filetype=_FILETYPE_COMPRESSED
 
 
         if len(self.listimage) < 1:
@@ -331,26 +441,35 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(f"Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
-        print(len(self.listimage))
-
         
 
         self.df = self.obtain_df()
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
-        # self.filename = join(self.stampspath, 'VIS',self.listimage[self.config_dict['counter']])
         self.filename = join(self.listimage[self.config_dict['counter']])
         # self.status.showMessage(self.listimage[self.config_dict['counter']],)
 
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
-        # self.plot_layout_area = QtWidgets.QGridLayout()
+
         self.plot_layout_area = QtWidgets.QVBoxLayout()
-        self.plot_layout_0 = QtWidgets.QHBoxLayout()
-        self.plot_layout_1_Widget = QtWidgets.QWidget()
-        self.plot_layout_1 = QtWidgets.QHBoxLayout(self.plot_layout_1_Widget)
+
+        self.no_plotting_rows = 3
+
+        self.plot_layout_rows_widgets = [QtWidgets.QWidget() for i in range(self.no_plotting_rows)]
+        self.plot_layout_rows_layouts = [QtWidgets.QHBoxLayout(widget) for
+                                         widget in self.plot_layout_rows_widgets]
+        
+        for widget in self.plot_layout_rows_widgets:
+            self.plot_layout_area.addWidget(widget,1)
+
+        # self.plot_layout_0 = QtWidgets.QHBoxLayout()
+        # self.plot_layout_1_Widget = QtWidgets.QWidget()
+        # self.plot_layout_1 = QtWidgets.QHBoxLayout(self.plot_layout_1_Widget)
+
+
         button_layout = QtWidgets.QVBoxLayout()
         button_row0_layout = QtWidgets.QHBoxLayout()
         button_row10_layout = QtWidgets.QHBoxLayout()
@@ -364,50 +483,77 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         
         # self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
 
-        # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _VIS_RESAMPLED_BAND]}
+        # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _BAND_FILENAMES_KEY]}
+
+
+
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
-        self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(self.main_band,
+        self.label_plot[_BAND_FILENAMES_KEY] = BandNamesLabel(self.main_band,
                                                              self.color_bands,
                                                              self.composite_bands[1],
                                                              self.composite_bands[0],
                                                              alignment=Qt.AlignCenter)
+
+        # print(self.label_plot)
         # print(f"{self.all_bands = }")
-        font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
-        for band in [self.main_band, _VIS_RESAMPLED_BAND]:
+        font = {band: self.label_plot[band].font() for band in [self.main_band, _BAND_FILENAMES_KEY]}
+        for band in [self.main_band, _BAND_FILENAMES_KEY]:
             # font[band].setPointSize(16)
             self.label_plot[band].setFont(font[band])
 
         # self.label_layout.addWidget(self.label_plot[_LEGACY_SURVEY_KEY])
         self.label_layout.addWidget(self.label_plot[self.main_band])
-        self.label_layout.addWidget(self.label_plot[_VIS_RESAMPLED_BAND])
+        self.label_layout.addWidget(self.label_plot[_BAND_FILENAMES_KEY])
 
 
         self.plot_layout_area.setSpacing(0)
         self.plot_layout_area.setContentsMargins(0,0,0,0)
-        self.plot_layout_0.setSpacing(0)
-        self.plot_layout_0.setContentsMargins(0,0,0,0)
-        self.plot_layout_1.setSpacing(0)
-        self.plot_layout_1.setContentsMargins(0,0,0,0)
+
+        # self.plot_layout_0.setSpacing(0)
+        # self.plot_layout_0.setContentsMargins(0,0,0,0)
+        # self.plot_layout_1.setSpacing(0)
+        # self.plot_layout_1.setContentsMargins(0,0,0,0)
+
+        default_params_figure = {'figsize': (5,3),
+                                'layout':"constrained",
+                                'facecolor' :'black'}
+        # self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
+        # self.canvas = {band: FigureCanvas(self.figure[band]) for band in self.all_bands} #Single row
+        # self.row_canvas = [{band: FigureCanvas(self.figure[band]) for band in self.all_bands}
+        #                          for i in range(self.no_plotting_rows)] #Multiple rows same figures
+
+        self.row_figures = [{band: Figure(**default_params_figure) for band in self.all_bands}
+                                 for i in range(self.no_plotting_rows)]
+        self.row_canvas = [{band: FigureCanvas(self.row_figures[i][band]) for band in self.all_bands}
+                                 for i in range(self.no_plotting_rows)] #Multiple rows different figures
+                                 
+
+        # for row in self.row_canvas:
+        #     self.plot_layout_rows_layouts[row]
+
+        # self.plot_layout_rows_layouts[0].addWidget(self.canvas[self.all_bands[0]],1)
+        # for band in enumerate(self.all_bands):
+        #     self.canvas[band].setStyleSheet('background-color: black')
+
+            # self.plot_layout_0.addWidget(self.canvas[band],1)
+            # self.plot_layout_area.addWidget(self.canvas[band],1)
+
+        # for band in [self.main_band, *self.composite_bands]:
+        #     self.canvas[band].setStyleSheet('background-color: black')
+        #     self.plot_layout_0.addWidget(self.canvas[band],1)
 
 
-        self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
-        self.canvas = {band: FigureCanvas(self.figure[band]) for band in self.all_bands}
-        
-        for band in [self.main_band, *self.composite_bands]:
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band],1)
-
-        for band in self.color_bands:
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_1.addWidget(self.canvas[band],1)
-
-        for band in self.external_bands:
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band],1)
+        # print(self.color_bands)
+        # for band in self.color_bands:
+        #     self.canvas[band].setStyleSheet('background-color: black')
+        #     self.plot_layout_1.addWidget(self.canvas[band],1)
 
         # print(f"{self.all_bands = }")
 
-        self.ax = {band: self.figure[band].subplots() for band in self.all_bands}
+        # print(self.row_figures[0])
+        self.axes = [{band: self.row_figures[i][band].subplots() for band in self.all_bands}
+                                                                for i in range(self.no_plotting_rows)]
+        # self.ax = {band: self.figure[band].subplots() for band in self.all_bands}
         self.images = {}
         self.scale_mins = {}
         self.scale_maxs = {}
@@ -430,50 +576,61 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bnext.clicked.connect(self.next)
         list_button_row0_layout.append(self.bnext)
 
-        self.bhidecolorbands = QtWidgets.QCheckBox('Show MTF scaling')
-        self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
-        if self.filetype == 'FITS':
-            if not self.config_dict['colorbandsvisible']:
-                    self.plot_layout_1_Widget.hide()
-            else:
-                    self.plot_layout_1_Widget.show()
-                    self.bhidecolorbands.toggle()
-        else:
-            if not self.config_dict['colorbandsvisible']:
-                    self.plot_layout_1_Widget.hide()
-            else:
-                    self.plot_layout_1_Widget.show()
-                    self.bhidecolorbands.toggle()
+        self.cbnumberofrows = QtWidgets.QComboBox()
+        self.cbnumberofrows.addItems(['1','2','3'])
+        self.cbnumberofrows.setStyleSheet('background-color: gray')
+        self.cbnumberofrows.setCurrentIndex(self.config_dict['no_rows']-1)  # index starts from 0
+        self.cbnumberofrows.currentIndexChanged.connect(self.change_number_of_band_rows)
+        self.show_number_of_rows(self.config_dict['no_rows']-1)
+        list_button_row0_layout.append(self.cbnumberofrows)
+
+
+        self.cbcontentofrows = MultiSelectDropdown(self.all_bands)
+        self.cbcontentofrows.itemToggled.connect(self.change_bands_shown_in_row)   # connect signal to method
+
+        list_button_row0_layout.append(self.cbcontentofrows)
+
+        # self.bhidecolorbands = QtWidgets.QCheckBox('Show MTF scaling')
+        # self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
+
+        # if not self.config_dict['colorbandsvisible']:
+        #         self.plot_layout_1_Widget.hide()
+        # else:
+        #         self.plot_layout_1_Widget.show()
+        #         self.bhidecolorbands.toggle()
 
             # self.config_dict['colorbandsvisible'] = False
             # self.bhidecolorbands.setEnabled(False)
             # self.plot_layout_1_Widget.hide()
-        list_button_row0_layout.append(self.bhidecolorbands)
+        # list_button_row0_layout.append(self.bhidecolorbands)
 
 
-        self.bshownisprgb = QtWidgets.QCheckBox('Show VIS-Y-H')
-        self.bshownisprgb.clicked.connect(self.checkbox_show_nisp_band)
-        if self.filetype == 'FITS':
-            if not self.config_dict['nisprgbvisible']:
-                    self.canvas[self.composite_bands[-1]].hide()
-                    self.canvas[self.color_bands[-1]].hide()
-            else:
-                    self.canvas[self.composite_bands[-1]].show()
-                    self.canvas[self.color_bands[-1]].show()
-                    self.bshownisprgb.toggle()
-        else:
-            if not self.config_dict['nisprgbvisible']:
-                    self.canvas[self.composite_bands[-1]].hide()
-                    self.canvas[self.color_bands[-1]].hide()
-            else:
-                    self.canvas[self.composite_bands[-1]].show()
-                    self.canvas[self.color_bands[-1]].show()
-                    self.bshownisprgb.toggle()
+        # self.bshownisprgb = QtWidgets.QCheckBox('Show VIS-Y-H')
+        # self.bshownisprgb.clicked.connect(self.checkbox_show_nisp_band)
+
+
+        # if self.filetype == _FILETYPE_FITS:
+        #     if not self.config_dict['nisprgbvisible']:
+        #             self.canvas[self.composite_bands[-1]].hide()
+        #             self.canvas[self.color_bands[-1]].hide()
+        #     else:
+        #             self.canvas[self.composite_bands[-1]].show()
+        #             self.canvas[self.color_bands[-1]].show()
+        #             self.bshownisprgb.toggle()
+        # else:
+        #     if not self.config_dict['nisprgbvisible']:
+        #             self.canvas[self.composite_bands[-1]].hide()
+        #             self.canvas[self.color_bands[-1]].hide()
+        #     else:
+        #             self.canvas[self.composite_bands[-1]].show()
+        #             self.canvas[self.color_bands[-1]].show()
+        #             self.bshownisprgb.toggle()
 
             # self.config_dict['nisprgbvisible'] = False
             # self.bshownisprgb.setEnabled(False)
             # self.canvas[self.composite_bands[-1]].hide()
-        list_button_row0_layout.append(self.bshownisprgb)
+
+        # list_button_row0_layout.append(self.bshownisprgb)
 
         self.bautopass = QtWidgets.QCheckBox("Auto-next")
         self.bautopass.clicked.connect(self.checkbox_auto_next)
@@ -491,27 +648,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
    
    
-        # self.bsurelens = QtWidgets.QPushButton('A')
-        # self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
-        # list_classifications.append(self.bsurelens)
-
-        # self.bmaybelens = QtWidgets.QPushButton('B')
-        # self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
-        # list_classifications.append(self.bmaybelens)
-
-        # self.bflexion = QtWidgets.QPushButton('C')
-        # self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
-        # list_classifications.append(self.bflexion)
-
-        # self.bnonlens = QtWidgets.QPushButton('X')
-        # self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
-        # list_classifications.append(self.bnonlens)
-
-
-        # self.binteresting = QtWidgets.QPushButton('Interesting')
-        # self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
-        # list_classifications.append(self.binteresting)
-
         self.bsurelens = QtWidgets.QPushButton('A/B [1]')
         self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
         list_classifications.append(self.bsurelens)
@@ -520,33 +656,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
         list_classifications.append(self.bnonlens)
 
-
-
-
-        # list_subclassifications = []
-        # self.bMerger = QtWidgets.QPushButton('Merger')
-        # self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
-        # list_subclassifications.append(self.bMerger)
-
-        # self.bSpiral = QtWidgets.QPushButton('Spiral')
-        # self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
-        # list_subclassifications.append(self.bSpiral)
-
-        # self.bRing = QtWidgets.QPushButton('Ring')
-        # self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
-        # list_subclassifications.append(self.bRing)
-
-        # self.bElliptical = QtWidgets.QPushButton('Elliptical')
-        # self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
-        # list_subclassifications.append(self.bElliptical)
-
-        # self.bDisc = QtWidgets.QPushButton('Disc')
-        # self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
-        # list_subclassifications.append(self.bDisc)
-
-        # self.bEdgeon = QtWidgets.QPushButton('Edge-on')
-        # self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
-        # list_subclassifications.append(self.bEdgeon)
 
         self.dict_class2button = {
                                 #  'A':self.bsurelens,
@@ -721,7 +830,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_layout.addLayout(button_row0_layout, button_layout_spacing)
         button_layout.addLayout(button_row10_layout, button_layout_spacing)
         button_layout.addLayout(button_row11_layout, button_layout_spacing)
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             button_layout.addLayout(button_row2_layout, button_layout_spacing)
             button_layout.addLayout(button_row3_layout, button_layout_spacing)
         else:
@@ -731,14 +840,38 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
 
-        self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
-        self.plot_layout_area.addLayout(self.plot_layout_0,1,)
+        # self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
+        # self.plot_layout_area.addLayout(self.plot_layout_0,1,)
 
         main_layout.addLayout(self.label_layout, 2)
         main_layout.addLayout(self.plot_layout_area, 88)
         main_layout.addLayout(button_layout, 10)
 
         self.timer_0 = time()
+
+    def change_bands_shown_in_row(self,category, item, checked ):
+        # print(category, item, checked)
+        row = int(category.split(' ')[-1]) - 1
+        widget = self.row_canvas[row][item]
+
+        if checked:
+            self.plot_layout_rows_layouts[row].addWidget(widget,1)
+            widget.show()
+        else:
+            widget.hide()
+
+        # print(row)
+
+    def change_number_of_band_rows(self, number_of_rows_to_show):
+        self.show_number_of_rows(int(number_of_rows_to_show))
+        self.config_dict['no_rows'] = int(number_of_rows_to_show)+1
+        self.save_dict()
+        
+
+    def show_number_of_rows(self,number_of_rows_to_show):
+        for i, widget in enumerate(self.plot_layout_rows_widgets):
+            widget.setVisible(i <= number_of_rows_to_show)
+
 
     def save_dict(self):
         with open(PATH_TO_CONFIG_FILE, 'w') as f:
@@ -804,7 +937,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
         # self.df.at[cnt,'subclassification'] = subgrade
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
             self.df.at[cnt,'pixel_size'] = self.image_pixel_size
@@ -938,13 +1071,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             
             relevantWidget.hide()
             self.plot_layout_0.removeWidget(relevantWidget)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+            self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
 
 
             relevantWidget2.hide()
             self.plot_layout_1.removeWidget(relevantWidget2)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+            self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
             # for band in [self.main_band, *self.composite_bands]:
             #     widget = self.canvas[band]
@@ -961,12 +1094,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             relevantWidget.show()
             self.plot_layout_0.addWidget(relevantWidget,1)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+            self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
 
             relevantWidget2.show()
             self.plot_layout_1.addWidget(relevantWidget2,1)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+            self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
             # self.clear_layout()
             # relevantWidget.
@@ -1224,6 +1357,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def plot(self, scale_min = None, scale_max = None, band = None):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
+        
+        for band in self.all_bands:
+            for row in range(self.no_plotting_rows):
+                self.plot_band(band,row)
+
+    def plot_old(self, scale_min = None, scale_max = None, band = None):
+        self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
         # label = ""
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
@@ -1243,19 +1383,38 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bottom_row_bands_already_plotted = True
         
         for band in self.composite_bands[:-1]:
-            band = band.replace(_VIS_RESAMPLED_BAND,self.main_band)
+            band = band.replace(_BAND_FILENAMES_KEY,self.main_band)
             # label += f'{band}-'
         
-        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
+        self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
                                                         self.config_dict['nisprgbvisible'])
-        # self.label_plot[_VIS_RESAMPLED_BAND].setText(label[:-1])
-        # print(self.label_plot[_VIS_RESAMPLED_BAND].text())
+        # self.label_plot[_BAND_FILENAMES_KEY].setText(label[:-1])
+        # print(self.label_plot[_BAND_FILENAMES_KEY].text())
 
-    def plot_band(self, band, scale_min = None, scale_max = None):
+    def plot_band(self, band, row, scale_min = None, scale_max = None):
+        # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
+        ax = self.axes[row][band]
+        ax.cla()
+        get_radec = True if band == self.main_band else False
+        if self.filetype == _FILETYPE_FITS:
+            # image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
+            print('No support for FITS files')
+        else:
+            image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
+            self.image = np.copy(image)
+            self.images[band] = np.copy(image)
+            ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
+        ax.set_axis_off() #Always before .draw()!
+        # self.canvas[band].draw()
+        self.row_canvas[row][band].draw()
+        # for row in self.row_canvas:
+        #     row[band].draw()
+
+    def plot_band_old(self, band, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         get_radec = True if band == self.main_band else False
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
             print('No support for FITS files')
         else:
@@ -1264,14 +1423,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.images[band] = np.copy(image)
             self.ax[band].imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
         self.ax[band].set_axis_off() #Always before .draw()!
-        self.canvas[band].draw()
+        # self.canvas[band].draw()
+        for row in self.row_canvas:
+            row[band].draw()
 
-    def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
+    def plot_composite_band_old(self, composite_band, scale_min = None, scale_max = None):
         # base_bands = list(composite_band)
         
         self.ax[composite_band].cla()
         
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             print('FITS files are not supported')
             # if (not self.color_bands_already_plotted) or (_VIS_RESAMPLED_BAND in base_bands):
             #     images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
@@ -1286,9 +1447,21 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.ax[composite_band].imshow(image, origin='upper')
 
         self.ax[composite_band].set_axis_off() #Always before .draw()!
-        self.canvas[composite_band].draw()
+        # self.canvas[composite_band].draw()
+        for row in self.row_canvas:
+            row[composite_band].draw()
 
     def replot(self, scale_min = None, scale_max = None):
+
+        if self.filetype == _FILETYPE_COMPRESSED:
+            for band in self.all_bands:
+                for row in range(self.no_plotting_rows):
+                    self.plot_band(band,row)
+        else:
+            print("Only JPG/PNG format supported currently.")
+            raise Exception('FITS files not suported')
+
+    def replot_old(self, scale_min = None, scale_max = None):
         # for band in self.all_bands:
         #     if self.band_types[band] in [COMPOSITE_BAND,
         #                                  EXTERNAL_BAND]:
@@ -1306,11 +1479,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for band in self.composite_bands:
             self.plot_composite_band(band)
 
-    def replot_band(self, band, scale_min = None, scale_max = None):
+    def replot_band(self, band, row, scale_min = None, scale_max = None):
+        ax = self.axes[row][band]
+
+        ax.cla()
+        image = np.copy(self.images[band])
+        if self.filetype == _FILETYPE_FITS:
+            image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
+            ax.imshow(image,cmap=self.config_dict['colormap'], origin='lower')
+        else:
+            ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
+
+        ax.set_axis_off()
+        self.row_canvas[row][band].draw()
+
+    def replot_band_old(self, band, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         image = np.copy(self.images[band])
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
@@ -1379,7 +1566,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['file_name'] = self.listimage
         df['classification'] = ['Empty'] * len(self.listimage)
         # df['subclassification'] = ['Empty'] * len(self.listimage)
-        if self.filetype == 'FITS':
+        if self.filetype == _FILETYPE_FITS:
             print(self.filetype )
             df['ra'] = np.full(len(self.listimage),np.nan)
             df['dec'] = np.full(len(self.listimage),np.nan)
