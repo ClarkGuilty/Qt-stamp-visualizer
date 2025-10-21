@@ -584,10 +584,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.cbcontentofrows.itemToggled.connect(self.change_bands_shown_in_row)   # connect signal to method
         list_button_row0_layout.append(self.cbcontentofrows)
 
-         # Process the row information in the config.json
+        #  # Process the row information in the config.json
         # if join_list_of_lists(self.status_plot_rows) == '':
         #     self.status_plot_rows[0].append(self.main_band)
         
+
+        test = (self.config_dict['row_1'] + 
+                self.config_dict['row_2'] +
+                self.config_dict['row_3'])
+
+        if test == "":
+            self.config_dict['row_1'] = self.main_band
+
         # Manually activate the previous configuration
         for i in range(self.no_plotting_rows):
             for cb in self.cbcontentofrows.submenus[f'Row {i+1}']._checkboxes:
@@ -753,7 +761,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         # print(f"{self.plot_layout_rows_widgets[0].sizePolicy() = }")
         # print(f"{self.plot_layout_rows_widgets[0].sizeHint() = }")
-        print(self.status_plot_rows)
+        # print(self.status_plot_rows)
 
     def change_bands_shown_in_row(self,category, item, checked ):
         # print(category, item, checked)
@@ -785,15 +793,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def process_rows_in_config(self):
         for i in range(self.no_plotting_rows):
-            print(i)
+            # print(i)
             line_data = self.config_dict[f'row_{i+1}']
             self.config_dict[f'row_{i+1}'] = ''
-            print(f"{line_data = }")
-            print(f"{self.status_plot_rows[i] = }")
+            # print(f"{line_data = }")
+            # print(f"{self.status_plot_rows[i] = }")
             self.status_plot_rows[i] = (line_data.split(',') 
                                             if len(line_data) > 0 else [])
-            print(f"{self.status_plot_rows[i] = }")
-        print()
+            # print(f"{self.status_plot_rows[i] = }")
+        # print()
  
 
     def save_dict(self):
