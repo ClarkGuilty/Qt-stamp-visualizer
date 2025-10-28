@@ -21,7 +21,9 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QClipboard, QFont, QAction
+from PySide6.QtGui import (QPixmap, QKeySequence,
+                           QShortcut, QClipboard, QFont,
+                           QAction, QPalette)
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -492,8 +494,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         for widget in self.plot_layout_rows_widgets:
             self.plot_layout_area.addWidget(widget,1)
-            widget.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-                                 QtWidgets.QSizePolicy.MinimumExpanding)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                 QtWidgets.QSizePolicy.Expanding)
 
         button_layout = QtWidgets.QVBoxLayout()
         button_layout_container = QtWidgets.QWidget()
@@ -589,11 +591,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #     self.status_plot_rows[0].append(self.main_band)
         
 
-        test = (self.config_dict['row_1'] + 
+        initial_state_string = (self.config_dict['row_1'] + 
                 self.config_dict['row_2'] +
                 self.config_dict['row_3'])
 
-        if test == "":
+        if initial_state_string == "":
             self.config_dict['row_1'] = self.main_band
 
         # Manually activate the previous configuration
@@ -625,11 +627,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
    
         self.bsurelens = QtWidgets.QPushButton('A/B [1]')
+        # self.original_button_style = self.bsurelens.styleSheet()
+        # print(self.original_button_style)
         self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
+        # self.bsurelens.setFocusPolicy(Qt.NoFocus)
+        # from pprint import pprint
+        # bg = self.bsurelens.palette().color(QPalette.Button)
+        # pprint(bg.name())
         list_classifications.append(self.bsurelens)
 
         self.bnonlens = QtWidgets.QPushButton('C/X [4]')
         self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
+        # self.bnonlens.setFocusPolicy(Qt.NoFocus)
+
         list_classifications.append(self.bnonlens)
 
 
