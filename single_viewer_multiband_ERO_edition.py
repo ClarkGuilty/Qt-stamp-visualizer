@@ -23,7 +23,9 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
 from PySide6.QtGui import (QPixmap, QKeySequence,
                            QShortcut, QClipboard, QFont,
-                           QAction, QPalette)
+                           QAction, QPalette, QColor, QPainter)
+
+
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -198,7 +200,7 @@ def legacy_survey_number_of_pixels(image_pixel_size,
 def join_list_of_lists(list_of_lists, separator=','): #into a string.
     return f'{separator}'.join(item for sublist in list_of_lists for item in sublist)
 
-def join_nested(lines, sep=' - ', line_sep='\n'):#into a string for labels.
+def join_nested(lines, sep=' | ', line_sep='\n'):#into a string for labels.
     return line_sep.join(sep.join(map(str, sub)) for sub in lines)
 class BandNamesLabel(QtWidgets.QLabel):
     def __init__(self,
@@ -214,6 +216,9 @@ class BandNamesLabel(QtWidgets.QLabel):
                     ):
         label = join_nested(status_plot_rows)
         self.setText(label)
+
+
+
 
 class BandNamesLabel_old(QtWidgets.QLabel):
     def __init__(self,
@@ -627,10 +632,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
    
         self.bsurelens = QtWidgets.QPushButton('A/B [1]')
-        # self.original_button_style = self.bsurelens.styleSheet()
+        self.original_button_style = self.bsurelens.styleSheet()
         # print(self.original_button_style)
         self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
-        # self.bsurelens.setFocusPolicy(Qt.NoFocus)
+        self.bsurelens.setFocusPolicy(Qt.NoFocus)
         # from pprint import pprint
         # bg = self.bsurelens.palette().color(QPalette.Button)
         # pprint(bg.name())
@@ -765,20 +770,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.timer_0 = time()
 
-        # print(f"{self.label_layout_container.sizePolicy() = }")
-        # print(f"{self.plot_layout_area_container.sizePolicy() = }")
-        # print(f"{button_layout_container.sizePolicy() = }")
-
-        # print(f"{self.plot_layout_rows_widgets[0].sizePolicy() = }")
-        # print(f"{self.plot_layout_rows_widgets[0].sizeHint() = }")
-        # print(self.status_plot_rows)
-
     def change_bands_shown_in_row(self,category, item, checked ):
         # print(category, item, checked)
         row = int(category.split(' ')[-1]) - 1
         widget = self.row_canvas[row][item]
         if checked:
             # self.plot_layout_rows_layouts[row].addWidget(widget,1)
+            self.plot_layout_rows_layouts[row].removeWidget(widget)
+            self.plot_layout_rows_layouts[row].addWidget(widget,1)
+
             widget.show()
             self.status_plot_rows[row].append(item)
         else:
@@ -1078,7 +1078,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['colormap'] = colormap
             self.replot()
             button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            # self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap.setStyleSheet(self.original_button_style)
             self.bactivatedcolormap = button
             self.save_dict()
 
@@ -1514,13 +1515,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         if self.bactivatedclassification is not None:
-            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+            # self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedclassification.setStyleSheet(self.original_button_style)
+
 
         #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
             button = self.dict_class2button[grade]
             if button is not None:
-                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+                button.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
+                # self.change_button_colors(button,self.buttonclasscolor, 'lightBlue')
+                
                 self.bactivatedclassification = button
 
     def update_subclassification_buttoms(self):
@@ -1535,6 +1540,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
                 self.bactivatedsubclassification = button
 
+    def change_button_colors(self, button, textColor, backgroundColor):
+        palette = button.palette()
+        palette.setColor(QPalette.ButtonText, QColor(textColor))
+        palette.setColor(QPalette.Button, QColor(backgroundColor))
+        button.setAutoFillBackground(True)
+        button.update()
+        button.setPalette(palette)
+        return button
             
 if __name__ == "__main__":
     # Check whether there is already a running QApplication (e.g., if running
