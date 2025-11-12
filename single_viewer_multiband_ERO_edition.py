@@ -366,7 +366,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.clipboard = clipboard
 
         title_strings = ["One-by-one classifier Euclid jpg edition"]
-
+        self.at_launch = True
         if args.name is not None:
             self.name = args.name
             title_strings.append(self.name)
@@ -595,19 +595,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # if join_list_of_lists(self.status_plot_rows) == '':
         #     self.status_plot_rows[0].append(self.main_band)
         
-
         initial_state_string = (self.config_dict['row_1'] + 
                 self.config_dict['row_2'] +
                 self.config_dict['row_3'])
 
+        # print(initial_state_string)
         if initial_state_string == "":
             self.config_dict['row_1'] = self.main_band
+
+        # print(f"Before {self.config_dict['row_1'] = }")
+        # print(f"Before {self.config_dict['row_2'] = }")
+        # print(f"Before {self.config_dict['row_3'] = }")
 
         # Manually activate the previous configuration
         for i in range(self.no_plotting_rows):
             for cb in self.cbcontentofrows.submenus[f'Row {i+1}']._checkboxes:
                 # if cb.text() in self.status_plot_rows[i]:
+                # print(i, f"{cb.text() = }")
                 if cb.text() in self.config_dict[f'row_{i+1}']:
+                    # print(f"{cb.text()=} was in config_dict")
                     cb.setChecked(True)
                 else:
                     cb.setChecked(False)
@@ -769,6 +775,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # main_layout.addLayout(button_layout, 10)
 
         self.timer_0 = time()
+        self.at_launch = False
 
     def change_bands_shown_in_row(self,category, item, checked ):
         # print(category, item, checked)
@@ -803,20 +810,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def process_rows_in_config(self):
         for i in range(self.no_plotting_rows):
-            # print(i)
             line_data = self.config_dict[f'row_{i+1}']
             self.config_dict[f'row_{i+1}'] = ''
             # print(f"{line_data = }")
-            # print(f"{self.status_plot_rows[i] = }")
             self.status_plot_rows[i] = (line_data.split(',') 
                                             if len(line_data) > 0 else [])
-            # print(f"{self.status_plot_rows[i] = }")
-        # print()
  
 
     def save_dict(self):
-        for i in range(self.no_plotting_rows):
-            self.config_dict[f'row_{i+1}'] = ','.join(self.status_plot_rows[i])
+        # state_string = (self.config_dict['row_1'] + 
+        #         self.config_dict['row_2'] +
+        #         self.config_dict['row_3'])
+        
+        # if state_string == '':
+        if not self.at_launch:
+            for i in range(self.no_plotting_rows):
+                self.config_dict[f'row_{i+1}'] = ','.join(self.status_plot_rows[i])
 
         with open(PATH_TO_CONFIG_FILE, 'w') as f:
             json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
