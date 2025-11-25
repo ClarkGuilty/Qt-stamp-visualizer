@@ -413,6 +413,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.stampspath = args.path
 
         self.all_bands = sorted(os.listdir(self.stampspath))
+        self.all_bands = [elem for elem in self.all_bands if elem!='.DS_Store'] # Thank you Phil Holloway!
 
         # self.color_bands = args.color_bands.split(",")
         self.legacy_survey_path = LEGACY_SURVEY_PATH
@@ -510,6 +511,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_row11_layout = QtWidgets.QHBoxLayout()
         button_row2_layout = QtWidgets.QHBoxLayout()
         button_row3_layout = QtWidgets.QHBoxLayout()
+
+        for row in (button_row0_layout,
+                    button_row10_layout,
+                    button_row11_layout,
+                    button_row2_layout, 
+                    button_row3_layout):
+           row.setContentsMargins(0, 0, 0, 0)
+           row.setSpacing(10)
+
 
         self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
         self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
@@ -668,8 +678,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 }
 
         list_subclassification_buttons = []
-        self.brecenter = QtWidgets.QPushButton('Recenter')
+        self.brecenter = QtWidgets.QPushButton('Recenter [R]')
+        self.original_recenter_button_style = self.brecenter.styleSheet()
         self.brecenter.clicked.connect(self.recenter)
+        self.brecenter_original_palette = self.brecenter.palette()
         list_subclassification_buttons.append(self.brecenter)
 
 
@@ -734,11 +746,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
  
-        self.update_recenter_button()
-        # recenter = self.df.at[self.config_dict['counter'],'recenter']
-        # if recenter:
-        #     self.brecenter.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-
         self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
         self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
 
@@ -781,17 +788,23 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for button in list_classifications:
             button_row10_layout.addWidget(button)
 
+        button_row2_layout.addStretch()
         # for button in list_scales_buttons:
         for button in list_subclassification_buttons:
             button_row2_layout.addWidget(button)
+        button_row2_layout.addStretch()
 
         for button in list_colormap_buttons:
             button_row3_layout.addWidget(button)
 
+        button_layout.setSpacing(0)
+        button_layout.setContentsMargins(0, 0, 0, 0)    # remove outer margins
         button_layout_spacing = 0
         button_layout.addLayout(button_row0_layout, button_layout_spacing)
         button_layout.addLayout(button_row10_layout, button_layout_spacing)
         button_layout.addLayout(button_row11_layout, button_layout_spacing)
+
+
 
             
         # if self.filetype == _FILETYPE_FITS:
@@ -809,6 +822,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(button_layout_container, 10)
         # main_layout.addLayout(button_layout, 10)
 
+        # self.update_recenter_button()
         self.timer_0 = time()
         self.at_launch = False
 
@@ -1591,31 +1605,41 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.go_to_counter_page()
 
+
     def update_recenter_button(self):
         recenter = self.df.at[self.config_dict['counter'],'recenter']
         if recenter:
-            self.brecenter.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
             
-            # original_palette = self.brecenter.palette()
-            # p = QPalette(original_palette)            # copy original
-            # p.setColor(p.button, QColor("#d9534f"))   # background
-            # p.setColor(p.buttonText, QColor("white")) # text
-            # self.brecenter.setPalette(p)
+            self.brecenter.setFixedSize(self.brecenter.size())
+            self.brecenter.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
+            # self.brecenter.setFixedSize(self.bsurelens.size())
+
+            # pal = self.brecenter.palette()
+            # pal.setColor(QPalette.Button, QColor(self.buttonclasscolor))        # background
+            # pal.setColor(QPalette.ButtonText, QColor("white"))                  # text color
             # self.brecenter.setAutoFillBackground(True)
+            # self.brecenter.setPalette(pal)
+            # self.brecenter.update()
+
         else:
-            self.brecenter.setStyleSheet(self.original_button_style)
+            # print('#########')
+            # print('size ', self.bsurelens.size(), self.brecenter.size())
+            # print('sizeHint ', self.bsurelens.sizeHint(), self.brecenter.sizeHint())
+            # print('minimumSizeHint ', self.bsurelens.minimumSizeHint(), self.brecenter.minimumSizeHint())
+
+            self.brecenter.setStyleSheet(self.original_recenter_button_style)
+            # self.brecenter.setFixedSize(self.bsurelens.size())
+
+            # self.brecenter.setPalette(self.brecenter_original_palette)
+            # self.brecenter.setAutoFillBackground(False)
 
 
 
     def update_classification_buttons(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
-
-
         if self.bactivatedclassification is not None:
             # self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
             self.bactivatedclassification.setStyleSheet(self.original_button_style)
-
-
         #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
             button = self.dict_class2button[grade]
@@ -1658,5 +1682,6 @@ if __name__ == "__main__":
     # app = ApplicationWindow()
     app.show()
     app.activateWindow()
+    app.update_recenter_button()
     app.raise_()
     qapp.exec()

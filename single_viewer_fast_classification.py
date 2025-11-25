@@ -413,6 +413,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.stampspath = args.path
 
         self.all_bands = sorted(os.listdir(self.stampspath))
+        self.all_bands = [elem for elem in self.all_bands if elem!='.DS_Store'] # Thank you Phil Holloway!
 
         # self.color_bands = args.color_bands.split(",")
         self.legacy_survey_path = LEGACY_SURVEY_PATH
