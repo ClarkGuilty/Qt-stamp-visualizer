@@ -1,5 +1,5 @@
-# This Python file uses the following encoding: utf-8
 
+# This Python file uses the following encoding: utf-8
 import argparse
 import PySide6 #Must be imported before matplotlib. #TODO remove rewrite without matplotlib widgets
 
@@ -655,8 +655,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.dict_class2button = {
-                                    'A/B': self.bsurelens,
-                                    'C/X': self.bnonlens,
+                                    'A': self.bsurelens,
+                                    'B': self.bmaybelens,
+                                    'C': self.bflexion,
+                                    'X': self.bnonlens,
 
                                  'None':None}
 
@@ -721,19 +723,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A/B','A/B'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
+
+        self.kmaybelens = QShortcut(QKeySequence('2'), self)
+        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
+
+        self.kflexion = QShortcut(QKeySequence('3'), self)
+        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
         self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
+        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
-        self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
-        self.kNext.activated.connect(self.keyPrev)
+        self.kPrev = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
+        self.kPrev.activated.connect(self.keyPrev)
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToNextPage), self)
         self.kNext.activated.connect(self.keyNext)
 
-        self.kNext = QShortcut(QKeySequence('k'), self)
-        self.kNext.activated.connect(self.keyPrev)
+        self.kPrev = QShortcut(QKeySequence('k'), self)
+        self.kPrev.activated.connect(self.keyPrev)
 
         self.kNext = QShortcut(QKeySequence('j'), self)
         self.kNext.activated.connect(self.keyNext)
