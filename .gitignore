@@ -6,3 +6,4 @@
 *.tar*
 old/
 .temp/
+**/.DS_Store
