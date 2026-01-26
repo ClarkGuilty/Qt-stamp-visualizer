@@ -647,6 +647,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_button_row0_layout.append(self.cbnumberofrows)
 
 
+        self.bDESIspec = QtWidgets.QPushButton("DESI‑spec")
+        self.bDESIspec.clicked.connect(self.open_LS_DESI_spec)
+        list_button_row0_layout.append(self.bDESIspec)
+
         self.cbcontentofrows = MultiSelectDropdown(self.all_bands)
         self.cbcontentofrows.itemToggled.connect(self.change_bands_shown_in_row)   # connect signal to method
         list_button_row0_layout.append(self.cbcontentofrows)
@@ -1296,6 +1300,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(E.args)
             print(type(E))
             # raise
+
+
+    def open_LS_DESI_spec(self):
+        # Load the CSV
+        df = pd.read_csv('./DESI_spec_targets.csv')
+        df['DATA_RELEASE'] = df['DATA_RELEASE'].str.lower()
+
+        # Extract NAME from current filename (or however you crossmatch)
+        target = os.path.splitext(self.filename)[0][:-10]
+
+        # Match
+        sel = df[df['NAME'] == target]
+        if sel.empty:
+            self.status.showMessage(f"No DESI entry found for: {target}", 8000)
+            return
+
+        dr = sel['DATA_RELEASE'].iloc[0]
+        tid = sel['TARGETID'].iloc[0]
+
+        if dr == 'dr2':
+            self.status.showMessage("Target in DR2 : not public available", 8000)
+        else:
+            url = f"https://www.legacysurvey.org/viewer/desi-spectrum/{dr}/targetid{tid}"
+            webbrowser.open(url)
 
 
     @Slot()
