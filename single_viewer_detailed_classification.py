@@ -1381,10 +1381,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
             print('No support for FITS files')
         else:
-            image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
-            self.image = np.copy(image)
-            self.images[band] = np.copy(image)
-            ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
+            filepath = join(self.stampspath, band, self.filename)
+
+            if not os.path.exists(filepath):
+                ax.text(
+                    0.5, 0.5, "Missing file",
+                    color="white", ha="center", va="center",
+                    transform=ax.transAxes
+                )
+            else:
+                image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
+                self.image = np.copy(image)
+                self.images[band] = np.copy(image)
+                ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
         ax.set_axis_off() #Always before .draw()!
         # self.canvas[band].draw()
         self.row_canvas[row][band].draw()
