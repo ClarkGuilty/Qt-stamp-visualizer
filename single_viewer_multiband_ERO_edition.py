@@ -553,17 +553,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bds9.setEnabled(False)
         list_button_row0_layout.append(self.bds9)
 
-        # self.bviewls = QtWidgets.QPushButton('Open LS')
-        # self.bviewls.clicked.connect(self.viewls)
-        # if self.filetype != 'FITS':
-        #     self.bviewls.setEnabled(False)
-        # list_button_row0_layout.append(self.bviewls)
+        self.bviewls = QtWidgets.QPushButton('Open LS')
+        self.bviewls.clicked.connect(self.viewls)
+        if self.filetype != 'FITS':
+            self.bviewls.setEnabled(False)
+        list_button_row0_layout.append(self.bviewls)
 
-        # self.bviewESA = QtWidgets.QPushButton('Open ESASky')
-        # self.bviewESA.clicked.connect(self.viewESASky)
-        # if self.filetype != 'FITS':
-        #     self.bviewESA.setEnabled(False)
-        # list_button_row0_layout.append(self.bviewESA)
+        self.bviewESA = QtWidgets.QPushButton('Open ESASky')
+        self.bviewESA.clicked.connect(self.viewESASky)
+        if self.filetype != 'FITS':
+            self.bviewESA.setEnabled(False)
+        list_button_row0_layout.append(self.bviewESA)
 
         self.bhidecolorbands = QtWidgets.QCheckBox('Show NISP bands')
         self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
@@ -666,6 +666,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bsurelens = QtWidgets.QPushButton('A')
         self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
         list_classifications.append(self.bsurelens)
+        self.original_button_style = self.bsurelens.styleSheet()
 
         self.bmaybelens = QtWidgets.QPushButton('B')
         self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
@@ -1193,8 +1194,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def viewls(self):
-        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10-grz&zoom=16&spectra".format(self.ra,self.dec))
-
+        webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=14&manga&spectra&desi-spec-edr&desi-spec-dr1".format(self.ra,self.dec))
+    
     @Slot()
     def viewESASky(self):
         website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.02&cooframe=J2000&sci=true&lang=en&"
@@ -1207,7 +1208,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.scale = self.scale2funct[scale]
             self.replot()
             button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedscale.setStyleSheet(self.original_button_style)
+            # self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
+            
             self.bactivatedscale = button
             self.config_dict['scale']= scale
             self.save_dict()
@@ -1218,7 +1221,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['colormap'] = colormap
             self.replot()
             button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedcolormap.setStyleSheet(self.original_button_style)
+            # self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
             self.bactivatedcolormap = button
             self.save_dict()
 
@@ -1608,7 +1612,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         if self.bactivatedclassification is not None:
-            self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+            # self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedclassification.setStyleSheet(self.original_button_style)
 
         #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':

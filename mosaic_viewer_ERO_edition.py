@@ -38,7 +38,7 @@ import webbrowser
 
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect.",
-                    default="Stamps_to_inspect")
+                    default="Color_stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default=None)
 # parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
@@ -187,6 +187,7 @@ class LabelledIntField(QtWidgets.QWidget):
         layout.addWidget(self.label)
         
         self.lineEdit = QtWidgets.QLineEdit(self)
+        self.lineEdit.setFocusPolicy(Qt.ClickFocus)
         self.lineEdit.setFixedWidth(50)
         self.lineEdit.setValidator(QIntValidator(1,total_pages))
         self.lineEdit.setText(str(initial_value+1))
@@ -226,6 +227,9 @@ class NamedLabel(QtWidgets.QWidget):
         self.label = QtWidgets.QLineEdit(self)
         self.label.setFixedWidth(50)
         self.label.setEnabled(False)
+        # self.label.setEnabled(True)
+        # self.label.setReadOnly(True)
+        # self.label.setFocusPolicy(Qt.NoFocus)
         self.label.setText(str(initial_value))
         self.label.setFont(QFont("Arial",self.fontsize))
         self.label.setStyleSheet('background-color: black; color: gray')
@@ -913,6 +917,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 self.PAGE_MAX+1),10000)
         else:
             self.go_to_page(self.bcounter.getValue())
+            self.bcounter.lineEdit.clearFocus()
     @Slot()
     def next(self):
         if self.config_dict['page']+1 >= self.PAGE_MAX:
