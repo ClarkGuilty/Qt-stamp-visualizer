@@ -1,5 +1,5 @@
-
 # This Python file uses the following encoding: utf-8
+
 import argparse
 import PySide6 #Must be imported before matplotlib. #TODO remove rewrite without matplotlib widgets
 
@@ -415,26 +415,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.all_bands = sorted(os.listdir(self.stampspath))
         self.all_bands = [elem for elem in self.all_bands if elem!='.DS_Store'] # Thank you Phil Holloway!
 
-        # self.color_bands = args.color_bands.split(",")
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.random_seed = args.seed
 
-        self.pre_scalings = ['asinh', 'mtf'] # Write first the main scaling.
-        self.bands = ['vis_only', 'vis_y', 'vis_y_h'] # Write first the main band.
-        self.main_band = self.pre_scalings[0] + '_' + self.bands[0]
+        #I normally prefer asinh as the default band.
+        #So, check if it is available.
+        #Otherwise, choose any band.
+        asinh_vis_only_band_index = np.arange(len(self.all_bands))[
+                list(
+                    map(lambda s: ('sinh' in s) and ('vis_only' in s),
+                         self.all_bands))
+        ]
+        print(asinh_vis_only_band_index)
+        if len(asinh_vis_only_band_index) > 0:
+            self.main_band = self.all_bands[asinh_vis_only_band_index[0]]
+        else:
+            self.main_band = self.all_bands[0]
 
-
-        self.paths_to_images = ([join(self.stampspath, pre_scaling+'_'+band) 
-                                for pre_scaling in self.pre_scalings for band in self.bands])
-
-
-        self.color_bands = [self.pre_scalings[1]+'_'+band for band in self.bands]
-        self.composite_bands = [self.pre_scalings[0]+'_'+band for band in self.bands[1:]] 
-
-        # self.band_types = ({self.main_band: MAIN_BAND} |
-        #                   {band: COMPOSITE_BAND for band in self.composite_bands} |
-        #                   {band: SINGLE_BAND for band in self.color_bands} | 
-        #                   {band: EXTERNAL_BAND for band in self.external_bands})
+        self.paths_to_images = ([join(self.stampspath, band) 
+                                for band in self.all_bands])
 
         if args.fits is None:
             print("args.fits is None.")
@@ -443,10 +442,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("At the moment, only jpg/png files are supported")
             sys.exit()
         else:
-            # print(f"Trying to load {args.extension} files from {join(stamps_path,f"*.{args.extension}")}")
             print(f"Trying to load {args.extension} files")
             self.listimage = sum([glob.glob(join(stamps_path,f"*.{args.extension}")) for stamps_path in self.paths_to_images], [])
-            # self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
+            # self.listimage = sum([glob.glob(join(stamps_path,f"*.{args.extension}")) for stamps_path in self.paths_to_images], [])
             self.listimage = sorted(list(set(map(os.path.basename, self.listimage)))) # Removing paths and duplicates.
 
 
@@ -641,12 +639,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
         self.bsurelens = QtWidgets.QPushButton('A/B [1]')
         self.original_button_style = self.bsurelens.styleSheet()
-        # print(self.original_button_style)
         self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
         self.bsurelens.setFocusPolicy(Qt.NoFocus)
-        # from pprint import pprint
-        # bg = self.bsurelens.palette().color(QPalette.Button)
-        # pprint(bg.name())
         list_classifications.append(self.bsurelens)
 
         self.bnonlens = QtWidgets.QPushButton('C/X [4]')
@@ -1260,35 +1254,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             for row in range(self.no_plotting_rows):
                 self.plot_band(band,row)
 
-    def plot_old(self, scale_min = None, scale_max = None, band = None):
-        self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
-        # label = ""
-        if self.config_dict['colorbandsvisible']:
-            for band in self.color_bands:
-                self.plot_band(band)
-                # label += f"{band}-" 
-            self.color_bands_already_plotted = True
-            # label = label[:-1]+'\n'
-        else:
-            self.color_bands_already_plotted = False
-        # label += f'{self.main_band}-'
-        
-        if not self.bottom_row_bands_already_plotted:
-            for band in [self.main_band]:
-                self.plot_band(band)
-            for band in self.composite_bands:
-                self.plot_composite_band(band)
-            self.bottom_row_bands_already_plotted = True
-        
-        for band in self.composite_bands[:-1]:
-            band = band.replace(_BAND_FILENAMES_KEY,self.main_band)
-            # label += f'{band}-'
-        
-        self.label_plot[_BAND_FILENAMES_KEY].updateText(self.config_dict['colorbandsvisible'],
-                                                        self.config_dict['nisprgbvisible'])
-        # self.label_plot[_BAND_FILENAMES_KEY].setText(label[:-1])
-        # print(self.label_plot[_BAND_FILENAMES_KEY].text())
-
     def plot_band(self, band, row, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         ax = self.axes[row][band]
@@ -1368,24 +1333,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("Only JPG/PNG format supported currently.")
             raise Exception('FITS files not suported')
 
-    def replot_old(self, scale_min = None, scale_max = None):
-        # for band in self.all_bands:
-        #     if self.band_types[band] in [COMPOSITE_BAND,
-        #                                  EXTERNAL_BAND]:
-        #         continue
-        #     self.replot_band(band)
-        if self.config_dict['colorbandsvisible']:
-            for band in self.color_bands:
-                self.replot_band(band)
-                self.color_bands_already_plotted = False
-        else:
-            self.color_bands_already_plotted = False
-        
-        for band in [self.main_band]:
-            self.replot_band(band)
-        for band in self.composite_bands:
-            self.plot_composite_band(band)
-
     def replot_band(self, band, row, scale_min = None, scale_max = None):
         ax = self.axes[row][band]
 
@@ -1457,7 +1404,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.config_dict['counter'] = 0
         # self.update_counter()
 
-        self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
         print('A new csv will be created', self.df_name)
         if file_iteration != "":

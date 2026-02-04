@@ -45,22 +45,8 @@ parser.add_argument('-p',"--path", help="path to the images to inspect",
                     default="Color_stamps_to_inspect")
 parser.add_argument('-N',"--name", help="name of the classifying session.",
                     default=None)
-# parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
-#                     default="VIS")
-# parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
-#                     default="Y,J,H")
 parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
-# parser.add_argument("--verbose", help="activates loging to terminal",
-#                     action="store_true", default=False)
-# parser.add_argument("--clean", help="cleans the legacy survey folder.",
-#                     action="store_true")
-# parser.add_argument('--fits',
-#                     help=("forces app to only use fits (--fits) or png/jp(e)g (--no-fits). "+
-#                     "If unset, the app searches for fits files in the path, but defaults to "+
-#                     "png/jp(e)g if no fits files are found."),
-#                     action=argparse.BooleanOptionalAction,
-#                     default=False) # Only jpg support for now.
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 parser.add_argument("--extension", help="File extension for compressed images (e.g., jpg, png, jpeg)",
@@ -219,55 +205,6 @@ class BandNamesLabel(QtWidgets.QLabel):
 
 
 
-
-class BandNamesLabel_old(QtWidgets.QLabel):
-    def __init__(self,
-                main_band,
-                color_bands,
-                standard_color_band,
-                resampled_color_band,
-                *args,
-                **kwargs
-                ):
-        QtWidgets.QLabel.__init__(self, *args, **kwargs)
-        self.main_band = main_band
-        self.color_bands = color_bands
-        self.standard_color_band = standard_color_band
-        self.resampled_color_band = resampled_color_band
-
-        # self.bands = args
-
-        # print('band names label')
-        # print(self.main_band)
-        # print(self.color_bands)
-        # print(self.standard_color_band)
-        # print(self.resampled_color_band)
-        # print('end')
-
-    def updateText(self,
-                    color_bands_status,
-                    standard_color_band_status):
-        label = ''
-        # if color_bands_status:
-        #     for band in self.color_bands:
-        #         label += f"{band} | "
-        #     label = label[:-3]+'\n'
-
-        if color_bands_status:
-            label += f'{self.color_bands[0]} | '
-            label += self.color_bands[1]
-            if standard_color_band_status:
-                label += f' | {self.color_bands[2]}'
-            label += '\n'
-
-        label += f'{self.main_band} | '
-        label += self.resampled_color_band
-
-        if standard_color_band_status:
-            label += f' | {self.standard_color_band}'
-
-        self.setText(label)
-
 class CheckableSubMenu(QtWidgets.QMenu):
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
@@ -365,7 +302,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         
         self.clipboard = clipboard
 
-        title_strings = ["One-by-one classifier Euclid jpg edition"]
+        title_strings = ["One-by-one classifier Euclid jpg edition for lensed QSOs"]
         self.at_launch = True
         if args.name is not None:
             self.name = args.name
@@ -646,33 +583,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
    
    
-        self.bsurelens = QtWidgets.QPushButton('A [1]')
+        self.bsurelens = QtWidgets.QPushButton('A/B [1]')
         self.original_button_style = self.bsurelens.styleSheet()
-        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
+        self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
         self.bsurelens.setFocusPolicy(Qt.NoFocus)
         list_classifications.append(self.bsurelens)
 
-        self.bmaybelens = QtWidgets.QPushButton('B [2]')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B') )
-        self.bmaybelens.setFocusPolicy(Qt.NoFocus)
-        list_classifications.append(self.bmaybelens)
+        # self.bmaybelens = QtWidgets.QPushButton('B [2]')
+        # self.bmaybelens.clicked.connect(partial(self.classify, 'B','B') )
+        # self.bmaybelens.setFocusPolicy(Qt.NoFocus)
+        # list_classifications.append(self.bmaybelens)
 
-        self.bflexion = QtWidgets.QPushButton('C [3]')
-        self.bflexion.clicked.connect(partial(self.classify, 'C','C') )
-        self.bflexion.setFocusPolicy(Qt.NoFocus)
-        list_classifications.append(self.bflexion)
+        # self.bflexion = QtWidgets.QPushButton('C [3]')
+        # self.bflexion.clicked.connect(partial(self.classify, 'C','C') )
+        # self.bflexion.setFocusPolicy(Qt.NoFocus)
+        # list_classifications.append(self.bflexion)
 
-        self.bnonlens = QtWidgets.QPushButton('X [4]')
-        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
+        self.bnonlens = QtWidgets.QPushButton('C/X [4]')
+        self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
         self.bnonlens.setFocusPolicy(Qt.NoFocus)
         list_classifications.append(self.bnonlens)
 
 
         self.dict_class2button = {
-                                    'A': self.bsurelens,
-                                    'B': self.bmaybelens,
-                                    'C': self.bflexion,
-                                    'X': self.bnonlens,
+                                    'A/B': self.bsurelens,
+                                    # 'B': self.bmaybelens,
+                                    # 'C': self.bflexion,
+                                    'C/X': self.bnonlens,
                                     'None':None
                                 }
 
@@ -683,12 +620,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.brecenter_original_palette = self.brecenter.palette()
         list_subclassification_buttons.append(self.brecenter)
 
-
-        self.bnonlens = QtWidgets.QPushButton('X [4]')
-        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
-
 ###
-
         list_scales_buttons = []
         self.blinear = QtWidgets.QPushButton('Linear')
         self.blinear.clicked.connect(partial(self.set_scale,self.blinear,'identity'))
@@ -1196,26 +1128,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         std = np.nanstd(l)
         return std
 
-    def background_rms_image_old(self,cb, image):
-        xg, yg = np.shape(image)
-        cut0 = image[0:cb, 0:cb]
-        cut1 = image[xg - cb:xg, 0:cb]
-        cut2 = image[0:cb, yg - cb:yg]
-        cut3 = image[xg - cb:xg, yg - cb:yg]
-        l = [cut0, cut1, cut2, cut3]
-        m = np.nanmean(np.nanmean(l, axis=1), axis=1)
-        ml = min(m)
-        mm = max(m)
-        if ml is np.nan or mm is np.nan:
-            print(f"WARNING: {ml = }, {mm = }")
-        if mm > 5 * ml:
-            s = np.sort(l, axis=0)
-            nl = s[:-1]
-            std = np.nanstd(nl)
-        else:
-            std = np.nanstd([cut0, cut1, cut2, cut3])
-        return std
-    
     def scale_val(self,image_array):
         if len(np.shape(image_array)) == 2:
             image_array = [image_array]
@@ -1371,47 +1283,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # for row in self.row_canvas:
         #     row[band].draw()
 
-    def plot_band_old(self, band, scale_min = None, scale_max = None):
-        # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
-        self.ax[band].cla()
-        get_radec = True if band == self.main_band else False
-        if self.filetype == _FILETYPE_FITS:
-            image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
-            print('No support for FITS files')
-        else:
-            image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
-            self.image = np.copy(image)
-            self.images[band] = np.copy(image)
-            self.ax[band].imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
-        self.ax[band].set_axis_off() #Always before .draw()!
-        # self.canvas[band].draw()
-        for row in self.row_canvas:
-            row[band].draw()
-
-    def plot_composite_band_old(self, composite_band, scale_min = None, scale_max = None):
-        # base_bands = list(composite_band)
-        
-        self.ax[composite_band].cla()
-        
-        if self.filetype == _FILETYPE_FITS:
-            print('FITS files are not supported')
-            # if (not self.color_bands_already_plotted) or (_VIS_RESAMPLED_BAND in base_bands):
-            #     images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
-            # else:
-            #     images = self.images
-
-            # image = self.prepare_composite_image(np.stack([images[band] for band in base_bands],axis=2))
-            # self.ax[composite_band].imshow(image, origin='lower')
-        else:
-            image = np.asarray(Image.open(join(self.stampspath, composite_band, self.filename)))
-            self.images[composite_band] = image.copy()
-            self.ax[composite_band].imshow(image, origin='upper')
-
-        self.ax[composite_band].set_axis_off() #Always before .draw()!
-        # self.canvas[composite_band].draw()
-        for row in self.row_canvas:
-            row[composite_band].draw()
-
     def replot(self, scale_min = None, scale_max = None):
 
         if self.filetype == _FILETYPE_COMPRESSED:
@@ -1436,23 +1307,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         ax.set_axis_off()
         self.row_canvas[row][band].draw()
 
-    def replot_band_old(self, band, scale_min = None, scale_max = None):
-        # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
-        self.ax[band].cla()
-        image = np.copy(self.images[band])
-        if self.filetype == _FILETYPE_FITS:
-            image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
-            self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
-        else:
-            self.ax[band].imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
-
-        self.ax[band].set_axis_off()
-        self.canvas[band].draw()
-
-
     def obtain_df(self):
+        prefix_base_filename = "classification_single_detailed"
         if self.random_seed is None:
-            base_filename = f'classification_single_detailed_{self.name}_{len(self.listimage)}'
+            base_filename = f'{prefix_base_filename}_{self.name}_{len(self.listimage)}'
             string_to_glob = f'./Classifications/{base_filename}-*.csv'
             # print("Globing for", string_to_glob)
             # string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
@@ -1463,7 +1321,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             set(glob.glob(f'./Classifications/{base_filename}.csv')))
             # print("first glob:", set(glob.glob(string_to_glob)))
         else:
-            base_filename = f'classification_single_detailed_{self.name}_{len(self.listimage)}_{self.random_seed}'
+            base_filename = f'{prefix_base_filename}_{self.name}_{len(self.listimage)}_{self.random_seed}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
             glob_results = glob.glob(string_to_glob)
         
