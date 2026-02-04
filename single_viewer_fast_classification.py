@@ -443,6 +443,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("At the moment, only jpg/png files are supported")
             sys.exit()
         else:
+            # print(f"Trying to load {args.extension} files from {join(stamps_path,f"*.{args.extension}")}")
             print(f"Trying to load {args.extension} files")
             self.listimage = sum([glob.glob(join(stamps_path,f"*.{args.extension}")) for stamps_path in self.paths_to_images], [])
             # self.listimage = sorted(list(set(map( lambda s: s.split('/')[-1], self.listimage)))) # Removing paths.
@@ -656,10 +657,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         self.dict_class2button = {
-                                    'A': self.bsurelens,
-                                    'B': self.bmaybelens,
-                                    'C': self.bflexion,
-                                    'X': self.bnonlens,
+                                    'A/B': self.bsurelens,
+                                    'C/X': self.bnonlens,
 
                                  'None':None}
 
@@ -724,16 +723,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
-
-        self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
-
-        self.kflexion = QShortcut(QKeySequence('3'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A/B','A/B'))
 
         self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
+        self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
 
         self.kPrev = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
         self.kPrev.activated.connect(self.keyPrev)
@@ -1305,10 +1298,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
             print('No support for FITS files')
         else:
-            image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
-            self.image = np.copy(image)
-            self.images[band] = np.copy(image)
-            ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
+            filepath = join(self.stampspath, band, self.filename)
+
+            if not os.path.exists(filepath):
+                ax.text(
+                    0.5, 0.5, "Missing file",
+                    color="white", ha="center", va="center",
+                    transform=ax.transAxes
+                )
+            else:
+                image = np.asarray(Image.open(join(self.stampspath, band, self.filename)))
+                self.image = np.copy(image)
+                self.images[band] = np.copy(image)
+                ax.imshow(image, origin='upper', cmap = self.config_dict['colormap'], vmin=0, vmax=255) #For jpg/pngs this is best.
         ax.set_axis_off() #Always before .draw()!
         # self.canvas[band].draw()
         self.row_canvas[row][band].draw()
