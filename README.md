@@ -1,8 +1,4 @@
-# Qt-stamp-visualizer
-Qt tool for the visual inspection and classification of astronomical stamps.
-This is a fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool) using the Qt framework.
-
-h1. Visualization tool for lensed QSO searches.
+# Visualization tool for lensed QSO searches
 
 Tool for the visual inspection and classification of astronomical stamps. Adapted to show PNGs and JPGs.
 
@@ -10,12 +6,12 @@ It includes:
 * 1-by-1 tool for detailed classification.
 * Keyboard shortcuts for fast classification.
 
-h2. Installation
+## Installation
 
 You need to install the following libraries. You can install them using your system's package manager, but I recommend that you simply use a "Conda environment":https://docs.conda.io/projects/conda/en/stable/user-guide/getting-started.html
 
 
-h6. Requirements
+###### Requirements
 
 * Python (>= 3.10)
 * numpy
@@ -28,7 +24,7 @@ h6. Requirements
 
 
  
-h3. Installation using Conda (recommended)
+### Installation using Conda (recommended)
 
 * *Step zero* : install a Conda distribution (you can skip this if you already have one). Here is the official download link with instructions for "Microconda":https://docs.anaconda.com/free/miniconda/ (a lightweight Conda distribution).
 
@@ -48,7 +44,7 @@ conda activate qt_classifier
 </code></pre>
 
 
-h3. Installation using pip (not recommended)
+### Installation using pip (not recommended)
 
 _Alternatively_ , you can also use pip to get the packages. First, make sure that you have pip installed. If not, install it using your package manager. Remember that if you use "pip" inside a Conda environment, you cannot use the "conda" command inside that environment ever again. All new packages must be installed via "pip".
 
@@ -59,11 +55,11 @@ pip install numpy pandas matplotlib pyside6 pillow pyparsing astropy
 
 If this fails try replacing "pip" for "pip3" (and from then on replace every "python" for "python3").
 
-h2. Usage
+## Usage
 
 
 
-h3. 1-by-1 sequential tool
+### 1-by-1 sequential tool
 
 Please replace *NAME* with your name, and *SEED_NUMBER* with any number larger than 1000.
 
@@ -93,15 +89,15 @@ optional arguments:
 
 * Use the drop-down menus to change the number of rows being displayed, as well as the bands shown in each row.
 
-h4. Exporting your classification
+#### Exporting your classification
 
 Your classifications are saved in @Classifications@, with filename: @classification_lensed_QSOs_NAME_SIZE_SEED.csv@, where @SIZE@ is the number of objects graded. Please upload this file using the corresponding google form.
 
-h2. Issues
+## Issues
 
 You can report bugs or ask for assistance via Github issues or the Euclid slack.
 
-h2. Downloading the just the app
+## Downloading the just the app
 
 It is always better to get the tool with the data. However, if you want to inspect RR2 images on your own, you can get just the app by cloning the git repo:
 
