@@ -26,9 +26,9 @@ You need to install the following libraries. You can install them using your sys
  
 ### Installation using Conda (recommended)
 
-* *Step zero* : install a Conda distribution (you can skip this if you already have one). Here is the official download link with instructions for "Microconda":https://docs.anaconda.com/free/miniconda/ (a lightweight Conda distribution).
+* **Step zero** : install a Conda distribution (you can skip this if you already have one). Here is the official download link with instructions for "Microconda":https://docs.anaconda.com/free/miniconda/ (a lightweight Conda distribution).
 
-* *Step one*: create a "Conda environment":https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html with all the required packages.
+* **Step one**: create a "Conda environment":https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html with all the required packages.
 
 
 <pre><code class="bash">
@@ -36,7 +36,7 @@ conda create -n qt_classifier -c conda-forge "python>=3.10" numpy pandas matplot
 </code></pre>
 
 
-* *Step two*: Activate the environment before using the app:
+* **Step two**: Activate the environment before using the app:
 
 
 <pre><code class="bash">
@@ -46,14 +46,14 @@ conda activate qt_classifier
 
 ### Installation using pip (not recommended)
 
-_Alternatively_ , you can also use pip to get the packages. First, make sure that you have pip installed. If not, install it using your package manager. Remember that if you use "pip" inside a Conda environment, you cannot use the "conda" command inside that environment ever again. All new packages must be installed via "pip".
+__Alternatively__ , you can also use pip to get the packages. First, make sure that you have pip installed. If not, install it using your package manager. Remember that if you use "pip" inside a Conda environment, you cannot use the "conda" command inside that environment ever again. All new packages must be installed via "pip".
 
 <pre><code class="bash">
 pip install numpy pandas matplotlib pyside6 pillow pyparsing astropy
 </code></pre>
 
 
-If this fails try replacing "pip" for "pip3" (and from then on replace every "python" for "python3").
+If this fails try replacing `pip` for `pip3` (and from then on replace every `python` for `python3`).
 
 ## Usage
 
@@ -61,7 +61,7 @@ If this fails try replacing "pip" for "pip3" (and from then on replace every "py
 
 ### 1-by-1 sequential tool
 
-Please replace *NAME* with your name, and *SEED_NUMBER* with any number larger than 1000.
+Please replace **NAME** with your name, and **SEED_NUMBER** with any number larger than 1000.
 
 <pre><code class="bash">
 python Euclid_jpg_edition_for_lensed_QSO_dev.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
@@ -77,21 +77,22 @@ optional arguments:
 
 </code></pre>
 
-* Toggle @Auto-next@ to automatically show the next stamp after making a classification.
-* Toggle @Keyboard shortcuts@ to activate the keyboard shortcuts:
+* Use drop-down menus to change the number of rows being displayed, as well as the bands shown in each row.
+* Toggle `Auto-next` to automatically show the next stamp after making a classification.
+* Toggle `Keyboard shortcuts` to activate the keyboard shortcuts:
     
-|Key|Key|Action|
-|_.*1*||Grade A/B|
-|_.*4* ||Grade C/X|
-|_.*PgDn*|_.*j*|Next object|
-|_.*PgUp*|_.*k*|Previous object|
-|_.*c*||Copy filename|
+| Key | Key | Action |
+| ------------- | ------------- | ------------- |
+| **1**||Grade A/B|
+| **4** ||Grade C/X|
+| **PgDn**|**j**|Next object|
+| **PgUp**|**k**|Previous object|
+| **c**||Copy filename|
 
-* Use the drop-down menus to change the number of rows being displayed, as well as the bands shown in each row.
 
 #### Exporting your classification
 
-Your classifications are saved in @Classifications@, with filename: @classification_lensed_QSOs_NAME_SIZE_SEED.csv@, where @SIZE@ is the number of objects graded. Please upload this file using the corresponding google form.
+Your classifications are saved in `Classifications`, with filename: `classification_lensed_QSOs_NAME_SIZE_SEED.csv`, where `SIZE` is the number of objects graded. Please upload this file using the corresponding google form.
 
 ## Issues
 
