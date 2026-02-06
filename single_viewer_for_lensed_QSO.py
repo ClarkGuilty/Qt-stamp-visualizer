@@ -1308,7 +1308,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.row_canvas[row][band].draw()
 
     def obtain_df(self):
-        prefix_base_filename = "classification_single_detailed"
+        # prefix_base_filename = "classification_single_detailed"
+        prefix_base_filename = "classification_lensed_QSOs"
         if self.random_seed is None:
             base_filename = f'{prefix_base_filename}_{self.name}_{len(self.listimage)}'
             string_to_glob = f'./Classifications/{base_filename}-*.csv'
