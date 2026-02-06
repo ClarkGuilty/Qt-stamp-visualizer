@@ -682,16 +682,16 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A/B','A/B'))
 
-        self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
+        # self.kmaybelens = QShortcut(QKeySequence('2'), self)
+        # self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
-        self.kflexion = QShortcut(QKeySequence('3'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
+        # self.kflexion = QShortcut(QKeySequence('3'), self)
+        # self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
         self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
+        self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
 
         self.krecenter = QShortcut(QKeySequence('R'), self)
         self.krecenter.activated.connect(self.recenter)
