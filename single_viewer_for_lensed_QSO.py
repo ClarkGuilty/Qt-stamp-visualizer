@@ -583,33 +583,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
    
    
    
-        self.bsurelens = QtWidgets.QPushButton('A/B [1]')
+        self.bsurelens = QtWidgets.QPushButton('A [1]')
         self.original_button_style = self.bsurelens.styleSheet()
-        self.bsurelens.clicked.connect(partial(self.classify, 'A/B','A/B') )
+        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
         self.bsurelens.setFocusPolicy(Qt.NoFocus)
         list_classifications.append(self.bsurelens)
 
-        # self.bmaybelens = QtWidgets.QPushButton('B [2]')
-        # self.bmaybelens.clicked.connect(partial(self.classify, 'B','B') )
-        # self.bmaybelens.setFocusPolicy(Qt.NoFocus)
-        # list_classifications.append(self.bmaybelens)
+        self.bmaybelens = QtWidgets.QPushButton('B [2]')
+        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B') )
+        self.bmaybelens.setFocusPolicy(Qt.NoFocus)
+        list_classifications.append(self.bmaybelens)
 
-        # self.bflexion = QtWidgets.QPushButton('C [3]')
-        # self.bflexion.clicked.connect(partial(self.classify, 'C','C') )
-        # self.bflexion.setFocusPolicy(Qt.NoFocus)
-        # list_classifications.append(self.bflexion)
+        self.bflexion = QtWidgets.QPushButton('C [3]')
+        self.bflexion.clicked.connect(partial(self.classify, 'C','C') )
+        self.bflexion.setFocusPolicy(Qt.NoFocus)
+        list_classifications.append(self.bflexion)
 
-        self.bnonlens = QtWidgets.QPushButton('C/X [4]')
-        self.bnonlens.clicked.connect(partial(self.classify, 'C/X','C/X'))
+        self.bnonlens = QtWidgets.QPushButton('X [4]')
+        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
         self.bnonlens.setFocusPolicy(Qt.NoFocus)
-        list_classifications.append(self.bnonlens)
+        # list_classifications.append(self.bnonlens)
 
 
         self.dict_class2button = {
-                                    'A/B': self.bsurelens,
-                                    # 'B': self.bmaybelens,
-                                    # 'C': self.bflexion,
-                                    'C/X': self.bnonlens,
+                                    'A': self.bsurelens,
+                                    'B': self.bmaybelens,
+                                    'C': self.bflexion,
+                                    'X': self.bnonlens,
                                     'None':None
                                 }
 
@@ -619,6 +619,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.brecenter.clicked.connect(self.recenter)
         self.brecenter_original_palette = self.brecenter.palette()
         list_subclassification_buttons.append(self.brecenter)
+
+        self.bphotometry_problem = QtWidgets.QPushButton('Photometry problem [T]')
+        self.original_photometry_button_style = self.bphotometry_problem.styleSheet()
+        self.bphotometry_problem.clicked.connect(self.photometry_problems)
+        self.bphotometry_problem_original_palette = self.bphotometry_problem.palette()
+        list_subclassification_buttons.append(self.bphotometry_problem)
+
+        self.bgalaxy_galaxy = QtWidgets.QPushButton('Galaxy-Galaxy [Y]')
+        self.original_galaxy_galaxy_button_style = self.bgalaxy_galaxy.styleSheet()
+        self.bgalaxy_galaxy.clicked.connect(self.galaxy_galaxy_candidate)
+        self.bgalaxy_galaxy_original_palette = self.bgalaxy_galaxy.palette()
+        list_subclassification_buttons.append(self.bgalaxy_galaxy)
 
 ###
         list_scales_buttons = []
@@ -682,19 +694,25 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A/B','A/B'))
+        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
 
-        # self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        # self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
+        self.kmaybelens = QShortcut(QKeySequence('2'), self)
+        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
 
-        # self.kflexion = QShortcut(QKeySequence('3'), self)
-        # self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
+        self.kflexion = QShortcut(QKeySequence('3'), self)
+        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
 
-        self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'C/X','C/X'))
+        # self.knonlens = QShortcut(QKeySequence('4'), self)
+        # self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
 
         self.krecenter = QShortcut(QKeySequence('R'), self)
-        self.krecenter.activated.connect(self.recenter)
+        self.krecenter.activated.connect(self.krecenter_func)
+
+        self.kphotometry_problem = QShortcut(QKeySequence('T'), self)
+        self.kphotometry_problem.activated.connect(self.kphotometry_problems)
+
+        self.kgalaxy_galaxy = QShortcut(QKeySequence('Y'), self)
+        self.kgalaxy_galaxy.activated.connect(self.kgalaxy_galaxy_candidate)
 
         self.kPrev = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
         self.kPrev.activated.connect(self.keyPrev)
@@ -745,7 +763,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #     button_layout.addLayout(button_row3_layout, button_layout_spacing)
         
         button_layout.addLayout(button_row2_layout, button_layout_spacing)
-        button_layout.addLayout(button_row3_layout, button_layout_spacing)
+        # button_layout.addLayout(button_row3_layout, button_layout_spacing)
 
         main_layout.addWidget(self.label_layout_container, 2)
         main_layout.addWidget(self.plot_layout_area_container, 88)
@@ -798,11 +816,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
  
 
     def save_dict(self):
-        # state_string = (self.config_dict['row_1'] + 
-        #         self.config_dict['row_2'] +
-        #         self.config_dict['row_3'])
-        
-        # if state_string == '':
         if not self.at_launch:
             for i in range(self.no_plotting_rows):
                 self.config_dict[f'row_{i+1}'] = ','.join(self.status_plot_rows[i])
@@ -908,6 +921,57 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.update_recenter_button()
         # self.update_subclassification_buttoms()
+ 
+    @Slot()
+    def photometry_problems(self):
+        t0 = time()
+        cnt = self.config_dict['counter']# - 1
+        assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
+        self.df.at[cnt,'photometry_problems'] = not self.df.at[cnt,'photometry_problems']
+        if self.filetype == _FILETYPE_FITS:
+            self.df.at[cnt,'ra'] = self.ra
+            self.df.at[cnt,'dec'] = self.dec
+            self.df.at[cnt,'pixel_size'] = self.image_pixel_size
+            self.df.at[cnt,'image_dim'] = self.image_size
+        # self.df.at[cnt,'comment'] = grade
+        self.df.at[cnt,'time'] += (time() - self.timer_0)
+        self.timer_0 = time()
+        self.df.to_csv(self.df_name)
+
+        self.update_photometry_problems_button()
+ 
+    @Slot()
+    def galaxy_galaxy_candidate(self):
+        t0 = time()
+        cnt = self.config_dict['counter']# - 1
+        assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
+        self.df.at[cnt,'galaxy_galaxy'] = not self.df.at[cnt,'galaxy_galaxy']
+        if self.filetype == _FILETYPE_FITS:
+            self.df.at[cnt,'ra'] = self.ra
+            self.df.at[cnt,'dec'] = self.dec
+            self.df.at[cnt,'pixel_size'] = self.image_pixel_size
+            self.df.at[cnt,'image_dim'] = self.image_size
+        # self.df.at[cnt,'comment'] = grade
+        self.df.at[cnt,'time'] += (time() - self.timer_0)
+        self.timer_0 = time()
+        self.df.to_csv(self.df_name)
+
+        self.update_galaxy_galaxy_button()
+
+    @Slot()
+    def krecenter_func(self):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.recenter()
+
+    @Slot()
+    def kphotometry_problems(self):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.photometry_problems()
+
+    @Slot()
+    def kgalaxy_galaxy_candidate(self):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.galaxy_galaxy_candidate()
 
     @Slot()
     def set_scale(self, button, scale):
@@ -919,7 +983,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bactivatedscale = button
             self.config_dict['scale']= scale
             self.save_dict()
-
 
 
     def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.262',residual=False,size=47):
@@ -1369,14 +1432,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['classification'] = ['Empty'] * len(self.listimage)
         # df['subclassification'] = ['Empty'] * len(self.listimage)
         if self.filetype == _FILETYPE_FITS:
-            print(self.filetype )
+            print(self.filetype)
             df['ra'] = np.full(len(self.listimage),np.nan)
             df['dec'] = np.full(len(self.listimage),np.nan)
         # df['comment'] = ['Empty'] * len(self.listimage)
         # df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0.0)
         df['recenter'] = np.full(len(self.listimage),False)
+        df['photometry_problems'] = np.full(len(self.listimage),False)
+        df['galaxy_galaxy'] = np.full(len(self.listimage),False)
         return df
+
+    def update_all_buttons(self):
+        self.update_classification_buttons()
+        # self.update_subclassification_buttoms()
+        self.update_recenter_button()
+        self.update_photometry_problems_button()
+        self.update_galaxy_galaxy_button()
+
 
     def go_to_counter_page(self):
         self.filename = self.listimage[self.config_dict['counter']]
@@ -1384,9 +1457,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.plot()
         # if self.config_dict['legacysurvey']:
         #     self.set_legacy_survey()
-        self.update_classification_buttons()
-        # self.update_subclassification_buttoms()
-        self.update_recenter_button()
+        self.update_all_buttons()
         self.update_counter()
         self.save_dict()
         cnt = self.config_dict['counter']# - 1
@@ -1433,28 +1504,26 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             
             self.brecenter.setFixedSize(self.brecenter.size())
             self.brecenter.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
-            # self.brecenter.setFixedSize(self.bsurelens.size())
-
-            # pal = self.brecenter.palette()
-            # pal.setColor(QPalette.Button, QColor(self.buttonclasscolor))        # background
-            # pal.setColor(QPalette.ButtonText, QColor("white"))                  # text color
-            # self.brecenter.setAutoFillBackground(True)
-            # self.brecenter.setPalette(pal)
-            # self.brecenter.update()
-
         else:
-            # print('#########')
-            # print('size ', self.bsurelens.size(), self.brecenter.size())
-            # print('sizeHint ', self.bsurelens.sizeHint(), self.brecenter.sizeHint())
-            # print('minimumSizeHint ', self.bsurelens.minimumSizeHint(), self.brecenter.minimumSizeHint())
-
             self.brecenter.setStyleSheet(self.original_recenter_button_style)
-            # self.brecenter.setFixedSize(self.bsurelens.size())
 
-            # self.brecenter.setPalette(self.brecenter_original_palette)
-            # self.brecenter.setAutoFillBackground(False)
+    def update_photometry_problems_button(self):
+        photometry_problems = self.df.at[self.config_dict['counter'],'photometry_problems']
+        if photometry_problems:
+            
+            self.bphotometry_problem.setFixedSize(self.bphotometry_problem.size())
+            self.bphotometry_problem.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
+        else:
+            self.bphotometry_problem.setStyleSheet(self.original_photometry_button_style)
 
-
+    def update_galaxy_galaxy_button(self):
+        galaxy_galaxy = self.df.at[self.config_dict['counter'],'galaxy_galaxy']
+        if galaxy_galaxy:
+            
+            self.bgalaxy_galaxy.setFixedSize(self.bgalaxy_galaxy.size())
+            self.bgalaxy_galaxy.setStyleSheet("QPushButton {{background-color : {};color : white;}}".format(self.buttonclasscolor))
+        else:
+            self.bgalaxy_galaxy.setStyleSheet(self.original_galaxy_galaxy_button_style)
 
     def update_classification_buttons(self):
         grade = self.df.at[self.config_dict['counter'],'classification']
