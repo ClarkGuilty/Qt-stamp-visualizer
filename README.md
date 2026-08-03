@@ -2,6 +2,8 @@
 Qt tool for the visual inspection and classification of astronomical stamps.
 This is a fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool) using the Qt framework.
 
+> **Note:** the `unified_dev` branch is experimental — it was vibecoded with Claude. See [CHANGES.md](CHANGES.md) for details.
+
 # Visualization tool for ERO inspection Cheat Sheet
 
 Tool for the visual inspection and classification of astronomical stamps.

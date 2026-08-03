@@ -1,5 +1,8 @@
 # `unified_dev` — changes from `ERO_edition_2026`
 
+> **Experimental branch:** this was vibecoded with Claude. Review before relying on it
+> for real classification work.
+
 This branch merges the best parts of `main` (rich external-tool integration, single-band)
 into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color composites),
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
