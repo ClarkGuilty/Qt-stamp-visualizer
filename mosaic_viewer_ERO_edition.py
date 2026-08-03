@@ -45,7 +45,7 @@ parser.add_argument('-N',"--name", help="Name of the classifying session.",
 #                     default="VIS")
 # parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
 #                     default="Y,J,H")
-parser.add_argument('-l',"--ncols", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
+parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
                     default=5)
 parser.add_argument('-m',"--nrows", 
                     help="Number of rows per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
@@ -59,18 +59,10 @@ parser.add_argument("--printname", help="Whether to print the name when you clic
                     default=False)
 parser.add_argument("--page", help="Initial page.",type=int,
                     default=None)
-# parser.add_argument('--resize',
-#                     help="Set to allow the resizing of the stamps with the window.",
-#                     action=argparse.BooleanOptionalAction,
-#                     default=False)
-# parser.add_argument('--fits',
-#                     help=("forces app to only use fits (--fits) "+
-#                           "or png/jp(e)g (--no-fits). "+
-#                           "If unset, the app searches for fits files "+
-#                           "in the path, but defaults to png/jp(e)g "+
-#                           "if no fits files are found."),
-#                     action=argparse.BooleanOptionalAction,
-#                     default=None)
+parser.add_argument('--resize',
+                    help="Set to allow the resizing of the stamps with the window.",
+                    action=argparse.BooleanOptionalAction,
+                    default=False)
 # parser.add_argument('--crop',
 #                     help="Lenth of the side of the cropped cutout in arcsec. Defaults to the whole frame",
 #                     type=float,
@@ -78,8 +70,6 @@ parser.add_argument("--page", help="Initial page.",type=int,
 
 
 args = parser.parse_args()
-args.fits = 'None'
-args.resize = False
 args.main_band = "VIS"
 args.color_bands = "Y,J,H"
 
@@ -250,6 +240,59 @@ class AlignDelegate(QtWidgets.QStyledItemDelegate):
         option.displayAlignment = Qt.AlignCenter
 
 
+class ClickableComboBox(QtWidgets.QComboBox):
+    "QComboBox that opens its dropdown on a click anywhere in its body, not just the arrow."
+    def mousePressEvent(self, event):
+        self.showPopup()
+        super().mousePressEvent(event)
+
+class CheckableSubMenu(QtWidgets.QMenu):
+    "One checkable-item list inside a dropdown menu."
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self._checkboxes = {}
+
+    def add_check_item(self, key, label, checked=False):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(6,2,6,2)
+        checkbox = QtWidgets.QCheckBox(label)
+        checkbox.setChecked(checked)
+        layout.addWidget(checkbox)
+        action = QtWidgets.QWidgetAction(self)
+        action.setDefaultWidget(widget)
+        self.addAction(action)
+        self._checkboxes[key] = checkbox
+        return checkbox
+
+    def checked_keys(self):
+        return [key for key, checkbox in self._checkboxes.items() if checkbox.isChecked()]
+
+class PanelOrderPicker(QtWidgets.QWidget):
+    "Dropdown letting the user choose which of the fixed per-thumbnail panels are shown."
+    selectionChanged = Signal()
+
+    def __init__(self, panel_keys, panel_labels, parent=None):
+        super().__init__(parent)
+        self.panel_keys = panel_keys
+        self.button = QtWidgets.QToolButton()
+        self.button.setText("Panels")
+        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.menu = CheckableSubMenu("Panels", self.button)
+        self.button.setMenu(self.menu)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(self.button)
+        for panel_key in panel_keys:
+            checkbox = self.menu.add_check_item(panel_key, panel_labels[panel_key], checked=True)
+            checkbox.toggled.connect(lambda checked: self.selectionChanged.emit())
+
+    def selected_panels(self):
+        "Currently-checked panels, in the fixed canonical order."
+        checked = self.menu.checked_keys()
+        return [key for key in self.panel_keys if key in checked]
+
+
 class MiniMosaicLabels(QtWidgets.QLabel):
     def __init__(self,
                 aspectRatioPolicy,
@@ -408,7 +451,7 @@ class MiniMosaics(QtWidgets.QLabel):
         self.setMinimumSize(self.user_minimum_size*3,self.user_minimum_size)
         self.setSizePolicy(sizePolicy,sizePolicy)
 
-        # self.setScaledContents(args.resize)
+        self.setScaledContents(args.resize)
         
         # qlabelSizePolicy = QtWidgets.QSizePolicy.MinimumExpanding    
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Minimum
@@ -546,16 +589,11 @@ class MiniMosaics(QtWidgets.QLabel):
         else:
             print('Inactive button')
 
-    def change_nvisiblebands(self, nvisiblebands):
-        # print(self.qlabels[:nvisiblebands])
-        # print(self.qlabels[nvisiblebands:])
-        for qlabel in self.qlabels[nvisiblebands:]:
-            qlabel.hide()
-        for qlabel in self.qlabels[:nvisiblebands]:
-            qlabel.show()
-        self.nvisiblebands = nvisiblebands
-        # self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
-        self.setMinimumSize(self.user_minimum_size*nvisiblebands,self.user_minimum_size)
+    def reorder_panels(self, band_order):
+        "Show exactly the panels in band_order (in self.bands' fixed relative order), hide the rest."
+        for band, qlabel in zip(self.bands, self.qlabels):
+            qlabel.setVisible(band in band_order)
+        self.setMinimumSize(self.user_minimum_size*len(band_order),self.user_minimum_size)
         self.updateGeometry()
 
     # def resizeEvent(self, event):
@@ -630,47 +668,18 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
-        if args.fits is None:
-            print("No filetype was specified, defaulting to .fits")
-            # print(join(self.stampspath, f'[{",".join(self.bands)}]','*.fits'))
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-            print(f"Classifying {len(self.listimage)} sources.")
-            if len(self.listimage) == 0:
-                print("No fits files were found, trying with .png, .jpg, and .jpeg")
-                self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
-                self.filetype='COMPRESSED'
-
-        elif args.fits:
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-        else:
-            self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
-            self.filetype='COMPRESSED'
+        self.listimage = sorted(set([os.path.basename(x) for x in (
+                                        glob.glob(join(color_bands_path, "*.fits"))+
+                                        glob.glob(join(base_band_path,'*.fits'))
+                                        )]))
+        self.filetype='FITS'
+        print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            print(f"No suitable files were found in {base_band_path} or {color_bands_path}")
-            sys.exit()
+            print(f"No FITS files found in {base_band_path} or {color_bands_path}. "
+                  "This tool computes multiband colors on the fly and requires FITS "
+                  "input -- PNG/JPG is not supported.")
+            sys.exit(1)
 
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
@@ -733,11 +742,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             'name': self.name,
             'ncols': self.ncols,
             'nrows': self.nrows,
-            'nvisiblebands':'2',
+            'panel_order':'',
             # 'gridsize': self.nrows, #Just for retrocompatibility.
         }
         self.config_dict = self.load_dict()
-        
+        if not self.config_dict['panel_order']:
+            self.config_dict['panel_order'] = ','.join(self.bands_to_plot)
+
         self.interesting_background_path = '.background_interesting.png'
         self.lens_background_path = '.background.png'
         self.deactivated_path = '.backgrounddark.png'
@@ -776,7 +787,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.fontsize = 18
         
         #### Buttons
-        self.cbscale = QtWidgets.QComboBox()
+        self.cbscale = ClickableComboBox()
         delegate = AlignDelegate(self.cbscale)
         self.cbscale.setItemDelegate(delegate)
         # self.cbscale.setEditable(True)
@@ -789,7 +800,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbscale.currentIndexChanged.connect(self.change_scale)
 
 
-        self.cbcolormap = QtWidgets.QComboBox()
+        self.cbcolormap = ClickableComboBox()
         delegate = AlignDelegate(self.cbcolormap)
         self.cbcolormap.setItemDelegate(delegate)
         # self.cbcolormap.setEditable(True)
@@ -803,19 +814,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbcolormap.setStyleSheet('background-color: gray')
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
-        self.cbnvisibleimages = QtWidgets.QComboBox()
-        delegate = AlignDelegate(self.cbnvisibleimages)
-        self.cbnvisibleimages.setItemDelegate(delegate)
-        # self.cbcolormap.setEditable(True)
-        self.cbnvisibleimages.setFont(QFont("Arial",self.fontsize))
-        line_edit = self.cbnvisibleimages.lineEdit()
-        # line_edit.setAlignment(Qt.AlignCenter)
-        # line_edit.setReadOnly(True)
-        self.listscales = ["1","2","3"]
-        self.cbnvisibleimages.addItems(self.listscales)
-        self.cbnvisibleimages.setCurrentIndex(self.listscales.index(self.config_dict['nvisiblebands']))
-        self.cbnvisibleimages.setStyleSheet('background-color: gray')
-        self.cbnvisibleimages.currentIndexChanged.connect(self.change_nvisiblebands)
+        panel_labels = {band: band for band in self.bands_to_plot}
+        panel_labels[self.composite_bands[0]] = 'HYVIS'
+        self.panel_picker = PanelOrderPicker(self.bands_to_plot, panel_labels)
+        self.panel_picker.button.setFont(QFont("Arial",self.fontsize))
+        self.panel_picker.button.setStyleSheet('background-color: gray')
+        for panel_key, checkbox in self.panel_picker.menu._checkboxes.items():
+            checkbox.setChecked(panel_key in self.config_dict['panel_order'].split(','))
+        self.panel_picker.selectionChanged.connect(self.change_panel_order)
 
 
         self.bprev = QtWidgets.QPushButton('Prev')
@@ -847,7 +853,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         button_bar_layout.addWidget(self.cbscale)
         button_bar_layout.addWidget(self.cbcolormap)
-        button_bar_layout.addWidget(self.cbnvisibleimages)
+        button_bar_layout.addWidget(self.panel_picker)
         button_bar_layout.addWidget(self.bprev)
         button_bar_layout.addWidget(self.bnext)
         page_counter_layout.addWidget(self.bclickcounter)
@@ -876,7 +882,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                     # image_width=66,
                                     # image_height=66,
                                     )
-            button.change_nvisiblebands(int(self.config_dict['nvisiblebands']))
+            button.reorder_panels(self.config_dict['panel_order'].split(','))
             stamp_grid_layout.addWidget(
                 button, i % self.nrows, i // self.nrows)
             self.buttons.append(button)
@@ -941,9 +947,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.update_grid(single_band_only=True)
         self.save_dict()
 
-    def change_nvisiblebands(self,i):
-        self.config_dict['nvisiblebands'] = self.cbnvisibleimages.currentText()
-        self.update_grid(single_band_only=True,change_nvisiblebands=True)
+    def change_panel_order(self):
+        self.config_dict['panel_order'] = ','.join(self.panel_picker.selected_panels())
+        self.update_grid(single_band_only=True,change_panel_order=True)
         self.save_dict()
 
     def my_label_clicked(self, event, i, new_class):
@@ -1077,7 +1083,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         df['time'] = np.zeros(np.shape(self.listimage))
         return df
 
-    def update_grid(self, single_band_only = False, change_nvisiblebands=False):
+    def update_grid(self, single_band_only = False, change_panel_order=False):
         start = self.config_dict['page']*self.gridarea
         n_images = self.gridarea
         self.prepare_pngs(n_images, single_band_only)
@@ -1099,8 +1105,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     button.paint_background_pixmap(self.status2background_dict[status])
                     button.set_candidate_status(status)
 
-                if change_nvisiblebands:
-                    button.change_nvisiblebands(int(self.config_dict['nvisiblebands']))
+                if change_panel_order:
+                    button.reorder_panels(self.config_dict['panel_order'].split(','))
                 self.df.iloc[object_index,
                              self.df.columns.get_loc('grid_pos')] = j
 

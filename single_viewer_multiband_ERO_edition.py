@@ -47,16 +47,15 @@ parser.add_argument('-N',"--name", help="name of the classifying session.",
 #                     default="Y,J,H")
 parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
-# parser.add_argument("--verbose", help="activates loging to terminal",
-#                     action="store_true", default=False)
-# parser.add_argument("--clean", help="cleans the legacy survey folder.",
-#                     action="store_true")
-# parser.add_argument('--fits',
-#                     help=("forces app to only use fits (--fits) or png/jp(e)g (--no-fits). "+
-#                     "If unset, the app searches for fits files in the path, but defaults to "+
-#                     "png/jp(e)g if no fits files are found."),
-#                     action=argparse.BooleanOptionalAction,
-#                     default=None)
+parser.add_argument("--verbose", help="activates loging to terminal",
+                    action="store_true", default=False)
+parser.add_argument("--clean", help="cleans the legacy survey folder.",
+                    action="store_true")
+parser.add_argument("--legacysurvey",
+                    help="Enables the Legacy Survey panel and downloads. Off by default "
+                    "(the Legacy Survey server can be unreliable); pass --legacysurvey to re-enable.",
+                    action=argparse.BooleanOptionalAction,
+                    default=False)
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 
@@ -64,18 +63,23 @@ args = parser.parse_args()
 
 args.main_band = 'VIS'
 args.color_bands = 'Y,J,H'
-args.verbose = False
-args.fits = None
 
 
 LEGACY_SURVEY_PATH = './Legacy_survey/'
 LEGACY_SURVEY_PIXEL_SIZE=0.262
+
+PANSTARRS_PATH = './PanSTARRS/'
+PANSTARRS_PIXEL_SIZE = 0.25
+PS1_FILENAMES_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1filenames.py'
+PS1_FITSCUT_URL = 'https://ps1images.stsci.edu/cgi-bin/fitscut.cgi'
+PS1_CUTOUTS_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1cutouts'
 
 SINGLE_BAND = 'single_band'
 MAIN_BAND = 'main_band'
 COMPOSITE_BAND = 'composite_band'
 EXTERNAL_BAND = 'external_band'
 _LEGACY_SURVEY_KEY = "Legacy Survey"
+_PANSTARRS_KEY = "PanSTARRS"
 _VIS_RESAMPLED_BAND = 'I'
 
 PATH_TO_CONFIG_FILE = ".config.json"
@@ -84,10 +88,11 @@ if args.reset_config:
     if os.path.exists(PATH_TO_CONFIG_FILE):
         os.remove(PATH_TO_CONFIG_FILE)
 
-# if args.clean:
-#     for f in glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")):
-#         if os.path.exists(f):
-#             os.remove(f)
+if args.clean:
+    for f in (glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")) +
+              glob.glob(join(PANSTARRS_PATH,"*.jpg"))):
+        if os.path.exists(f):
+            os.remove(f)
 
 def identity(x):
     return x
@@ -181,13 +186,38 @@ def find_filename_iteration(latest_filename, max_iterations = 100, initial_itera
     
     return f"-({int_match+1})"
 
-def legacy_survey_number_of_pixels(image_pixel_size, 
+def legacy_survey_number_of_pixels(image_pixel_size,
                                     image_dim,
                                     pixels_big_fov_ls=488): #sizes in ARCSECONDS
     n_pixels_in_ls = int(np.ceil(image_pixel_size*image_dim/LEGACY_SURVEY_PIXEL_SIZE))
     if n_pixels_in_ls >= pixels_big_fov_ls:
         pixels_big_fov_ls = 2*n_pixels_in_ls
     return n_pixels_in_ls, pixels_big_fov_ls
+
+PANSTARRS_BIG_FOV_ARCSEC = 1.4
+
+def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECONDS
+    n_pixels_in_ps1 = int(np.ceil(image_pixel_size*image_dim/PANSTARRS_PIXEL_SIZE))
+    pixels_big_fov_ps1 = int(np.ceil(PANSTARRS_BIG_FOV_ARCSEC/PANSTARRS_PIXEL_SIZE))
+    return n_pixels_in_ps1, pixels_big_fov_ps1
+
+def get_panstarrs_filenames(ra, dec, filters='grz'):
+    "Look up PS1 stack image filenames for ra/dec via the STScI ps1filenames.py service."
+    query_url = f"{PS1_FILENAMES_URL}?ra={ra}&dec={dec}&filters={filters}&type=stack"
+    with urllib.request.urlopen(query_url, timeout=10) as response:
+        lines = response.read().decode('utf-8').splitlines()
+    if len(lines) < 2:
+        return None
+    header = lines[0].split()
+    filename_col = header.index('filename')
+    filter_col = header.index('filter')
+    filenames = {}
+    for line in lines[1:]:
+        fields = line.split()
+        filenames[fields[filter_col]] = fields[filename_col]
+    if not all(f in filenames for f in filters):
+        return None
+    return filenames
 
 class SingleFetchWorker(QObject):
     successful_download = Signal()
@@ -208,44 +238,114 @@ class SingleFetchWorker(QObject):
             try:
                 urllib.request.urlretrieve(self.url, self.savefile)
                 self.successful_download.emit()
-            except urllib.error.HTTPError:
+            except (urllib.error.URLError, OSError):
                 with open(self.savefile,'w') as f:
                     Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
                 # self.failed_download.emit('No Legacy Survey data available.')
                 self.failed_download.emit()
         self.has_finished.emit()
 
+def join_nested(lines, sep=' | ', line_sep='\n'):
+    return line_sep.join(sep.join(map(str, sub)) for sub in lines)
+
 class BandNamesLabel(QtWidgets.QLabel):
-    def __init__(self,
-                main_band,
-                color_bands,
-                standard_color_band,
-                resampled_color_band,
-                *args,
-                **kwargs
-                ):
-        QtWidgets.QLabel.__init__(self, *args, **kwargs)
-        self.main_band = main_band
-        self.color_bands = color_bands
-        self.standard_color_band = standard_color_band
-        self.resampled_color_band = resampled_color_band
+    def updateText(self, status_plot_rows):
+        self.setText(join_nested(status_plot_rows))
 
-    def updateText(self,
-                    color_bands_status,
-                    standard_color_band_status):
-        label = ''
-        if color_bands_status:
-            for band in self.color_bands:
-                label += f"{band}-"
-            label = label[:-1]+'\n'
+def add_checkable_menu_action(menu, label, checked=False):
+    "Adds a plain checkable item (QWidgetAction-wrapped QCheckBox) to a QMenu, returns the checkbox."
+    widget = QtWidgets.QWidget()
+    layout = QtWidgets.QHBoxLayout(widget)
+    layout.setContentsMargins(6,2,6,2)
+    checkbox = QtWidgets.QCheckBox(label)
+    checkbox.setChecked(checked)
+    layout.addWidget(checkbox)
+    action = QtWidgets.QWidgetAction(menu)
+    action.setDefaultWidget(widget)
+    menu.addAction(action)
+    return checkbox
 
-        label += f'{self.main_band}-'
-        label += self.resampled_color_band.replace(_VIS_RESAMPLED_BAND,self.main_band)
+class CheckableSubMenu(QtWidgets.QMenu):
+    "One row's worth of checkable panel entries inside the PanelRowPicker menu."
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self._checkboxes = {}
 
-        if standard_color_band_status:
-            label += f'-{self.standard_color_band}'
+    def add_check_item(self, key, label, checked=False):
+        checkbox = add_checkable_menu_action(self, label, checked)
+        self._checkboxes[key] = checkbox
+        return checkbox
 
-        self.setText(label)
+    def checked_keys(self):
+        return [key for key, checkbox in self._checkboxes.items() if checkbox.isChecked()]
+
+    def set_checked(self, key, checked):
+        checkbox = self._checkboxes[key]
+        checkbox.blockSignals(True)
+        checkbox.setChecked(checked)
+        checkbox.blockSignals(False)
+
+class PanelRowPicker(QtWidgets.QWidget):
+    "Dropdown letting the user assign fixed panels to display rows, one row per menu."
+    rowChanged = Signal(str, str, bool) #row_key, panel_key, checked
+
+    def __init__(self, panel_keys, panel_labels, n_rows, parent=None):
+        super().__init__(parent)
+        self.panel_keys = panel_keys
+        self.row_keys = [f"row_{i+1}" for i in range(n_rows)]
+        self.button = QtWidgets.QToolButton()
+        self.button.setText("Panels")
+        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.menu = QtWidgets.QMenu(self.button)
+        self.button.setMenu(self.menu)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(self.button)
+
+        self.rows = {}
+        for row_key in self.row_keys:
+            submenu = CheckableSubMenu(row_key.replace('_',' ').title(), self.menu)
+            self.menu.addMenu(submenu)
+            for panel_key in panel_keys:
+                checkbox = submenu.add_check_item(panel_key, panel_labels[panel_key])
+                checkbox.toggled.connect(partial(self._on_toggled, row_key, panel_key))
+            self.rows[row_key] = submenu
+
+    def _on_toggled(self, row_key, panel_key, checked):
+        if checked:
+            for other_row_key, submenu in self.rows.items():
+                if other_row_key != row_key:
+                    submenu.set_checked(panel_key, False)
+        self.rowChanged.emit(row_key, panel_key, checked)
+
+    def row_panels(self, row_key):
+        return self.rows[row_key].checked_keys()
+
+    def set_row_panels(self, row_key, panel_keys):
+        submenu = self.rows[row_key]
+        for panel_key in self.panel_keys:
+            submenu.set_checked(panel_key, panel_key in panel_keys)
+
+    def add_toggle(self, label, checked=False):
+        "Adds a plain (non-row) checkable setting to the bottom of the menu, e.g. 'Large FoV'."
+        self.menu.addSeparator()
+        return add_checkable_menu_action(self.menu, label, checked)
+
+class SettingsMenu(QtWidgets.QWidget):
+    "Dropdown of independent checkable settings that aren't mutually exclusive (no rows)."
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.button = QtWidgets.QToolButton()
+        self.button.setText(title)
+        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.menu = QtWidgets.QMenu(self.button)
+        self.button.setMenu(self.menu)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(self.button)
+
+    def add_toggle(self, label, checked=False):
+        return add_checkable_menu_action(self.menu, label, checked)
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
@@ -254,8 +354,10 @@ class FetchThread(QThread):
             self.df = df
             self.initial_counter = initial_counter
             self.legacy_survey_path = LEGACY_SURVEY_PATH
+            self.panstarrs_path = PANSTARRS_PATH
             self.stampspath = args.path
-            self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,'*.fits'))])
+            self.main_band = args.main_band
+            self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,self.main_band,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
     def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale='0.262'):
         # residual = (residual and size == 47)
@@ -270,11 +372,32 @@ class FetchThread(QThread):
         print(url) if args.verbose else False
         try:
             urllib.request.urlretrieve(url, savefile)
-        except urllib.error.HTTPError:
+        except (urllib.error.URLError, OSError):
             with open(savefile,'w') as f:
                 self.im.save(f)
             return False
-        
+
+        return True
+
+    def download_panstarrs(self,ra,dec,size=240):
+        savename = 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
+        savefile = os.path.join(self.panstarrs_path, savename)
+        if os.path.exists(savefile):
+            print('File already exists:', savefile) if args.verbose else False
+            return True
+        try:
+            filenames = get_panstarrs_filenames(ra,dec,filters='grz')
+            if filenames is None:
+                raise urllib.error.URLError('no PS1 filenames found')
+            url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"+
+                   f"&ra={ra}&dec={dec}&size={size}&output_size=256&autoscale=99.5&format=jpg")
+            print(url) if args.verbose else False
+            urllib.request.urlretrieve(url, savefile)
+        except (urllib.error.URLError, OSError):
+            with open(savefile,'w') as f:
+                self.im.save(f)
+            return False
+
         return True
 
     def get_ra_dec(self,header):
@@ -300,14 +423,18 @@ class FetchThread(QThread):
                 ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
             else:
                 ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
-            n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size, 
-                                    image_dim,
-                                    pixels_big_fov_ls=488)
-                                    
-            self.download_legacy_survey(ra,dec,size=n_pixels_ls)
-            self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
-            self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
-            # self.download_legacy_survey(ra,dec,size=n_pixels_big_ls, residual=True) #uncomment for large FoV residuals.
+            n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
+            self.download_panstarrs(ra,dec,size=n_pixels_ps1)
+            self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
+
+            if args.legacysurvey:
+                n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size,
+                                        image_dim,
+                                        pixels_big_fov_ls=488)
+                self.download_legacy_survey(ra,dec,size=n_pixels_ls)
+                self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
+                self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
+                # self.download_legacy_survey(ra,dec,size=n_pixels_big_ls, residual=True) #uncomment for large FoV residuals.
             index+=1
         return 0
 
@@ -332,6 +459,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'legacysurvey':False,
                     'legacybigarea':False,
                     'legacyresiduals':False,
+                    'panstarrs':False,
                     'prefetch':False,
                     'autonext':True,
                     'colormap':'gist_gray',
@@ -339,8 +467,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'keyboardshortcuts':False,
                     'colorbandsvisible':False,
                     'nisprgbvisible':False,
+                    'row_1':'',
+                    'row_2':'',
+                    'row_3':'',
                         }
         self.config_dict = self.load_dict()
+        if not args.legacysurvey:
+            self.config_dict['legacysurvey'] = False
         self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
 
         self.ds9_comm_backend = "xpa"
@@ -366,53 +499,23 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.color_bands = args.color_bands.split(",")
         self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
         self.legacy_survey_path = LEGACY_SURVEY_PATH
+        self.panstarrs_path = PANSTARRS_PATH
         self.random_seed = args.seed
 
         color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
-        if args.fits is None:
-            print("No filetype was specified, defaulting to .fits")
-            # print(join(self.stampspath, f'[{",".join(self.bands)}]','*.fits'))
-            
-
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-            print(f"Classifying {len(self.listimage)} sources.")
-            if len(self.listimage) == 0:
-                print("No fits files were found, trying with .png, .jpg, and .jpeg")
-                self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
-                self.filetype='COMPRESSED'
-
-        elif args.fits:
-            self.listimage = sorted(set([os.path.basename(x) for x in (
-                                            glob.glob(join(color_bands_path, "*.fits"))+
-                                            glob.glob(join(base_band_path,'*.fits')) 
-                                            )]))
-            self.filetype='FITS'
-        else:
-            self.listimage = sorted([os.path.basename(x)
-                                for x in (glob.glob(join(base_band_path, '*.png')) +
-                                          glob.glob(join(base_band_path, '*.jpg')) +
-                                          glob.glob(join(base_band_path, '*.jpeg')) +
-                                          glob.glob(join(color_bands_path, '*.png')) +
-                                          glob.glob(join(color_bands_path, '*.jpg')) +
-                                          glob.glob(join(color_bands_path, '*.jpeg'))
-                                         )])
-            self.filetype='COMPRESSED'
-
+        self.listimage = sorted(set([os.path.basename(x) for x in (
+                                        glob.glob(join(color_bands_path, "*.fits"))+
+                                        glob.glob(join(base_band_path,'*.fits'))
+                                        )]))
+        self.filetype='FITS'
+        print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            sys.exit()
+            print(f"No FITS files found in {base_band_path} or {color_bands_path}. "
+                  "This tool computes multiband colors on the fly and requires FITS "
+                  "input -- PNG/JPG is not supported.")
+            sys.exit(1)
         if self.config_dict['counter'] > len(self.listimage):
             self.config_dict['counter'] = 0
         
@@ -425,17 +528,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 "".join(self.color_bands_vis[::-1]),
                                 "".join(self.color_bands[::-1]),
                                 ] #For now, only one composite band.
-        # self.external_bands = [_LEGACY_SURVEY_KEY]
-        self.external_bands = [] #I deactivated LS for this version
+        self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
         self.all_bands = [self.main_band,
                           *self.composite_bands,
                           *self.color_bands,
                           _VIS_RESAMPLED_BAND,
-                          *self.external_bands]
+                          *self.external_bands,
+                          _PANSTARRS_KEY]
         self.band_types = ({self.main_band: MAIN_BAND} |
                           {band: COMPOSITE_BAND for band in self.composite_bands} |
-                          {band: SINGLE_BAND for band in self.color_bands} | 
-                          {band: EXTERNAL_BAND for band in self.external_bands})
+                          {band: SINGLE_BAND for band in self.color_bands} |
+                          {band: EXTERNAL_BAND for band in self.external_bands} |
+                          {_PANSTARRS_KEY: EXTERNAL_BAND})
 
         # print(self.all_bands)
         self.df = self.obtain_df()
@@ -452,48 +556,49 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.label_layout = QtWidgets.QHBoxLayout()
         # self.plot_layout_area = QtWidgets.QGridLayout()
         self.plot_layout_area = QtWidgets.QVBoxLayout()
-        self.plot_layout_0 = QtWidgets.QHBoxLayout()
+        self.plot_layout_0_Widget = QtWidgets.QWidget()
+        self.plot_layout_0 = QtWidgets.QHBoxLayout(self.plot_layout_0_Widget)
         self.plot_layout_1_Widget = QtWidgets.QWidget()
         self.plot_layout_1 = QtWidgets.QHBoxLayout(self.plot_layout_1_Widget)
+        self.plot_layout_2_Widget = QtWidgets.QWidget()
+        self.plot_layout_2 = QtWidgets.QHBoxLayout(self.plot_layout_2_Widget)
+        self.panel_row_layout = {'row_1': self.plot_layout_0, 'row_2': self.plot_layout_1, 'row_3': self.plot_layout_2}
         button_layout = QtWidgets.QVBoxLayout()
+        button_layout.setSpacing(0)
+        button_layout.setContentsMargins(0,0,0,0)
         button_row0_layout = QtWidgets.QHBoxLayout()
         button_row10_layout = QtWidgets.QHBoxLayout()
         button_row11_layout = QtWidgets.QHBoxLayout()
-        button_row2_layout = QtWidgets.QHBoxLayout()
-        button_row3_layout = QtWidgets.QHBoxLayout()
+        for row_layout in (button_row0_layout, button_row10_layout, button_row11_layout):
+            row_layout.setSpacing(10)
+            row_layout.setContentsMargins(0,0,0,0)
 
         self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
         self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
         self.counter_widget.setStyleSheet("font-size: 14px")
         
         # self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
-        band2bandname_dict = {band: band for band in self.all_bands}
-        band2bandname_dict['HYI'] = 'HYVIS'
+        self.band2bandname_dict = {band: band for band in self.all_bands}
+        self.band2bandname_dict['HYI'] = 'HYVIS'
 
         # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _VIS_RESAMPLED_BAND]}
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
-        self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(self.main_band,
-                                                             self.color_bands,
-                                                             self.composite_bands[1],
-                                                             self.composite_bands[0],
-                                                             alignment=Qt.AlignCenter)
+        self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(alignment=Qt.AlignCenter)
         # print(f"{self.all_bands = }")
         font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
         for band in [self.main_band, _VIS_RESAMPLED_BAND]:
             font[band].setPointSize(16)
             self.label_plot[band].setFont(font[band])
 
-        # self.label_layout.addWidget(self.label_plot[_LEGACY_SURVEY_KEY])
         self.label_layout.addWidget(self.label_plot[self.main_band])
         self.label_layout.addWidget(self.label_plot[_VIS_RESAMPLED_BAND])
 
 
         self.plot_layout_area.setSpacing(0)
         self.plot_layout_area.setContentsMargins(0,0,0,0)
-        self.plot_layout_0.setSpacing(0)
-        self.plot_layout_0.setContentsMargins(0,0,0,0)
-        self.plot_layout_1.setSpacing(0)
-        self.plot_layout_1.setContentsMargins(0,0,0,0)
+        for row_layout in self.panel_row_layout.values():
+            row_layout.setSpacing(0)
+            row_layout.setContentsMargins(0,0,0,0)
 
 
         self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
@@ -510,17 +615,32 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         # print(f"{self.composite_bands = }")
-        for band in [self.main_band, *self.composite_bands]:
+        self.panel_keys = [self.main_band, *self.composite_bands, *self.color_bands, _PANSTARRS_KEY]
+        for band in self.panel_keys:
+            self.canvas[band].setStyleSheet('background-color: black')
+
+        for band in self.external_bands: #LS always lives in row 1, gated by its own checkbox.
             self.canvas[band].setStyleSheet('background-color: black')
             self.plot_layout_0.addWidget(self.canvas[band],1)
 
-        for band in self.color_bands:
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_1.addWidget(self.canvas[band],1)
+        no_row_config_saved = not any(self.config_dict[row_key] for row_key in self.panel_row_layout)
+        default_row_panels = {'row_1': [self.main_band, self.composite_bands[0]], 'row_2': [], 'row_3': []}
+        visible_panels = set()
+        for row_key, row_layout in self.panel_row_layout.items():
+            saved = self.config_dict[row_key]
+            row_panels = default_row_panels[row_key] if no_row_config_saved else [b for b in saved.split(',') if b in self.panel_keys]
+            for band in row_panels:
+                row_layout.addWidget(self.canvas[band],1)
+            self.config_dict[row_key] = ','.join(row_panels)
+            visible_panels.update(row_panels)
 
-        for band in self.external_bands:
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band],1)
+        for band in self.panel_keys: #Panels not assigned to any row start parked (hidden) in row 1.
+            if band not in visible_panels:
+                self.plot_layout_0.addWidget(self.canvas[band],1)
+                self.canvas[band].hide()
+
+        self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
+        self.config_dict['nisprgbvisible'] = self.composite_bands[-1] in visible_panels
 
         # print(f"{self.all_bands = }")
 
@@ -547,120 +667,74 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bnext.clicked.connect(self.next)
         list_button_row0_layout.append(self.bnext)
 
-        self.bds9 = QtWidgets.QPushButton('ds9')
-        self.bds9.clicked.connect(self.open_ds9)
-        if self.filetype != 'FITS':
-            self.bds9.setEnabled(False)
-        list_button_row0_layout.append(self.bds9)
+        self.tools_button = QtWidgets.QToolButton()
+        self.tools_button.setText("Tools")
+        self.tools_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        tools_menu = QtWidgets.QMenu(self.tools_button)
+        tools_menu.addAction("Open ds9", self.open_ds9)
+        tools_menu.addAction("Open LS", self.viewls)
+        tools_menu.addAction("Open PanSTARRS", self.viewPanSTARRS)
+        tools_menu.addAction("Open ESASky", self.viewESASky)
+        self.tools_button.setMenu(tools_menu)
+        list_button_row0_layout.append(self.tools_button)
 
-        self.bviewls = QtWidgets.QPushButton('Open LS')
-        self.bviewls.clicked.connect(self.viewls)
-        if self.filetype != 'FITS':
-            self.bviewls.setEnabled(False)
-        list_button_row0_layout.append(self.bviewls)
+        self.panel_picker = PanelRowPicker(self.panel_keys, self.band2bandname_dict, n_rows=3)
+        for row_key in self.panel_row_layout:
+            self.panel_picker.set_row_panels(row_key, [b for b in self.config_dict[row_key].split(',') if b])
+        self.panel_picker.rowChanged.connect(self.on_panel_row_changed)
+        self.blsarea = self.panel_picker.add_toggle("Large FoV", checked=self.config_dict['legacybigarea'])
+        self.blsarea.clicked.connect(self.checkbox_ls_change_area)
+        list_button_row0_layout.append(self.panel_picker)
 
-        self.bviewESA = QtWidgets.QPushButton('Open ESASky')
-        self.bviewESA.clicked.connect(self.viewESASky)
-        if self.filetype != 'FITS':
-            self.bviewESA.setEnabled(False)
-        list_button_row0_layout.append(self.bviewESA)
-
-        self.bhidecolorbands = QtWidgets.QCheckBox('Show NISP bands')
-        self.bhidecolorbands.clicked.connect(self.checkbox_show_color_bands)
-        if self.filetype == 'FITS':
-            if not self.config_dict['colorbandsvisible']:
-                    self.plot_layout_1_Widget.hide()
+        if args.legacysurvey:
+            self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
+            self.blegsur.clicked.connect(self.checkbox_legacy_survey)
+            if self.filetype == 'FITS':
+                if not self.config_dict['legacysurvey']:
+                        self.canvas[_LEGACY_SURVEY_KEY].hide()
+                else:
+                        self.canvas[_LEGACY_SURVEY_KEY].show()
+                        self.blegsur.toggle()
+                        self.set_legacy_survey()
             else:
-                    self.plot_layout_1_Widget.show()
-                    self.bhidecolorbands.toggle()
-        else:
-            self.config_dict['colorbandsvisible'] = False
-            self.bhidecolorbands.setEnabled(False)
-            self.plot_layout_1_Widget.hide()
-        list_button_row0_layout.append(self.bhidecolorbands)
+                self.config_dict['legacysurvey'] = False
+                self.blegsur.setEnabled(False)
+                self.canvas[_LEGACY_SURVEY_KEY].hide()
+            list_button_row0_layout.append(self.blegsur)
 
+        #PanSTARRS is one of self.panel_keys now, so its visibility/placement is already
+        #handled by the row-assignment above -- just fetch it if it started out visible.
+        self.config_dict['panstarrs'] = _PANSTARRS_KEY in visible_panels
+        if self.config_dict['panstarrs']:
+            self.set_panstarrs()
 
-        self.bshownisprgb = QtWidgets.QCheckBox('Show NISP RGB')
-        self.bshownisprgb.clicked.connect(self.checkbox_show_nisp_band)
-        if self.filetype == 'FITS':
-            if not self.config_dict['nisprgbvisible']:
-                    self.canvas[self.composite_bands[-1]].hide()
+        if args.legacysurvey:
+            self.blsresidual = QtWidgets.QCheckBox("Residuals")
+            self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
+            if self.filetype == 'FITS':
+                if self.config_dict['legacyresiduals']:
+                    self.blsresidual.toggle()
+                    if self.config_dict['legacysurvey']:
+                        self.set_legacy_survey()
             else:
-                    self.canvas[self.composite_bands[-1]].show()
-                    self.bshownisprgb.toggle()
-        else:
-            self.config_dict['nisprgbvisible'] = False
-            self.bshownisprgb.setEnabled(False)
-            self.canvas[self.composite_bands[-1]].hide()
-        list_button_row0_layout.append(self.bshownisprgb)
+                self.blsresidual.setEnabled(False)
+                self.config_dict['legacyresiduals'] = False
+            list_button_row0_layout.append(self.blsresidual)
 
-        # self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
-        # self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-        # if self.filetype == 'FITS':
-        #     if not self.config_dict['legacysurvey']:
-        #             self.label_plot[_LEGACY_SURVEY_KEY].hide()
-        #             self.canvas[_LEGACY_SURVEY_KEY].hide()
-        #     else:
-        #             self.label_plot[_LEGACY_SURVEY_KEY].show()
-        #             self.canvas[_LEGACY_SURVEY_KEY].show()
-        #             self.blegsur.toggle()
-        #             self.set_legacy_survey()
-        # else:
-        #     self.config_dict['legacysurvey'] = False
-        #     self.blegsur.setEnabled(False)
-        #     self.label_plot[_LEGACY_SURVEY_KEY].hide()
-        #     self.canvas[_LEGACY_SURVEY_KEY].hide()
-        # list_button_row0_layout.append(self.blegsur)
+        self.settings_menu = SettingsMenu("Settings")
+        self.bprefetch = self.settings_menu.add_toggle("Pre-fetch")
+        self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
+        if self.config_dict['prefetch']:
+            self.config_dict['prefetch'] = False
+            self.prefetch_legacysurvey()
+            self.bprefetch.setChecked(True)
 
-
-    #     self.blsarea = QtWidgets.QCheckBox("Large FoV")
-    #     self.blsarea.clicked.connect(self.checkbox_ls_change_area)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['legacybigarea']:
-    #             self.blsarea.toggle()
-    #             if self.config_dict['legacysurvey']:
-    #                 self.set_legacy_survey()
-    #     else:
-    #         self.blsarea.setEnabled(False)
-    #         self.config_dict['legacybigarea'] = False
-    #     list_button_row0_layout.append(self.blsarea)
-
-    #     self.blsresidual = QtWidgets.QCheckBox("Residuals")
-    #     self.blsresidual.clicked.connect(self.checkbox_ls_use_residuals)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['legacyresiduals']:
-    #             self.blsresidual.toggle()
-    #             if self.config_dict['legacysurvey']:
-    #                 self.set_legacy_survey()
-    #     else:
-    #         self.blsresidual.setEnabled(False)
-    #         self.config_dict['legacyresiduals'] = False
-    #     list_button_row0_layout.append(self.blsresidual)
-
-    #     self.bprefetch = QtWidgets.QCheckBox("Pre-fetch")
-    #     self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-    #     if self.filetype == 'FITS':
-    #         if self.config_dict['prefetch']:
-    #             self.config_dict['prefetch'] = False
-    #             self.prefetch_legacysurvey()
-    #             self.bprefetch.toggle()
-    #     else:
-    #         self.bprefetch.setEnabled(False)
-    #         self.config_dict['prefetch'] = False
-    #     list_button_row0_layout.append(self.bprefetch)
-
-
-        self.bautopass = QtWidgets.QCheckBox("Auto-next")
+        self.bautopass = self.settings_menu.add_toggle("Auto-next", checked=self.config_dict['autonext'])
         self.bautopass.clicked.connect(self.checkbox_auto_next)
-        if self.config_dict['autonext']:
-            self.bautopass.toggle()
-        list_button_row0_layout.append(self.bautopass)
 
-        self.bkeyboardshortcuts = QtWidgets.QCheckBox("Keyboard shortcuts")
+        self.bkeyboardshortcuts = self.settings_menu.add_toggle("Keyboard shortcuts", checked=self.config_dict['keyboardshortcuts'])
         self.bkeyboardshortcuts.clicked.connect(self.checkbox_keyboard_shortcuts)
-        if self.config_dict['keyboardshortcuts']:
-            self.bkeyboardshortcuts.toggle()
-        list_button_row0_layout.append(self.bkeyboardshortcuts)
+        list_button_row0_layout.append(self.settings_menu)
 
         list_classifications = []
         self.bsurelens = QtWidgets.QPushButton('A')
@@ -740,71 +814,35 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #                           'NL':None,
         #                           'None':None}
 
-        list_scales_buttons = []
-        self.blinear = QtWidgets.QPushButton('Linear')
-        self.blinear.clicked.connect(partial(self.set_scale,self.blinear,'identity'))
-        list_scales_buttons.append(self.blinear)
+        self.scale_options = {'Linear':'identity', 'Sqrt':'sqrt', 'Cbrt':'cbrt', 'Log':'log'}
+        scale2display = {v: k for k, v in self.scale_options.items()}
+        self.cbscale = QtWidgets.QComboBox()
+        self.cbscale.addItems(self.scale_options.keys())
+        self.cbscale.setCurrentText(scale2display.get(self.config_dict['scale'], 'Log'))
+        self.cbscale.currentTextChanged.connect(self.change_scale)
+        list_button_row0_layout.append(self.cbscale)
 
-        self.bsqrt = QtWidgets.QPushButton('Sqrt')
-        self.bsqrt.clicked.connect(partial(self.set_scale,self.bsqrt,'sqrt'))
-        list_scales_buttons.append(self.bsqrt)
-
-        self.bcbrt = QtWidgets.QPushButton('Cbrt')
-        self.bcbrt.clicked.connect(partial(self.set_scale,self.bcbrt,'cbrt'))
-        list_scales_buttons.append(self.bcbrt)
-
-        self.blog = QtWidgets.QPushButton('Log')
-        self.blog.clicked.connect(partial(self.set_scale,self.blog,'log'))
-        list_scales_buttons.append(self.blog)
-
-        list_colormap_buttons = []
-        self.bInverted = QtWidgets.QPushButton('Yarg')
-        self.bInverted.clicked.connect(partial(self.set_colormap,self.bInverted,'gist_yarg'))
-        list_colormap_buttons.append(self.bInverted)
-
-        self.bBb8 = QtWidgets.QPushButton('Hot')
-        self.bBb8.clicked.connect(partial(self.set_colormap,self.bBb8,'hot'))
-        list_colormap_buttons.append(self.bBb8)
-
-        self.bGray = QtWidgets.QPushButton('Gray')
-        self.bGray.clicked.connect(partial(self.set_colormap,self.bGray,'gist_gray'))
-        list_colormap_buttons.append(self.bGray)
-
-        self.bViridis = QtWidgets.QPushButton('Viridis')
-        self.bViridis.clicked.connect(partial(self.set_colormap,self.bViridis,'viridis'))
-        list_colormap_buttons.append(self.bViridis)
-
-        self.scale2button = {'identity':self.blinear,
-                            'sqrt':self.bsqrt,
-                            'log':self.blog,
-                            'log10':self.blog,
-                            'cbrt':self.bcbrt,
-                            # 'asinh2': self.basinh
-                            }
-        self.colormap2button = {'gist_yarg':self.bInverted,
-                                'hot':self.bBb8,
-                                'gist_gray':self.bGray,
-                                'viridis': self.bViridis}
+        self.colormap_options = {'Yarg':'gist_yarg', 'Hot':'hot', 'Gray':'gist_gray', 'Viridis':'viridis'}
+        colormap2display = {v: k for k, v in self.colormap_options.items()}
+        self.cbcolormap = QtWidgets.QComboBox()
+        self.cbcolormap.addItems(self.colormap_options.keys())
+        self.cbcolormap.setCurrentText(colormap2display.get(self.config_dict['colormap'], 'Gray'))
+        self.cbcolormap.currentTextChanged.connect(self.change_colormap)
+        list_button_row0_layout.append(self.cbcolormap)
 
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
-        self.bactivatedscale = self.scale2button[self.config_dict['scale']]
-        self.bactivatedcolormap = self.colormap2button[self.config_dict['colormap']]
 
         grade = self.df.at[self.config_dict['counter'],'classification']
         if grade is not None and grade != 'None' and grade != 'Empty':
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
- 
+
         # subgrade = self.df.at[self.config_dict['counter'],'subclassification']
         # if subgrade is not None and subgrade != 'None' and grade != 'Empty':
         #     self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
         #     if self.bactivatedsubclassification is not None:
         #         self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-
-
-        self.bactivatedscale.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-        self.bactivatedcolormap.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
 
         #Keyboard shortcuts
         self.ksurelens = QShortcut(QKeySequence('1'), self)
@@ -871,28 +909,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # for button in list_subclassifications:
         #     button_row11_layout.addWidget(button)
 
-        for button in list_scales_buttons:
-            button_row2_layout.addWidget(button)
-
-        for button in list_colormap_buttons:
-            button_row3_layout.addWidget(button)
-
         button_layout_spacing = 0
         button_layout.addLayout(button_row0_layout, button_layout_spacing)
         button_layout.addLayout(button_row10_layout, button_layout_spacing)
         button_layout.addLayout(button_row11_layout, button_layout_spacing)
-        if self.filetype == 'FITS':
-            button_layout.addLayout(button_row2_layout, button_layout_spacing)
-            button_layout.addLayout(button_row3_layout, button_layout_spacing)
-        else:
-            print("Use fits images to change colormap and colorscale.")
 
 
         # self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
         # self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
 
+        self.plot_layout_area.addWidget(self.plot_layout_0_Widget,1)
         self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
-        self.plot_layout_area.addLayout(self.plot_layout_0,1,)
+        self.plot_layout_area.addWidget(self.plot_layout_2_Widget,1)
+        self.update_row_visibility()
 
         main_layout.addLayout(self.label_layout, 2)
         main_layout.addLayout(self.plot_layout_area, 88)
@@ -903,7 +932,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def prefetch_legacysurvey(self):
         if self.config_dict['prefetch']:
-            self.fetchthread.terminate()
+            self.fetchthread.interrupt()
             self.config_dict['prefetch'] = False
         else:
             self.fetchthread = FetchThread(self.df,self.config_dict['counter'],) #Always store in an object.
@@ -911,6 +940,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.fetchthread.setTerminationEnabled(True)
             self.fetchthread.start()
             self.config_dict['prefetch'] = True
+
+    def closeEvent(self, event):
+        if hasattr(self, 'fetchthread') and self.fetchthread.isRunning():
+            self.fetchthread.interrupt()
+            self.fetchthread.wait(5000)
+        event.accept()
 
     def save_dict(self):
         with open(PATH_TO_CONFIG_FILE, 'w') as f:
@@ -1017,19 +1052,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return "{0:.2f} x {0:.2f}".format(size_in_sky.to(units))
 
     def plot_legacy_survey(self, savefile, title):
-        self.label_plot[_LEGACY_SURVEY_KEY].setText(title)
         self.ax[_LEGACY_SURVEY_KEY].cla()
         if savefile != self.legacy_filename:
             return
         self.ax[_LEGACY_SURVEY_KEY].imshow(mpimg.imread(savefile))
+        self.ax[_LEGACY_SURVEY_KEY].set_title(title, color='white', fontsize=10)
         self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
         self.canvas[_LEGACY_SURVEY_KEY].draw()
 
     def plot_no_legacy_survey(self, title='Waiting for data',
                             colormap='Greys_r'):
-        self.label_plot[_LEGACY_SURVEY_KEY].setText(title)
         self.ax[_LEGACY_SURVEY_KEY].cla()
         self.ax[_LEGACY_SURVEY_KEY].imshow(np.zeros(self.images[self.main_band].shape), cmap=colormap)
+        self.ax[_LEGACY_SURVEY_KEY].set_title(title, color='white', fontsize=10)
         self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
         self.canvas[_LEGACY_SURVEY_KEY].draw()
 
@@ -1083,76 +1118,134 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print(type(E))
             # raise
 
+    def generate_panstarrs_filename_url(self,ra,dec,size=240):
+        savename = 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
+        savefile = os.path.join(self.panstarrs_path, savename)
+        print(f"Quering for {savename} ")
+        if os.path.exists(savefile):
+            return savefile, ''
+        self.status.showMessage("Downloading PanSTARRS jpeg.")
+        filenames = get_panstarrs_filenames(ra,dec,filters='grz')
+        if filenames is None:
+            return savefile, None
+        url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"+
+               f"&ra={ra}&dec={dec}&size={size}&output_size=256&autoscale=99.5&format=jpg")
+        return savefile, url
+
+    def plot_panstarrs(self, savefile, title):
+        self.ax[_PANSTARRS_KEY].cla()
+        if savefile != self.panstarrs_filename:
+            return
+        self.ax[_PANSTARRS_KEY].imshow(mpimg.imread(savefile))
+        self.ax[_PANSTARRS_KEY].set_title(title, color='white', fontsize=10)
+        self.ax[_PANSTARRS_KEY].set_axis_off()
+        self.canvas[_PANSTARRS_KEY].draw()
+
+    def plot_no_panstarrs(self, title='Waiting for data',
+                            colormap='Greys_r'):
+        self.ax[_PANSTARRS_KEY].cla()
+        self.ax[_PANSTARRS_KEY].imshow(np.zeros(self.images[self.main_band].shape), cmap=colormap)
+        self.ax[_PANSTARRS_KEY].set_title(title, color='white', fontsize=10)
+        self.ax[_PANSTARRS_KEY].set_axis_off()
+        self.canvas[_PANSTARRS_KEY].draw()
 
     @Slot()
-    def checkbox_show_color_bands(self):
-        self.config_dict['colorbandsvisible'] = not self.config_dict['colorbandsvisible']
-        if not self.config_dict['colorbandsvisible']:
-                self.plot()
-                self.plot_layout_1_Widget.hide()
-        else:
-            if not self.color_bands_already_plotted:
-                # for band in self.color_bands:
-                #     self.plot_band(band)
-                self.plot()
-                self.color_bands_already_plotted = True
-            self.plot_layout_1_Widget.show()
+    def set_panstarrs(self):
+        n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
+                                    np.max(self.images[self.main_band].shape))
 
+        size = pixels_big_fov_ps1 if self.config_dict['legacybigarea'] else n_pixels_in_ps1
+        size_in_sky = (PANSTARRS_PIXEL_SIZE * u.arcsec) * size
+        try:
+            savefile, url = self.generate_panstarrs_filename_url(self.ra,self.dec,size=size)
+
+            title = self.generate_title(
+                                        size_in_sky = size_in_sky,
+                                        bigarea=self.config_dict['legacybigarea'])
+            if url == '':
+                self.panstarrs_filename = savefile
+                self.plot_panstarrs(savefile, title)
+                return
+            if url is None:
+                self.plot_no_panstarrs(title='No PanSTARRS data available', colormap='viridis')
+                return
+            self.plot_no_panstarrs()
+            self.panstarrs_filename = savefile
+            self.workerThreadPS = QThread(parent=self)
+            self.singleFetchWorkerPS = SingleFetchWorker(url, savefile, title)
+            self.workerThreadPS.finished.connect(self.singleFetchWorkerPS.deleteLater)
+            self.workerThreadPS.started.connect(self.singleFetchWorkerPS.run)
+
+            self.singleFetchWorkerPS.moveToThread(self.workerThreadPS)
+
+            self.singleFetchWorkerPS.successful_download.connect(partial(self.plot_panstarrs, savefile, title))
+            self.singleFetchWorkerPS.failed_download.connect(partial(self.plot_no_panstarrs,title='No PanSTARRS data available',
+                            colormap='viridis'))
+            self.workerThreadPS.finished.connect(self.workerThreadPS.deleteLater)
+            self.workerThreadPS.setTerminationEnabled(True)
+
+            self.workerThreadPS.start()
+            self.workerThreadPS.quit()
+
+        except FileNotFoundError as E:
+            self.plot_no_panstarrs()
+            # raise
+        except Exception as E:
+            print("Exception while setting up the PanSTARRS image:")
+            print(E.args)
+            print(type(E))
+            # raise
+
+
+    def update_row_visibility(self):
+        "Row 2/3 show themselves automatically whenever a panel is checked into them."
+        self.plot_layout_1_Widget.setVisible(bool(self.config_dict['row_2']))
+        self.plot_layout_2_Widget.setVisible(bool(self.config_dict['row_3']))
+
+    def visible_rows_summary(self):
+        "List-of-lists of friendly panel names, one list per currently-shown row, empty rows dropped."
+        rows = [[self.band2bandname_dict[b] for b in self.config_dict[row_key].split(',') if b]
+                for row_key in self.panel_row_layout]
+        return [row for row in rows if row]
 
     @Slot()
-    def checkbox_show_nisp_band(self):
-        self.config_dict['nisprgbvisible'] = not self.config_dict['nisprgbvisible']
-        relevantWidget = self.canvas[self.composite_bands[-1]]
-        if not self.config_dict['nisprgbvisible']:
-            # print(self.canvas[self.composite_bands[-1]].sizePolicy())
-            # print(self.canvas[self.composite_bands[-1]].size())
-            
-            relevantWidget.hide()
-            self.plot_layout_0.removeWidget(relevantWidget)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
-                                                        self.config_dict['nisprgbvisible'])
-            # for band in [self.main_band, *self.composite_bands]:
-            #     widget = self.canvas[band]
-            #     print(band, widget.minimumSize(), widget.sizeHint(), widget.sizePolicy())
-
-            # for band in [self.main_band, *self.composite_bands]:
-            #     self.canvas[band].hide()
-            #     self.plot_layout_0.removeWidget(self.canvas[band])
-            # for band in [self.main_band, *self.composite_bands[:-1]]:
-            #     self.canvas[band].setStyleSheet('background-color: black')
-            #     self.plot_layout_0.addWidget(self.canvas[band])
-            #     self.canvas[band].show()
-
+    def on_panel_row_changed(self, row_key, panel_key, checked):
+        canvas = self.canvas[panel_key]
+        for row_layout in self.panel_row_layout.values():
+            row_layout.removeWidget(canvas)
+        if checked:
+            self.panel_row_layout[row_key].addWidget(canvas,1)
+            canvas.show()
         else:
-            relevantWidget.show()
-            self.plot_layout_0.addWidget(relevantWidget,1)
-            self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
-                                                        self.config_dict['nisprgbvisible'])
-            # self.clear_layout()
-            # relevantWidget.
-            # self.canvas[self.composite_bands[-1]].resize(self.canvas[self.main_band].width(),
-            #                                              self.canvas[self.main_band].height())
-            
-            # for band in [self.main_band, *self.composite_bands]:
-            #     self.canvas[band].hide()
-            #     self.plot_layout_0.removeWidget(self.canvas[band])
+            canvas.hide()
+            self.plot_layout_0.addWidget(canvas,1) #park hidden panels in row 1
 
-            # for band in [self.main_band, *self.composite_bands]:
-            #     self.canvas[band].show()
-                
-            # for band in [self.main_band, *self.composite_bands]:
-            #     self.plot_layout_0.addWidget(self.canvas[band],1)
-        # self.updateGeometry()
-            
+        for rk in self.panel_row_layout:
+            self.config_dict[rk] = ','.join(self.panel_picker.row_panels(rk))
+        visible_panels = set(self.config_dict['row_1'].split(',') +
+                             self.config_dict['row_2'].split(',') +
+                             self.config_dict['row_3'].split(','))
+
+        was_colorbandsvisible = self.config_dict['colorbandsvisible']
+        was_panstarrs = self.config_dict['panstarrs']
+        self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
+        self.config_dict['nisprgbvisible'] = self.composite_bands[-1] in visible_panels
+        self.config_dict['panstarrs'] = _PANSTARRS_KEY in visible_panels
+        if self.config_dict['colorbandsvisible'] and not was_colorbandsvisible and not self.color_bands_already_plotted:
+            self.plot()
+            self.color_bands_already_plotted = True
+        if self.config_dict['panstarrs'] and not was_panstarrs:
+            self.set_panstarrs()
+        self.update_row_visibility()
+        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
+        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
 
 
     @Slot()
     def checkbox_legacy_survey(self):
         if self.config_dict['legacysurvey']:
-                self.label_plot[_LEGACY_SURVEY_KEY].hide()
                 self.canvas[_LEGACY_SURVEY_KEY].hide()
         else:
-                self.label_plot[_LEGACY_SURVEY_KEY].show()
                 self.canvas[_LEGACY_SURVEY_KEY].show()
                 self.set_legacy_survey()
         self.config_dict['legacysurvey'] = not self.config_dict['legacysurvey']
@@ -1162,6 +1255,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.config_dict['legacybigarea'] = not self.config_dict['legacybigarea']
         if self.config_dict['legacysurvey']:
             self.set_legacy_survey()
+        if self.config_dict['panstarrs']:
+            self.set_panstarrs()
 
     @Slot()
     def checkbox_ls_use_residuals(self):
@@ -1195,36 +1290,35 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def viewls(self):
         webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=14&manga&spectra&desi-spec-edr&desi-spec-dr1".format(self.ra,self.dec))
-    
+
+    @Slot()
+    def viewPanSTARRS(self):
+        n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
+                                    np.max(self.images[self.main_band].shape))
+        size = pixels_big_fov_ps1 if self.config_dict['legacybigarea'] else n_pixels_in_ps1
+        webbrowser.open(f"{PS1_CUTOUTS_URL}?pos={self.ra}+{self.dec}&filter=color&filetypes=stack"+
+                         f"&size={size}&output_size=0&verbose=0&autoscale=99.500000&catlist=")
+
     @Slot()
     def viewESASky(self):
-        website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov=0.02&cooframe=J2000&sci=true&lang=en&"
+        fov = (self.image_pixel_size * np.max(self.images[self.main_band].shape)) / 3600
+        website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov={fov}&cooframe=J2000&sci=true&lang=en&"
         # website += "&euclid_image=perseus" #Use this to add the Euclid ERO overlay. Sadly, this is always centered on the same coordinate.
         webbrowser.open(website)
 
     @Slot()
-    def set_scale(self, button, scale):
-        if button != self.bactivatedscale:
-            self.scale = self.scale2funct[scale]
-            self.replot()
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedscale.setStyleSheet(self.original_button_style)
-            # self.bactivatedscale.setStyleSheet("background-color : white;color : black;")
-            
-            self.bactivatedscale = button
-            self.config_dict['scale']= scale
-            self.save_dict()
+    def change_scale(self, display_text):
+        scale = self.scale_options[display_text]
+        self.scale = self.scale2funct[scale]
+        self.config_dict['scale'] = scale
+        self.replot()
+        self.save_dict()
 
     @Slot()
-    def set_colormap(self, button, colormap):
-        if button != self.bactivatedcolormap:
-            self.config_dict['colormap'] = colormap
-            self.replot()
-            button.setStyleSheet("background-color : {};color : white;".format(self.buttoncolor))
-            self.bactivatedcolormap.setStyleSheet(self.original_button_style)
-            # self.bactivatedcolormap.setStyleSheet("background-color : white;color : black;")
-            self.bactivatedcolormap = button
-            self.save_dict()
+    def change_colormap(self, display_text):
+        self.config_dict['colormap'] = self.colormap_options[display_text]
+        self.replot()
+        self.save_dict()
 
     def background_rms_image(self, cb, image):
         xg, yg = np.shape(image)
@@ -1409,10 +1503,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             band = band.replace(_VIS_RESAMPLED_BAND,self.main_band)
             # label += f'{band}-'
         
-        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.config_dict['colorbandsvisible'],
-                                                        self.config_dict['nisprgbvisible'])
-        # self.label_plot[_VIS_RESAMPLED_BAND].setText(label[:-1])
-        # print(self.label_plot[_VIS_RESAMPLED_BAND].text())
+        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
 
     def plot_band(self, band, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
@@ -1563,8 +1654,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.filename = self.listimage[self.config_dict['counter']]
         self.bottom_row_bands_already_plotted = False
         self.plot()
-        # if self.config_dict['legacysurvey']:
-        #     self.set_legacy_survey()
+        if self.config_dict['legacysurvey']:
+            self.set_legacy_survey()
+        if self.config_dict['panstarrs']:
+            self.set_panstarrs()
         self.update_classification_buttoms()
         # self.update_subclassification_buttoms()
         self.update_counter()
