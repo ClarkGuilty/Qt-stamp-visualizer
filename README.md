@@ -135,6 +135,15 @@ optional arguments:
 -N NAME, --name NAME  Name of the classifying session.
 --reset-config        Removes the configuration dictionary during startup.
 -s SEED, --seed SEED  Seed used to shuffle the images. (default: None).
+--classifications CLASSIFICATIONS
+                      Classification buttons: semicolon-separated MAJOR=KEY or
+                      MAJOR:SUB=KEY entries. A bare MAJOR=KEY (or empty SUB)
+                      makes a major-class button; MAJOR:SUB=KEY makes a
+                      subclass button under that major, setting both the
+                      classification and subclassification when clicked.
+                      (default: "A=1;B=2;C=3;X=4;I=5", i.e. today's 5 buttons).
+                      Example with subclasses:
+                      "A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"
 
 
 </code></pre>
@@ -155,3 +164,7 @@ optional arguments:
 | *PgUp*    | *k*     | Previous object |
 | *c*       |         | Copy filename   |
 | *ctrl+c*  |         | Copy coordinates|
+
+The classification/subclassification buttons and their shortcuts above are just the
+default `--classifications` scheme; pass your own to change the classes, subclasses,
+and keys (see the CLI options above).

@@ -58,11 +58,38 @@ parser.add_argument("--legacysurvey",
                     default=False)
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
+parser.add_argument('--classifications',
+                    help='Classification buttons: semicolon-separated MAJOR=KEY or MAJOR:SUB=KEY entries. '
+                    'A bare MAJOR=KEY (or empty SUB) makes a major-class button; MAJOR:SUB=KEY makes a '
+                    'subclass button under that major, setting both fields when clicked. '
+                    'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"',
+                    default="A=1;B=2;C=3;X=4;I=5")
 
 args = parser.parse_args()
 
 args.main_band = 'VIS'
 args.color_bands = 'Y,J,H'
+
+args.major_classes = []  # list of (major, key) tuples, in declared order
+args.subclasses = []  # list of (major, sub, key) tuples, in declared order
+seen_keys = {}  # key -> list of labels, for the duplicate-key warning
+for entry in args.classifications.split(';'):
+    entry = entry.strip()
+    if not entry:
+        continue
+    rest, _, key = entry.rpartition('=')
+    key = key.strip()
+    major, _, sub = rest.partition(':')
+    major, sub = major.strip(), sub.strip()
+    label = f"{major}:{sub}" if sub else major
+    seen_keys.setdefault(key, []).append(label)
+    if sub:
+        args.subclasses.append((major, sub, key))
+    else:
+        args.major_classes.append((major, key))
+for key, labels in seen_keys.items():
+    if len(labels) > 1:
+        print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
 
 
 LEGACY_SURVEY_PATH = './Legacy_survey/'
@@ -243,6 +270,38 @@ class SingleFetchWorker(QObject):
                     Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
                 # self.failed_download.emit('No Legacy Survey data available.')
                 self.failed_download.emit()
+        self.has_finished.emit()
+
+class PanstarrsFetchWorker(QObject):
+    """Like SingleFetchWorker, but also does the ps1filenames.py lookup in the
+    background thread -- that lookup is a network call too, and must not run
+    on the GUI thread (it used to, and froze the UI for up to 10s whenever a
+    stamp had no PS1 coverage, since a "no data" result is never cached)."""
+    successful_download = Signal()
+    failed_download = Signal()
+    has_finished = Signal()
+
+    def __init__(self, ra, dec, savefile, size):
+        super(PanstarrsFetchWorker, self).__init__()
+        self.ra = ra
+        self.dec = dec
+        self.savefile = savefile
+        self.size = size
+
+    @Slot()
+    def run(self):
+        try:
+            filenames = get_panstarrs_filenames(self.ra, self.dec, filters='grz')
+            if filenames is None:
+                raise urllib.error.URLError('no PS1 filenames found')
+            url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"
+                   f"&ra={self.ra}&dec={self.dec}&size={self.size}&output_size=256&autoscale=99.5&format=jpg")
+            urllib.request.urlretrieve(url, self.savefile)
+            self.successful_download.emit()
+        except (urllib.error.URLError, OSError):
+            with open(self.savefile,'w') as f:
+                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
+            self.failed_download.emit()
         self.has_finished.emit()
 
 def join_nested(lines, sep=' | ', line_sep='\n'):
@@ -737,82 +796,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         list_button_row0_layout.append(self.settings_menu)
 
         list_classifications = []
-        self.bsurelens = QtWidgets.QPushButton('A')
-        self.bsurelens.clicked.connect(partial(self.classify, 'A','A') )
-        list_classifications.append(self.bsurelens)
-        self.original_button_style = self.bsurelens.styleSheet()
+        self.dict_class2button = {'None': None}
+        self.original_button_style = None
+        for major, key in args.major_classes:
+            button = QtWidgets.QPushButton(major)
+            button.clicked.connect(partial(self.classify, major, major))
+            list_classifications.append(button)
+            self.dict_class2button[major] = button
+            if self.original_button_style is None:
+                self.original_button_style = button.styleSheet()
 
-        self.bmaybelens = QtWidgets.QPushButton('B')
-        self.bmaybelens.clicked.connect(partial(self.classify, 'B','B'))
-        list_classifications.append(self.bmaybelens)
+        list_subclassifications = []
+        self.dict_subclass2button = {'None': None}
+        for major, sub, key in args.subclasses:
+            button = QtWidgets.QPushButton(sub)
+            button.clicked.connect(partial(self.classify, major, sub))
+            list_subclassifications.append(button)
+            self.dict_subclass2button[sub] = button
+            if self.original_button_style is None:
+                self.original_button_style = button.styleSheet()
 
-        self.bflexion = QtWidgets.QPushButton('C')
-        self.bflexion.clicked.connect(partial(self.classify, 'C','C'))
-        list_classifications.append(self.bflexion)
-
-        self.bnonlens = QtWidgets.QPushButton('X')
-        self.bnonlens.clicked.connect(partial(self.classify, 'X','X'))
-        list_classifications.append(self.bnonlens)
-
-
-        self.binteresting = QtWidgets.QPushButton('Interesting')
-        self.binteresting.clicked.connect(partial(self.classify, 'I','I'))
-        list_classifications.append(self.binteresting)
-
-        # list_subclassifications = []
-        # self.bMerger = QtWidgets.QPushButton('Merger')
-        # self.bMerger.clicked.connect(partial(self.classify, 'X','Merger') )
-        # list_subclassifications.append(self.bMerger)
-
-        # self.bSpiral = QtWidgets.QPushButton('Spiral')
-        # self.bSpiral.clicked.connect(partial(self.classify, 'X','Spiral'))
-        # list_subclassifications.append(self.bSpiral)
-
-        # self.bRing = QtWidgets.QPushButton('Ring')
-        # self.bRing.clicked.connect(partial(self.classify, 'X','Ring'))
-        # list_subclassifications.append(self.bRing)
-
-        # self.bElliptical = QtWidgets.QPushButton('Elliptical')
-        # self.bElliptical.clicked.connect(partial(self.classify, 'X','Elliptical'))
-        # list_subclassifications.append(self.bElliptical)
-
-        # self.bDisc = QtWidgets.QPushButton('Disc')
-        # self.bDisc.clicked.connect(partial(self.classify, 'X','Disc'))
-        # list_subclassifications.append(self.bDisc)
-
-        # self.bEdgeon = QtWidgets.QPushButton('Edge-on')
-        # self.bEdgeon.clicked.connect(partial(self.classify, 'X','Edge-on'))
-        # list_subclassifications.append(self.bEdgeon)
-
-        self.dict_class2button = {
-                                 'A':self.bsurelens,
-                                  'B':self.bmaybelens,
-                                  'C':self.bflexion,
-                                  'X':self.bnonlens,
-                                 'SL':self.bsurelens,
-                                  'ML':self.bmaybelens,
-                                  'FL':self.bflexion,
-                                  'NL':self.bnonlens,
-                                  'I':self.binteresting,
-
-                                 'None':None}
-
-        # self.dict_subclass2button = {'Merger':self.bMerger,
-        #                           'Spiral':self.bSpiral,
-        #                           'Ring':self.bRing,
-        #                           'Elliptical':self.bElliptical,
-        #                           'Disc':self.bDisc,
-        #                           'Edge-on':self.bEdgeon,
-        #                           'A':None,
-        #                           'B':None,
-        #                           'C':None,
-        #                           'X':None,
-        #                           'I':None,
-        #                           'SL':None,
-        #                           'ML':None,
-        #                           'FL':None,
-        #                           'NL':None,
-        #                           'None':None}
+        for major, _ in args.major_classes:
+            self.dict_subclass2button.setdefault(major, None)
 
         self.scale_options = {'Linear':'identity', 'Sqrt':'sqrt', 'Cbrt':'cbrt', 'Log':'log'}
         scale2display = {v: k for k, v in self.scale_options.items()}
@@ -838,45 +843,23 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
-        # subgrade = self.df.at[self.config_dict['counter'],'subclassification']
-        # if subgrade is not None and subgrade != 'None' and grade != 'Empty':
-        #     self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
-        #     if self.bactivatedsubclassification is not None:
-        #         self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
+            self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
+            if self.bactivatedsubclassification is not None:
+                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
         #Keyboard shortcuts
-        self.ksurelens = QShortcut(QKeySequence('1'), self)
-        self.ksurelens.activated.connect(partial(self.keyClassify, 'A','A'))
+        self.classification_shortcuts = []
+        for major, key in args.major_classes:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(partial(self.keyClassify, major, major))
+            self.classification_shortcuts.append(shortcut)
 
-        self.kmaybelens = QShortcut(QKeySequence('2'), self)
-        self.kmaybelens.activated.connect(partial(self.keyClassify, 'B','B'))
-
-        self.kflexion = QShortcut(QKeySequence('3'), self)
-        self.kflexion.activated.connect(partial(self.keyClassify, 'C','C'))
-
-        self.knonlens = QShortcut(QKeySequence('4'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'X','X'))
-
-        self.knonlens = QShortcut(QKeySequence('5'), self)
-        self.knonlens.activated.connect(partial(self.keyClassify, 'I','I'))
-
-#         self.kMerger = QShortcut(QKeySequence('a'), self)
-#         self.kMerger.activated.connect(partial(self.keyClassify, 'X','Merger'))
-
-#         self.kSpiral = QShortcut(QKeySequence('s'), self)
-#         self.kSpiral.activated.connect(partial(self.keyClassify, 'X','Spiral'))
-
-#         self.kRing = QShortcut(QKeySequence('d'), self)
-#         self.kRing.activated.connect(partial(self.keyClassify, 'X','Ring'))
-
-#         self.kElliptical = QShortcut(QKeySequence('f'), self)
-#         self.kElliptical.activated.connect(partial(self.keyClassify, 'X','Elliptical'))
-
-#         self.kDisc = QShortcut(QKeySequence('g'), self)
-#         self.kDisc.activated.connect(partial(self.keyClassify, 'X','Disc'))
-
-#         self.kEdgeon = QShortcut(QKeySequence('h'), self)
-#         self.kEdgeon.activated.connect(partial(self.keyClassify, 'X','Edge-on'))
+        for major, sub, key in args.subclasses:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(partial(self.keyClassify, major, sub))
+            self.classification_shortcuts.append(shortcut)
 
 
         self.kNext = QShortcut(QKeySequence(QKeySequence.MoveToPreviousPage), self)
@@ -906,8 +889,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for button in list_classifications:
             button_row10_layout.addWidget(button)
 
-        # for button in list_subclassifications:
-        #     button_row11_layout.addWidget(button)
+        for button in list_subclassifications:
+            button_row11_layout.addWidget(button)
 
         button_layout_spacing = 0
         button_layout.addLayout(button_row0_layout, button_layout_spacing)
@@ -942,9 +925,33 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['prefetch'] = True
 
     def closeEvent(self, event):
-        if hasattr(self, 'fetchthread') and self.fetchthread.isRunning():
-            self.fetchthread.interrupt()
-            self.fetchthread.wait(5000)
+        # Each of these threads is wired to `finished.connect(thread.deleteLater)`,
+        # so once a thread finishes on its own, Qt destroys the underlying C++
+        # object on the next event-loop turn -- but the Python attribute is left
+        # pointing at that now-dead wrapper. Calling isRunning()/wait() on it then
+        # raises "Internal C++ object already deleted", so every check here must
+        # tolerate that instead of crashing.
+        if hasattr(self, 'fetchthread'):
+            try:
+                if self.fetchthread.isRunning():
+                    self.fetchthread.interrupt()
+                    self.fetchthread.wait(5000)
+            except RuntimeError:
+                pass
+        # workerThread/workerThreadPS run a single one-shot network call (Legacy
+        # Survey / PanSTARRS lookup+download) with no loop to cooperatively
+        # interrupt -- just wait for them so Qt doesn't destroy a still-running
+        # QThread (which aborts the process with "QThread: Destroyed while
+        # thread is still running").
+        for thread_attr in ('workerThread', 'workerThreadPS'):
+            thread = getattr(self, thread_attr, None)
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    thread.wait(5000)
+            except RuntimeError:
+                pass
         event.accept()
 
     def save_dict(self):
@@ -1010,7 +1017,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         cnt = self.config_dict['counter']# - 1
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
-        # self.df.at[cnt,'subclassification'] = subgrade
+        self.df.at[cnt,'subclassification'] = subgrade
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
@@ -1022,7 +1029,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.df.to_csv(self.df_name)
 
         self.update_classification_buttoms()
-        # self.update_subclassification_buttoms()
+        self.update_subclassification_buttoms()
         
         if self.config_dict['autonext']:
             self.next()
@@ -1122,15 +1129,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         savename = 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
         savefile = os.path.join(self.panstarrs_path, savename)
         print(f"Quering for {savename} ")
-        if os.path.exists(savefile):
-            return savefile, ''
-        self.status.showMessage("Downloading PanSTARRS jpeg.")
-        filenames = get_panstarrs_filenames(ra,dec,filters='grz')
-        if filenames is None:
-            return savefile, None
-        url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"+
-               f"&ra={ra}&dec={dec}&size={size}&output_size=256&autoscale=99.5&format=jpg")
-        return savefile, url
+        return savefile, os.path.exists(savefile)
 
     def plot_panstarrs(self, savefile, title):
         self.ax[_PANSTARRS_KEY].cla()
@@ -1157,22 +1156,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         size = pixels_big_fov_ps1 if self.config_dict['legacybigarea'] else n_pixels_in_ps1
         size_in_sky = (PANSTARRS_PIXEL_SIZE * u.arcsec) * size
         try:
-            savefile, url = self.generate_panstarrs_filename_url(self.ra,self.dec,size=size)
+            savefile, cached = self.generate_panstarrs_filename_url(self.ra,self.dec,size=size)
 
             title = self.generate_title(
                                         size_in_sky = size_in_sky,
                                         bigarea=self.config_dict['legacybigarea'])
-            if url == '':
-                self.panstarrs_filename = savefile
+            self.panstarrs_filename = savefile
+            if cached:
                 self.plot_panstarrs(savefile, title)
                 return
-            if url is None:
-                self.plot_no_panstarrs(title='No PanSTARRS data available', colormap='viridis')
-                return
             self.plot_no_panstarrs()
-            self.panstarrs_filename = savefile
+            self.status.showMessage("Downloading PanSTARRS jpeg.")
             self.workerThreadPS = QThread(parent=self)
-            self.singleFetchWorkerPS = SingleFetchWorker(url, savefile, title)
+            self.singleFetchWorkerPS = PanstarrsFetchWorker(self.ra, self.dec, savefile, size)
             self.workerThreadPS.finished.connect(self.singleFetchWorkerPS.deleteLater)
             self.workerThreadPS.started.connect(self.singleFetchWorkerPS.run)
 
@@ -1616,7 +1612,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 if "Unnamed:" in key:
                     keys_to_drop.append(key)
             df.drop(keys_to_drop,axis=1)
-            if (len(self.listimage) == len(df) and 
+            if 'subclassification' not in df.columns:
+                df['subclassification'] = 'Empty'
+            if (len(self.listimage) == len(df) and
                 np.all(self.listimage == df['file_name'].values)):
                 return df
             else:
@@ -1634,7 +1632,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
         self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification',
-                # 'subclassification',
+                'subclassification',
                 'ra','dec',
                 # 'comment',
                 'image_dim',
@@ -1642,7 +1640,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df = pd.DataFrame(columns=dfc)
         df['file_name'] = self.listimage
         df['classification'] = ['Empty'] * len(self.listimage)
-        # df['subclassification'] = ['Empty'] * len(self.listimage)
+        df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
         # df['comment'] = ['Empty'] * len(self.listimage)
@@ -1659,7 +1657,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['panstarrs']:
             self.set_panstarrs()
         self.update_classification_buttoms()
-        # self.update_subclassification_buttoms()
+        self.update_subclassification_buttoms()
         self.update_counter()
         self.save_dict()
         cnt = self.config_dict['counter']# - 1
@@ -1718,7 +1716,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def update_subclassification_buttoms(self):
         subgrade = self.df.at[self.config_dict['counter'],'subclassification']
         if self.bactivatedsubclassification is not None:
-            self.bactivatedsubclassification.setStyleSheet("background-color : white;color : black;")
+            self.bactivatedsubclassification.setStyleSheet(self.original_button_style)
 
 #        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
         if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':

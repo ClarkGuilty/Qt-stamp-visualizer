@@ -8,6 +8,17 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward — the JPG/PNG fallback pipeline has been removed from both viewers.
 
+## Configurable classes/subclasses (1-by-1 tool)
+* Classification buttons are no longer hardcoded to A/B/C/X/Interesting. The new
+  `--classifications` flag takes a single semicolon-separated string of
+  `MAJOR=KEY` (major-only button) or `MAJOR:SUB=KEY` (subclass button, tied to
+  a major) entries, e.g. `"A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"`. Clicking
+  a subclass button sets both `classification` and `subclassification` in one
+  click. Default matches today's 5-button scheme exactly.
+* Revived the previously dead `subclassification` CSV column and its button row
+  (second button row, below the major classes); old CSVs without that column
+  are backfilled with `'Empty'` on load.
+
 ## New: PanSTARRS panel (1-by-1 tool)
 * In-app cutout panel (fetched via the STScI PS1 image cutout API), alongside the existing
   Legacy Survey panel.
