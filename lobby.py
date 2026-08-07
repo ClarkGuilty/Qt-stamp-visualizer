@@ -4,6 +4,7 @@ mosaic-then-1-by-1 chain), configure the 1-by-1 classification scheme, and
 extract "positive" classifications into a fresh directory for the next stage.
 """
 
+import glob
 import json
 import os
 import sys
@@ -34,6 +35,37 @@ DEFAULT_SCHEME_ROWS = [
     {'type': 'major', 'major': 'X', 'sub': '', 'key': '4', 'positive': False},
     {'type': 'major', 'major': 'I', 'sub': '', 'key': '5', 'positive': False},
 ]
+
+
+def count_vis_images(source_path):
+    return len({os.path.basename(f) for f in glob.glob(join(source_path, "VIS", "*.fits"))})
+
+
+def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
+    """Best-effort prediction of the CSV the mosaic tool just wrote.
+
+    Replicates mosaic_viewer_ERO_edition.py's own obtain_df() base_filename
+    formula exactly -- including its no-seed-branch bug where nrows is
+    silently dropped and replaced by a literal '99'. Rather than also
+    replicating obtain_df()'s pre-run file-selection quirks (natural-sort +
+    picking the second-to-last match, its file_iteration suffix logic for
+    mismatched datasets), this just globs for anything matching the base
+    filename pattern and returns the most recently modified match -- mosaic
+    rewrites its CSV to disk on every single click, so "most recently
+    modified" reliably identifies the file that session just wrote.
+    Returns None if nothing matches, so the caller can fall back to asking
+    the user.
+    """
+    name = name or ''
+    n_images = count_vis_images(source_path)
+    if seed is None:
+        base_filename = f'classification_mosaic_autosave_{name}_{n_images}_{ncols}_99'
+    else:
+        base_filename = f'classification_mosaic_autosave_{name}_{n_images}_{ncols}_{nrows}_{seed}'
+    matches = glob.glob(join(REPO_ROOT, "Classifications", f"{base_filename}*.csv"))
+    if not matches:
+        return None
+    return max(matches, key=os.path.getmtime)
 
 
 def build_mosaic_argv(path, name, seed, ncols, nrows):
@@ -402,12 +434,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self._launched_process = proc
 
     def _launch_stage1_chained(self, path, name, seed):
-        argv = build_mosaic_argv(path, name, seed,
-                                  self.ncols_spin.value(), self.nrows_spin.value())
+        ncols, nrows = self.ncols_spin.value(), self.nrows_spin.value()
+        argv = build_mosaic_argv(path, name, seed, ncols, nrows)
         self._stage1_extraction_context = {
             'source_path': path,
             'name': name,
             'seed': seed,
+            'ncols': ncols,
+            'nrows': nrows,
         }
         self.stage1_proc = QProcess(self)
         self.stage1_proc.setWorkingDirectory(REPO_ROOT)
@@ -424,15 +458,23 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.stage_status_label.setText(f"Stage 1 finished (exit code {exit_code}).")
         self.log(f"Stage 1 (mosaic) finished with exit code {exit_code}.")
 
-        csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select the classification CSV produced by the mosaic tool",
-            join(REPO_ROOT, "Classifications"), "CSV files (*.csv)")
-        if not csv_path:
-            self.log("Extraction cancelled -- no CSV selected.")
-            return
-
         context = self._stage1_extraction_context or {}
         source_path = context.get('source_path', self.path_edit.text().strip())
+
+        csv_path = predict_mosaic_csv_path(
+            source_path, context.get('name'), context.get('ncols'),
+            context.get('nrows'), context.get('seed'))
+        if csv_path:
+            self.log(f"Auto-detected classification CSV: {csv_path}")
+        else:
+            self.log("Could not auto-detect the classification CSV -- please select it.")
+            csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Select the classification CSV produced by the mosaic tool",
+                join(REPO_ROOT, "Classifications"), "CSV files (*.csv)")
+            if not csv_path:
+                self.log("Extraction cancelled -- no CSV selected.")
+                return
+
         output_path = self.output_path_edit.text().strip()
         if not output_path:
             self.log("Please set an output path before running the chained workflow.")
