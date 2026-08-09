@@ -68,13 +68,15 @@ def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
     return max(matches, key=os.path.getmtime)
 
 
-def build_mosaic_argv(path, name, seed, ncols, nrows):
+def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False):
     argv = [join(REPO_ROOT, "mosaic_viewer_ERO_edition.py"),
             "-p", path, "-l", str(ncols), "-m", str(nrows)]
     if name:
         argv += ["-N", name]
     if seed is not None:
         argv += ["-s", str(seed)]
+    if printname:
+        argv += ["--printname"]
     return argv
 
 
@@ -102,7 +104,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'run_mode_index': MODE_CHAINED,
             'mosaic_ncols': 5,
             'mosaic_nrows': 8,
-            'mosaic_lens_positive': False,
+            'mosaic_printname': False,
+            'mosaic_uninteresting_positive': False,
+            'mosaic_lens_positive': True,
             'mosaic_interesting_positive': False,
             'copy_instead_of_symlink': False,
             'scheme_rows': DEFAULT_SCHEME_ROWS,
@@ -123,13 +127,27 @@ class LobbyWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
 
-        layout.addWidget(self._build_mode_group())
-        layout.addWidget(self._build_data_group())
+        # Two columns side by side, rather than one tall stack: the left
+        # column holds the compact setup groups, the right column holds the
+        # classification table (which is inherently the tallest widget) --
+        # so the window's overall height tracks one column, not the sum of
+        # everything.
+        top_row = QtWidgets.QHBoxLayout()
+
+        left_col = QtWidgets.QVBoxLayout()
+        left_col.addWidget(self._build_session_group())
         self.mosaic_group = self._build_mosaic_group()
-        layout.addWidget(self.mosaic_group)
+        left_col.addWidget(self.mosaic_group)
+        left_col.addWidget(self._build_extraction_group())
+        left_col.addStretch(1)
+
+        right_col = QtWidgets.QVBoxLayout()
         self.single_group = self._build_single_group()
-        layout.addWidget(self.single_group)
-        layout.addWidget(self._build_extraction_group())
+        right_col.addWidget(self.single_group)
+
+        top_row.addLayout(left_col, 1)
+        top_row.addLayout(right_col, 2)
+        layout.addLayout(top_row, stretch=1)
 
         action_bar = QtWidgets.QHBoxLayout()
         self.run_btn = QtWidgets.QPushButton("Run")
@@ -143,14 +161,16 @@ class LobbyWindow(QtWidgets.QMainWindow):
         log_layout = QtWidgets.QVBoxLayout(log_group)
         self.log_view = QtWidgets.QPlainTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(120)
         log_layout.addWidget(self.log_view)
         layout.addWidget(log_group)
 
         self.setCentralWidget(central)
 
-    def _build_mode_group(self):
-        group = QtWidgets.QGroupBox("Run mode")
-        vbox = QtWidgets.QVBoxLayout(group)
+    def _build_session_group(self):
+        group = QtWidgets.QGroupBox("Session")
+        form = QtWidgets.QFormLayout(group)
+
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([
             "Mosaic only",
@@ -158,12 +178,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             "Mosaic → 1-by-1 (chained)",
         ])
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
-        vbox.addWidget(self.mode_combo)
-        return group
-
-    def _build_data_group(self):
-        group = QtWidgets.QGroupBox("Data")
-        form = QtWidgets.QFormLayout(group)
+        form.addRow("Run mode:", self.mode_combo)
 
         path_row = QtWidgets.QHBoxLayout()
         self.path_edit = QtWidgets.QLineEdit()
@@ -201,8 +216,13 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.nrows_spin.setValue(8)
         form.addRow("Rows per page:", self.nrows_spin)
 
+        self.printname_cb = QCheckBox("Print name on click (printname)")
+        form.addRow(self.printname_cb)
+
+        self.mosaic_uninteresting_positive_cb = QCheckBox("Treat 'Uninteresting' (code 0) as positive")
         self.mosaic_lens_positive_cb = QCheckBox("Treat 'Lens' (code 1) as positive")
         self.mosaic_interesting_positive_cb = QCheckBox("Treat 'Interesting' (code 2) as positive")
+        form.addRow(self.mosaic_uninteresting_positive_cb)
         form.addRow(self.mosaic_lens_positive_cb)
         form.addRow(self.mosaic_interesting_positive_cb)
 
@@ -396,6 +416,16 @@ class LobbyWindow(QtWidgets.QMainWindow):
     def _current_seed(self):
         return self.seed_spin.value() if self.seed_enabled_cb.isChecked() else None
 
+    def _mosaic_positive_values(self):
+        positive_values = set()
+        if self.mosaic_uninteresting_positive_cb.isChecked():
+            positive_values.add(0)
+        if self.mosaic_lens_positive_cb.isChecked():
+            positive_values.add(1)
+        if self.mosaic_interesting_positive_cb.isChecked():
+            positive_values.add(2)
+        return positive_values
+
     def _set_controls_enabled(self, enabled):
         for widget in (self.run_btn, self.mode_combo, self.path_edit,
                        self.path_browse_btn, self.mosaic_group, self.single_group):
@@ -415,7 +445,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         if mode == MODE_MOSAIC_ONLY:
             argv = build_mosaic_argv(path, name, seed,
-                                      self.ncols_spin.value(), self.nrows_spin.value())
+                                      self.ncols_spin.value(), self.nrows_spin.value(),
+                                      printname=self.printname_cb.isChecked())
             self._launch_fire_and_forget(argv)
         elif mode == MODE_SINGLE_ONLY:
             classifications_string, _ = self.build_classifications_string()
@@ -424,18 +455,31 @@ class LobbyWindow(QtWidgets.QMainWindow):
         elif mode == MODE_CHAINED:
             self._launch_stage1_chained(path, name, seed)
 
+    def _wire_process_output_logging(self, proc):
+        """Stream a launched tool's stdout/stderr into the lobby's own log
+        pane -- QProcess pipes a child's output by default rather than
+        inheriting the parent's terminal, so without this, printed output
+        (e.g. --printname) would go nowhere visible at all."""
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: self.log(bytes(proc.readAllStandardOutput())
+                              .decode(errors='replace').rstrip('\n')))
+
     def _launch_fire_and_forget(self, argv):
         proc = QProcess(self)
         proc.setWorkingDirectory(REPO_ROOT)
         proc.setProgram(sys.executable)
         proc.setArguments(argv)
+        self._wire_process_output_logging(proc)
+        proc.finished.connect(lambda code, status: self.log(f"Process exited (code {code})."))
         self.log(f"Launching: {sys.executable} {' '.join(argv)}")
         proc.start()
         self._launched_process = proc
 
     def _launch_stage1_chained(self, path, name, seed):
         ncols, nrows = self.ncols_spin.value(), self.nrows_spin.value()
-        argv = build_mosaic_argv(path, name, seed, ncols, nrows)
+        argv = build_mosaic_argv(path, name, seed, ncols, nrows,
+                                  printname=self.printname_cb.isChecked())
         self._stage1_extraction_context = {
             'source_path': path,
             'name': name,
@@ -447,6 +491,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.stage1_proc.setWorkingDirectory(REPO_ROOT)
         self.stage1_proc.setProgram(sys.executable)
         self.stage1_proc.setArguments(argv)
+        self._wire_process_output_logging(self.stage1_proc)
         self.stage1_proc.finished.connect(self.on_stage1_finished)
         self._set_controls_enabled(False)
         self.stage_status_label.setText("Stage 1 (mosaic) running...")
@@ -480,11 +525,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.log("Please set an output path before running the chained workflow.")
             return
 
-        positive_values = set()
-        if self.mosaic_lens_positive_cb.isChecked():
-            positive_values.add(1)
-        if self.mosaic_interesting_positive_cb.isChecked():
-            positive_values.add(2)
+        positive_values = self._mosaic_positive_values()
 
         result = extraction.extract(
             csv_path, source_path, output_path, positive_values,
@@ -515,11 +556,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if not output_path:
             return
 
-        positive_values = set()
-        if self.mosaic_lens_positive_cb.isChecked():
-            positive_values.add(1)
-        if self.mosaic_interesting_positive_cb.isChecked():
-            positive_values.add(2)
+        positive_values = self._mosaic_positive_values()
         _, scheme_positive_majors = self.build_classifications_string()
         positive_values |= scheme_positive_majors
 
@@ -543,6 +580,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.mode_combo.setCurrentIndex(c['run_mode_index'])
         self.ncols_spin.setValue(c['mosaic_ncols'])
         self.nrows_spin.setValue(c['mosaic_nrows'])
+        self.printname_cb.setChecked(c['mosaic_printname'])
+        self.mosaic_uninteresting_positive_cb.setChecked(c['mosaic_uninteresting_positive'])
         self.mosaic_lens_positive_cb.setChecked(c['mosaic_lens_positive'])
         self.mosaic_interesting_positive_cb.setChecked(c['mosaic_interesting_positive'])
         self.copy_instead_cb.setChecked(c['copy_instead_of_symlink'])
@@ -558,6 +597,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c['run_mode_index'] = self.mode_combo.currentIndex()
         c['mosaic_ncols'] = self.ncols_spin.value()
         c['mosaic_nrows'] = self.nrows_spin.value()
+        c['mosaic_printname'] = self.printname_cb.isChecked()
+        c['mosaic_uninteresting_positive'] = self.mosaic_uninteresting_positive_cb.isChecked()
         c['mosaic_lens_positive'] = self.mosaic_lens_positive_cb.isChecked()
         c['mosaic_interesting_positive'] = self.mosaic_interesting_positive_cb.isChecked()
         c['copy_instead_of_symlink'] = self.copy_instead_cb.isChecked()
