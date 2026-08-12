@@ -11,7 +11,7 @@ import sys
 from os.path import join
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import QProcess, Qt
+from PySide6.QtCore import QByteArray, QProcess, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
@@ -41,6 +41,13 @@ def count_vis_images(source_path):
     return len({os.path.basename(f) for f in glob.glob(join(source_path, "VIS", "*.fits"))})
 
 
+def discover_bands(path):
+    "Subdirectories directly under path -- the same notion of 'band' the viewer tools use."
+    if not path or not os.path.isdir(path):
+        return []
+    return sorted(d for d in os.listdir(path) if os.path.isdir(join(path, d)))
+
+
 def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
     """Best-effort prediction of the CSV the mosaic tool just wrote.
 
@@ -68,7 +75,27 @@ def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
     return max(matches, key=os.path.getmtime)
 
 
-def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False):
+def build_band_argv(main_band, color_bands, composites):
+    """Shared -b/-B/--rgb-composites fragment, appended to both tools' argv.
+
+    Omits a flag entirely when it's empty, so the launched tool falls back to
+    its own built-in default instead of receiving an explicit empty value.
+    """
+    argv = []
+    main_band = (main_band or '').strip()
+    if main_band:
+        argv += ["-b", main_band]
+    color_bands = [b.strip() for b in color_bands if b.strip()]
+    if color_bands:
+        argv += ["-B", ",".join(color_bands)]
+    composite_terms = [",".join(b.strip() for b in triple)
+                        for triple in composites if all(b.strip() for b in triple)]
+    if composite_terms:
+        argv += ["--rgb-composites", ";".join(composite_terms)]
+    return argv
+
+
+def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False, band_argv=None):
     argv = [join(REPO_ROOT, "mosaic_viewer_ERO_edition.py"),
             "-p", path, "-l", str(ncols), "-m", str(nrows)]
     if name:
@@ -77,16 +104,18 @@ def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False):
         argv += ["-s", str(seed)]
     if printname:
         argv += ["--printname"]
+    argv += band_argv or []
     return argv
 
 
-def build_single_argv(path, name, seed, classifications_string):
+def build_single_argv(path, name, seed, classifications_string, band_argv=None):
     argv = [join(REPO_ROOT, "single_viewer_multiband_ERO_edition.py"),
             "-p", path, "--classifications", classifications_string]
     if name:
         argv += ["-N", name]
     if seed is not None:
         argv += ["-s", str(seed)]
+    argv += band_argv or []
     return argv
 
 
@@ -110,74 +139,99 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'mosaic_interesting_positive': False,
             'copy_instead_of_symlink': False,
             'scheme_rows': DEFAULT_SCHEME_ROWS,
+            'main_band': 'VIS',
+            'color_bands': ['Y', 'J', 'H'],
+            'rgb_composites': [['H', 'Y', 'I'], ['H', 'J', 'Y']],
+            'dock_state': None,
         }
         self.config_dict = self.load_dict()
 
         self._launched_process = None
         self.stage1_proc = None
         self._stage1_extraction_context = None
+        self.available_bands = []
 
         self._build_ui()
         self._apply_config_to_widgets()
         self.on_mode_changed()
+        self._rescan_bands()
 
     # ---------------------------------------------------------- UI building
 
     def _build_ui(self):
-        central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
+        # Every setup group lives in its own dock widget rather than a fixed
+        # stack, so the window doesn't have to be tall enough to show
+        # everything at once: users can drag panels to rearrange them
+        # (side-by-side, stacked, tabbed together, or floated into their own
+        # window) and drag their borders to stretch whichever one they're
+        # using. There's no central widget -- with one, the leftover sliver
+        # between the left/right dock columns turns into a dead strip of
+        # empty space, so the dock areas are left free to fill the whole
+        # window instead. The Run button lives in a plain top toolbar so it
+        # stays put, full-width, regardless of how panels get rearranged.
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(QtWidgets.QMainWindow.AnimatedDocks |
+                             QtWidgets.QMainWindow.AllowNestedDocks |
+                             QtWidgets.QMainWindow.AllowTabbedDocks)
 
-        # Two columns side by side, rather than one tall stack: the left
-        # column holds the compact setup groups, the right column holds the
-        # classification table (which is inherently the tallest widget) --
-        # so the window's overall height tracks one column, not the sum of
-        # everything. A splitter (rather than a plain HBoxLayout) lets the
-        # user drag the divider between them to reclaim width for whichever
-        # side they're using.
-        splitter = QtWidgets.QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-
-        left_widget = QtWidgets.QWidget()
-        left_col = QtWidgets.QVBoxLayout(left_widget)
-        left_col.setContentsMargins(0, 0, 0, 0)
-        left_col.addWidget(self._build_session_group())
-        self.mosaic_group = self._build_mosaic_group()
-        left_col.addWidget(self.mosaic_group)
-        left_col.addWidget(self._build_extraction_group())
-        left_col.addStretch(1)
-
-        right_widget = QtWidgets.QWidget()
-        right_col = QtWidgets.QVBoxLayout(right_widget)
-        right_col.setContentsMargins(0, 0, 0, 0)
-        self.single_group = self._build_single_group()
-        right_col.addWidget(self.single_group)
-
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, stretch=1)
-
-        action_bar = QtWidgets.QHBoxLayout()
+        toolbar = QtWidgets.QToolBar("Actions", self)
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        action_bar_widget = QtWidgets.QWidget()
+        action_bar = QtWidgets.QHBoxLayout(action_bar_widget)
+        action_bar.setContentsMargins(4, 2, 4, 2)
         self.run_btn = QtWidgets.QPushButton("Run")
         self.run_btn.clicked.connect(self.on_run_clicked)
         self.stage_status_label = QtWidgets.QLabel("")
         action_bar.addWidget(self.run_btn)
         action_bar.addWidget(self.stage_status_label, stretch=1)
-        layout.addLayout(action_bar)
+        toolbar.addWidget(action_bar_widget)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
 
-        log_group = QtWidgets.QGroupBox("Log")
-        log_layout = QtWidgets.QVBoxLayout(log_group)
+        self.bands_group = self._build_bands_group()
+        self.mosaic_group = self._build_mosaic_group()
+        self.single_group = self._build_single_group()
+
+        session_dock = self._make_dock("Session", self._build_session_group(), "dock_session")
+        self.bands_dock = self._make_dock("Bands", self.bands_group, "dock_bands")
+        self.mosaic_dock = self._make_dock("Mosaic options", self.mosaic_group, "dock_mosaic")
+        extraction_dock = self._make_dock("Extraction options", self._build_extraction_group(),
+                                           "dock_extraction")
+        self.single_dock = self._make_dock("1-by-1 classification scheme", self.single_group,
+                                            "dock_single")
+        log_dock = self._make_dock("Log", self._build_log_widget(), "dock_log")
+
+        # Explicit two-column grid (rather than repeated addDockWidget calls
+        # to the same area, whose automatic placement tends to leave an
+        # orphaned empty cell): left column stacks Bands/Mosaic/Extraction,
+        # right column stacks Session/1-by-1, Log spans the bottom.
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.bands_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, session_dock)
+        self.splitDockWidget(self.bands_dock, self.mosaic_dock, Qt.Vertical)
+        self.splitDockWidget(self.mosaic_dock, extraction_dock, Qt.Vertical)
+        self.splitDockWidget(session_dock, self.single_dock, Qt.Vertical)
+        self.addDockWidget(Qt.BottomDockWidgetArea, log_dock)
+
+    def _make_dock(self, title, widget, object_name):
+        "Wraps a plain content widget in a movable/floatable/resizable dock."
+        dock = QtWidgets.QDockWidget(title, self)
+        dock.setObjectName(object_name)
+        dock.setWidget(widget)
+        dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
+                          QtWidgets.QDockWidget.DockWidgetFloatable)
+        return dock
+
+    def _build_log_widget(self):
+        widget = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(widget)
+        vbox.setContentsMargins(4, 4, 4, 4)
         self.log_view = QtWidgets.QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(120)
-        log_layout.addWidget(self.log_view)
-        layout.addWidget(log_group)
-
-        self.setCentralWidget(central)
+        vbox.addWidget(self.log_view)
+        return widget
 
     def _build_session_group(self):
-        group = QtWidgets.QGroupBox("Session")
+        group = QtWidgets.QGroupBox()
         form = QtWidgets.QFormLayout(group)
 
         self.mode_combo = QComboBox()
@@ -191,6 +245,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         path_row = QtWidgets.QHBoxLayout()
         self.path_edit = QtWidgets.QLineEdit()
+        self.path_edit.editingFinished.connect(self._rescan_bands)
         self.path_browse_btn = QtWidgets.QPushButton("Browse...")
         self.path_browse_btn.clicked.connect(self.on_browse_path)
         path_row.addWidget(self.path_edit)
@@ -211,8 +266,46 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         return group
 
+    def _build_bands_group(self):
+        group = QtWidgets.QGroupBox()
+        form = QtWidgets.QFormLayout(group)
+
+        self.bands_status_label = QtWidgets.QLabel(
+            "Set a path above, then Rescan bands -- subdirectories of the path become available bands.")
+        self.bands_status_label.setWordWrap(True)
+        form.addRow(self.bands_status_label)
+
+        self.main_band_combo = QComboBox()
+        self.main_band_combo.setEditable(True)
+        form.addRow("Main band:", self.main_band_combo)
+
+        self.color_bands_list = QtWidgets.QListWidget()
+        self.color_bands_list.setMinimumHeight(50)
+        form.addRow("Color bands:", self.color_bands_list)
+
+        self.composites_table = QtWidgets.QTableWidget(0, 3)
+        self.composites_table.setHorizontalHeaderLabels(["R", "G", "B"])
+        self.composites_table.horizontalHeader().setStretchLastSection(True)
+        self.composites_table.verticalHeader().setVisible(False)
+        self.composites_table.setMinimumHeight(60)
+        form.addRow("RGB composites:", self.composites_table)
+
+        composite_btn_row = QtWidgets.QHBoxLayout()
+        add_composite_btn = QtWidgets.QPushButton("Add composite")
+        add_composite_btn.clicked.connect(lambda: self._add_composite_row())
+        remove_composite_btn = QtWidgets.QPushButton("Remove selected")
+        remove_composite_btn.clicked.connect(self._remove_selected_composite_row)
+        rescan_btn = QtWidgets.QPushButton("Rescan bands")
+        rescan_btn.clicked.connect(self._rescan_bands)
+        composite_btn_row.addWidget(add_composite_btn)
+        composite_btn_row.addWidget(remove_composite_btn)
+        composite_btn_row.addWidget(rescan_btn)
+        form.addRow(composite_btn_row)
+
+        return group
+
     def _build_mosaic_group(self):
-        group = QtWidgets.QGroupBox("Mosaic options")
+        group = QtWidgets.QGroupBox()
         form = QtWidgets.QFormLayout(group)
 
         self.ncols_spin = QtWidgets.QSpinBox()
@@ -238,7 +331,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         return group
 
     def _build_single_group(self):
-        group = QtWidgets.QGroupBox("1-by-1 classification scheme")
+        group = QtWidgets.QGroupBox()
         vbox = QtWidgets.QVBoxLayout(group)
 
         self.scheme_table = QtWidgets.QTableWidget(0, 5)
@@ -268,7 +361,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         return group
 
     def _build_extraction_group(self):
-        group = QtWidgets.QGroupBox("Extraction options")
+        group = QtWidgets.QGroupBox()
         form = QtWidgets.QFormLayout(group)
 
         out_row = QtWidgets.QHBoxLayout()
@@ -287,6 +380,107 @@ class LobbyWindow(QtWidgets.QMainWindow):
         form.addRow(self.extract_only_btn)
 
         return group
+
+    # ---------------------------------------------------------------- bands
+
+    def _rescan_bands(self):
+        path = self.path_edit.text().strip()
+        self.available_bands = discover_bands(path)
+        self._refresh_band_widgets()
+        if not path:
+            self.bands_status_label.setText(
+                "Set a path above, then Rescan bands -- subdirectories of the path become available bands.")
+        elif self.available_bands:
+            self.bands_status_label.setText("Available bands: " + ", ".join(self.available_bands))
+        else:
+            self.bands_status_label.setText(f"No subdirectories found under {path}.")
+
+    def _refresh_band_widgets(self):
+        "Repopulate every band combo/list with self.available_bands, preserving current selections."
+        bands = self.available_bands
+
+        current_main = self.main_band_combo.currentText().strip()
+        self.main_band_combo.blockSignals(True)
+        self.main_band_combo.clear()
+        self.main_band_combo.addItems(bands)
+        self.main_band_combo.setCurrentText(current_main)
+        self.main_band_combo.blockSignals(False)
+
+        checked = set(self._checked_color_bands()) if self.color_bands_list.count() \
+            else set(self.config_dict.get('color_bands', []))
+        self._populate_color_bands_list(bands, checked)
+
+        for row in range(self.composites_table.rowCount()):
+            for col in range(3):
+                combo = self.composites_table.cellWidget(row, col)
+                if combo is None:
+                    continue
+                current = combo.currentText().strip()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(bands)
+                combo.setCurrentText(current)
+                combo.blockSignals(False)
+
+    def _populate_color_bands_list(self, bands, checked):
+        self.color_bands_list.clear()
+        for band in bands:
+            item = QtWidgets.QListWidgetItem(band)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if band in checked else Qt.Unchecked)
+            self.color_bands_list.addItem(item)
+
+    def _checked_color_bands(self):
+        checked = []
+        for i in range(self.color_bands_list.count()):
+            item = self.color_bands_list.item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    def _add_composite_row(self, r='', g='', b=''):
+        row = self.composites_table.rowCount()
+        self.composites_table.insertRow(row)
+        for col, value in enumerate((r, g, b)):
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItems(self.available_bands)
+            combo.setCurrentText(value)
+            self.composites_table.setCellWidget(row, col, combo)
+
+    def _remove_selected_composite_row(self):
+        row = self.composites_table.currentRow()
+        if row >= 0:
+            self.composites_table.removeRow(row)
+
+    def _composite_rows(self):
+        rows = []
+        for row in range(self.composites_table.rowCount()):
+            triple = []
+            for col in range(3):
+                combo = self.composites_table.cellWidget(row, col)
+                triple.append(combo.currentText().strip() if combo else '')
+            rows.append(tuple(triple))
+        return rows
+
+    def _band_argv(self):
+        return build_band_argv(self.main_band_combo.currentText(),
+                                self._checked_color_bands(),
+                                self._composite_rows())
+
+    def _log_band_warnings(self):
+        if not self.available_bands:
+            return
+        referenced = set()
+        main_band = self.main_band_combo.currentText().strip()
+        if main_band:
+            referenced.add(main_band)
+        referenced.update(self._checked_color_bands())
+        for triple in self._composite_rows():
+            referenced.update(b for b in triple if b)
+        missing = sorted(b for b in referenced if b not in self.available_bands)
+        if missing:
+            self.log(f"Warning: band(s) not found as subdirectories of the data path: {', '.join(missing)}")
 
     # ---------------------------------------------------------- scheme table
 
@@ -409,13 +603,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def on_mode_changed(self):
         mode = self.mode_combo.currentIndex()
-        self.mosaic_group.setVisible(mode in (MODE_MOSAIC_ONLY, MODE_CHAINED))
-        self.single_group.setVisible(mode in (MODE_SINGLE_ONLY, MODE_CHAINED))
+        self.mosaic_dock.setVisible(mode in (MODE_MOSAIC_ONLY, MODE_CHAINED))
+        self.single_dock.setVisible(mode in (MODE_SINGLE_ONLY, MODE_CHAINED))
 
     def on_browse_path(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select data path")
         if path:
             self.path_edit.setText(path)
+            self._rescan_bands()
 
     def on_browse_output(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select output path")
@@ -437,7 +632,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _set_controls_enabled(self, enabled):
         for widget in (self.run_btn, self.mode_combo, self.path_edit,
-                       self.path_browse_btn, self.mosaic_group, self.single_group):
+                       self.path_browse_btn, self.bands_group,
+                       self.mosaic_group, self.single_group):
             widget.setEnabled(enabled)
 
     # ---------------------------------------------------------- launching
@@ -452,14 +648,18 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.log("Please select a data path first.")
             return
 
+        self._log_band_warnings()
+        band_argv = self._band_argv()
+
         if mode == MODE_MOSAIC_ONLY:
             argv = build_mosaic_argv(path, name, seed,
                                       self.ncols_spin.value(), self.nrows_spin.value(),
-                                      printname=self.printname_cb.isChecked())
+                                      printname=self.printname_cb.isChecked(),
+                                      band_argv=band_argv)
             self._launch_fire_and_forget(argv)
         elif mode == MODE_SINGLE_ONLY:
             classifications_string, _ = self.build_classifications_string()
-            argv = build_single_argv(path, name, seed, classifications_string)
+            argv = build_single_argv(path, name, seed, classifications_string, band_argv=band_argv)
             self._launch_fire_and_forget(argv)
         elif mode == MODE_CHAINED:
             self._launch_stage1_chained(path, name, seed)
@@ -488,7 +688,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
     def _launch_stage1_chained(self, path, name, seed):
         ncols, nrows = self.ncols_spin.value(), self.nrows_spin.value()
         argv = build_mosaic_argv(path, name, seed, ncols, nrows,
-                                  printname=self.printname_cb.isChecked())
+                                  printname=self.printname_cb.isChecked(),
+                                  band_argv=self._band_argv())
         self._stage1_extraction_context = {
             'source_path': path,
             'name': name,
@@ -545,7 +746,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         classifications_string, _ = self.build_classifications_string()
         argv = build_single_argv(output_path, context.get('name'), context.get('seed'),
-                                  classifications_string)
+                                  classifications_string, band_argv=self._band_argv())
         self._launch_fire_and_forget(argv)
 
     def on_extract_only_clicked(self):
@@ -596,6 +797,16 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.copy_instead_cb.setChecked(c['copy_instead_of_symlink'])
         self._populate_scheme_table(c['scheme_rows'])
 
+        self.main_band_combo.setCurrentText(c['main_band'])
+        self._populate_color_bands_list(self.available_bands, set(c['color_bands']))
+        self.composites_table.setRowCount(0)
+        for triple in c['rgb_composites']:
+            r, g, b = (list(triple) + ['', '', ''])[:3]
+            self._add_composite_row(r, g, b)
+
+        if c.get('dock_state'):
+            self.restoreState(QByteArray.fromBase64(c['dock_state'].encode('ascii')))
+
     def _sync_widgets_to_config(self):
         c = self.config_dict
         c['data_path'] = self.path_edit.text()
@@ -612,6 +823,10 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c['mosaic_interesting_positive'] = self.mosaic_interesting_positive_cb.isChecked()
         c['copy_instead_of_symlink'] = self.copy_instead_cb.isChecked()
         c['scheme_rows'] = self._scheme_table_to_rows()
+        c['main_band'] = self.main_band_combo.currentText().strip()
+        c['color_bands'] = self._checked_color_bands()
+        c['rgb_composites'] = [list(triple) for triple in self._composite_rows()]
+        c['dock_state'] = bytes(self.saveState().toBase64()).decode('ascii')
 
     def save_dict(self):
         self._sync_widgets_to_config()
