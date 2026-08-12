@@ -36,15 +36,29 @@ from time import time
 import urllib
 import webbrowser
 
+from imaging import (
+    identity, log, asinh2, print_range, get_value_range,
+    get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
+    get_contrast_bias_reasonable_assumptions, natural_sort,
+    find_filename_iteration,
+)
+from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel
+from workers import (
+    PS1_FITSCUT_URL, get_panstarrs_filenames, SingleFetchWorker,
+    PanstarrsFetchWorker,
+)
+
 parser = argparse.ArgumentParser(description='configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="path to the images to inspect",
                     default="Color_stamps_to_inspect")
 parser.add_argument('-N',"--name", help="name of the classifying session.",
                     default=None)
-# parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
-#                     default="VIS")
-# parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
-#                     default="Y,J,H")
+parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
+                    "tool's default band: the panel that's always individually shown and pre-selected.",
+                    default="VIS")
+parser.add_argument('-B',"--color_bands", help='Comma-separated bands to show individually via "Show NISP '
+                    'bands". Example: "Y,J,H"',
+                    default="Y,J,H")
 parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
                     action="store_true", default=False)
 parser.add_argument("--verbose", help="activates loging to terminal",
@@ -64,11 +78,41 @@ parser.add_argument('--classifications',
                     'subclass button under that major, setting both fields when clicked. '
                     'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"',
                     default="A=1;B=2;C=3;X=4;I=5")
+parser.add_argument('--rgb-composites',
+                    help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
+                    "under --path can be a band -- not just VIS/Y/J/H/I). A composite's own name/label is "
+                    'simply its comma-joined member list. Example: "H,Y,I;H,J,Y". '
+                    'All three bands in a composite must have the exact same image dimensions '
+                    '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
+                    default="H,Y,I;H,J,Y")
 
 args = parser.parse_args()
 
-args.main_band = 'VIS'
-args.color_bands = 'Y,J,H'
+args.color_bands = args.color_bands.split(',')
+
+args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
+args.composite_band_members = {}  # key -> (r, g, b) tuple
+for entry in args.rgb_composites.split(';'):
+    entry = entry.strip()
+    if not entry:
+        continue
+    members = tuple(b.strip() for b in entry.split(','))
+    if len(members) != 3:
+        parser.error(f'--rgb-composites entry "{entry}" must have exactly 3 comma-separated bands (R,G,B).')
+    key = ','.join(members)
+    args.composite_bands.append(key)
+    args.composite_band_members[key] = members
+
+_referenced_bands = ({args.main_band} | set(args.color_bands) |
+                      {b for members in args.composite_band_members.values() for b in members})
+_missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
+if _missing_bands:
+    _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
+        if os.path.isdir(args.path) else []
+    print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
+          f"{', '.join(sorted(_missing_bands))}")
+    print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
+    sys.exit(1)
 
 args.major_classes = []  # list of (major, key) tuples, in declared order
 args.subclasses = []  # list of (major, sub, key) tuples, in declared order
@@ -97,8 +141,6 @@ LEGACY_SURVEY_PIXEL_SIZE=0.262
 
 PANSTARRS_PATH = './PanSTARRS/'
 PANSTARRS_PIXEL_SIZE = 0.25
-PS1_FILENAMES_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1filenames.py'
-PS1_FITSCUT_URL = 'https://ps1images.stsci.edu/cgi-bin/fitscut.cgi'
 PS1_CUTOUTS_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1cutouts'
 
 SINGLE_BAND = 'single_band'
@@ -107,7 +149,6 @@ COMPOSITE_BAND = 'composite_band'
 EXTERNAL_BAND = 'external_band'
 _LEGACY_SURVEY_KEY = "Legacy Survey"
 _PANSTARRS_KEY = "PanSTARRS"
-_VIS_RESAMPLED_BAND = 'I'
 
 PATH_TO_CONFIG_FILE = ".config.json"
 
@@ -120,98 +161,6 @@ if args.clean:
               glob.glob(join(PANSTARRS_PATH,"*.jpg"))):
         if os.path.exists(f):
             os.remove(f)
-
-def identity(x):
-    return x
-
-# def log(x):
-#     "Simple log base 1000 function that ignores numbers less than 0"
-#     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
-
-def log(x,a=1000):
-    "Simple log base 1000 function that ignores numbers less than 0"
-    return np.log(a*x+1) / np.log(a)
-
-# def log(x):
-#     return np.arcsinh(10*x)/3
-
-def asinh2(x):
-    return np.arcsinh(10*x)/3
-
-
-def print_range(image):
-    return f"{image.min() = }, {image.max() = }"
-
-def get_value_range(x, p=98):
-    q = (100 - p)/2
-    low = np.nanpercentile(x, q)
-    high = np.nanpercentile(x, 100-q)
-    return low, high
-
-def get_value_range_asymmetric(x, q_low=1, q_high=1,
-                              pixel_boxsize_low = None):
-    
-    low = np.nanpercentile(x, q_low)
-    
-    # if pixel_boxsize_low is :
-    # if pixel_boxsize_low is None:
-    #     high = np.nanpercentile(x, 100-q_high)
-    # else:
-    if x.shape[0] > 80:
-        pixel_boxsize_low = np.round(np.sqrt(np.prod(x.shape) * 0.01)).astype(int)
-    else:
-        pixel_boxsize_low = 8
-    xl, yl, _ = np.shape(x)
-    xmin = int((xl) / 2. - (pixel_boxsize_low / 2.))
-    xmax = int((xl) / 2. + (pixel_boxsize_low / 2.))
-    ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
-    ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
-    high = np.nanpercentile(x[xmin:xmax,ymin:ymax], 100-q_high)
-    # print(pixel_boxsize_low)
-    return low, high
-
-def clip_normalize(x, low=None, high=None):
-    x = np.clip(x, low, high)
-    x = (x - low)/(high - low)
-    return x 
-
-def contrast_bias_scale(x, contrast, bias):
-    x = ((x - bias) * contrast + 0.5 )
-    x = np.clip(x, 0, 1)
-    return x
-
-def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min, scale_max, scale):
-    bkg_level = clip_normalize(value_at_min, scale_min, scale_max)
-    bkg_level = scale(bkg_level)
-    contrast = (bkg_color - 1) / (bkg_level - 1) # with bkg_level != 1 and bkg_color != 1
-    bias = 1 - (bkg_level-1)/(2*(bkg_color-1))
-    return contrast, bias
-
-def natural_sort(l): 
-    "https://stackoverflow.com/a/4836734"
-    convert = lambda text: int(text) if text.isdigit() else text.lower()
-    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
-    return sorted(l, key=alphanum_key)
-
-def find_filename_iteration(latest_filename, max_iterations = 100, initial_iteration = "-(1)"):
-    "Uses regex to find and add 1 to the number in parentheses right before the .csv"
-    re_pattern = re.compile('-\\(([^)]+)\\)')
-    re_search = re_pattern.search(latest_filename)
-    if re_search is None:
-        return initial_iteration
-    iterations = 0
-    while re_search.span()[-1] != len(latest_filename) and (iterations < max_iterations):
-        re_search = re_pattern.search(latest_filename, re_search.span()[-1])
-        if re_search is None:
-            return initial_iteration
-    if re_search.span()[-1] == len(latest_filename): #at this point, re_search cannot be None
-        re_match = re_search[1]
-    try:
-        int_match = int(re_match)
-    except:
-        return initial_iteration
-    
-    return f"-({int_match+1})"
 
 def legacy_survey_number_of_pixels(image_pixel_size,
                                     image_dim,
@@ -228,183 +177,6 @@ def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECOND
     pixels_big_fov_ps1 = int(np.ceil(PANSTARRS_BIG_FOV_ARCSEC/PANSTARRS_PIXEL_SIZE))
     return n_pixels_in_ps1, pixels_big_fov_ps1
 
-def get_panstarrs_filenames(ra, dec, filters='grz'):
-    "Look up PS1 stack image filenames for ra/dec via the STScI ps1filenames.py service."
-    query_url = f"{PS1_FILENAMES_URL}?ra={ra}&dec={dec}&filters={filters}&type=stack"
-    with urllib.request.urlopen(query_url, timeout=10) as response:
-        lines = response.read().decode('utf-8').splitlines()
-    if len(lines) < 2:
-        return None
-    header = lines[0].split()
-    filename_col = header.index('filename')
-    filter_col = header.index('filter')
-    filenames = {}
-    for line in lines[1:]:
-        fields = line.split()
-        filenames[fields[filter_col]] = fields[filename_col]
-    if not all(f in filenames for f in filters):
-        return None
-    return filenames
-
-class SingleFetchWorker(QObject):
-    successful_download = Signal()
-    failed_download = Signal()
-    has_finished = Signal()
-
-    def __init__(self, url, savefile, title):
-        super(SingleFetchWorker, self).__init__()
-        self.url = url
-        self.savefile = savefile
-        self.title = title
-    
-    @Slot()
-    def run(self):
-        if self.url == '':
-            self.successful_download.emit()
-        else:
-            try:
-                urllib.request.urlretrieve(self.url, self.savefile)
-                self.successful_download.emit()
-            except (urllib.error.URLError, OSError):
-                with open(self.savefile,'w') as f:
-                    Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-                # self.failed_download.emit('No Legacy Survey data available.')
-                self.failed_download.emit()
-        self.has_finished.emit()
-
-class PanstarrsFetchWorker(QObject):
-    """Like SingleFetchWorker, but also does the ps1filenames.py lookup in the
-    background thread -- that lookup is a network call too, and must not run
-    on the GUI thread (it used to, and froze the UI for up to 10s whenever a
-    stamp had no PS1 coverage, since a "no data" result is never cached)."""
-    successful_download = Signal()
-    failed_download = Signal()
-    has_finished = Signal()
-
-    def __init__(self, ra, dec, savefile, size):
-        super(PanstarrsFetchWorker, self).__init__()
-        self.ra = ra
-        self.dec = dec
-        self.savefile = savefile
-        self.size = size
-
-    @Slot()
-    def run(self):
-        try:
-            filenames = get_panstarrs_filenames(self.ra, self.dec, filters='grz')
-            if filenames is None:
-                raise urllib.error.URLError('no PS1 filenames found')
-            url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"
-                   f"&ra={self.ra}&dec={self.dec}&size={self.size}&output_size=256&autoscale=99.5&format=jpg")
-            urllib.request.urlretrieve(url, self.savefile)
-            self.successful_download.emit()
-        except (urllib.error.URLError, OSError):
-            with open(self.savefile,'w') as f:
-                Image.fromarray(np.zeros((66,66),dtype=np.uint8)).save(f)
-            self.failed_download.emit()
-        self.has_finished.emit()
-
-def join_nested(lines, sep=' | ', line_sep='\n'):
-    return line_sep.join(sep.join(map(str, sub)) for sub in lines)
-
-class BandNamesLabel(QtWidgets.QLabel):
-    def updateText(self, status_plot_rows):
-        self.setText(join_nested(status_plot_rows))
-
-def add_checkable_menu_action(menu, label, checked=False):
-    "Adds a plain checkable item (QWidgetAction-wrapped QCheckBox) to a QMenu, returns the checkbox."
-    widget = QtWidgets.QWidget()
-    layout = QtWidgets.QHBoxLayout(widget)
-    layout.setContentsMargins(6,2,6,2)
-    checkbox = QtWidgets.QCheckBox(label)
-    checkbox.setChecked(checked)
-    layout.addWidget(checkbox)
-    action = QtWidgets.QWidgetAction(menu)
-    action.setDefaultWidget(widget)
-    menu.addAction(action)
-    return checkbox
-
-class CheckableSubMenu(QtWidgets.QMenu):
-    "One row's worth of checkable panel entries inside the PanelRowPicker menu."
-    def __init__(self, title, parent=None):
-        super().__init__(title, parent)
-        self._checkboxes = {}
-
-    def add_check_item(self, key, label, checked=False):
-        checkbox = add_checkable_menu_action(self, label, checked)
-        self._checkboxes[key] = checkbox
-        return checkbox
-
-    def checked_keys(self):
-        return [key for key, checkbox in self._checkboxes.items() if checkbox.isChecked()]
-
-    def set_checked(self, key, checked):
-        checkbox = self._checkboxes[key]
-        checkbox.blockSignals(True)
-        checkbox.setChecked(checked)
-        checkbox.blockSignals(False)
-
-class PanelRowPicker(QtWidgets.QWidget):
-    "Dropdown letting the user assign fixed panels to display rows, one row per menu."
-    rowChanged = Signal(str, str, bool) #row_key, panel_key, checked
-
-    def __init__(self, panel_keys, panel_labels, n_rows, parent=None):
-        super().__init__(parent)
-        self.panel_keys = panel_keys
-        self.row_keys = [f"row_{i+1}" for i in range(n_rows)]
-        self.button = QtWidgets.QToolButton()
-        self.button.setText("Panels")
-        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu = QtWidgets.QMenu(self.button)
-        self.button.setMenu(self.menu)
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
-        layout.addWidget(self.button)
-
-        self.rows = {}
-        for row_key in self.row_keys:
-            submenu = CheckableSubMenu(row_key.replace('_',' ').title(), self.menu)
-            self.menu.addMenu(submenu)
-            for panel_key in panel_keys:
-                checkbox = submenu.add_check_item(panel_key, panel_labels[panel_key])
-                checkbox.toggled.connect(partial(self._on_toggled, row_key, panel_key))
-            self.rows[row_key] = submenu
-
-    def _on_toggled(self, row_key, panel_key, checked):
-        if checked:
-            for other_row_key, submenu in self.rows.items():
-                if other_row_key != row_key:
-                    submenu.set_checked(panel_key, False)
-        self.rowChanged.emit(row_key, panel_key, checked)
-
-    def row_panels(self, row_key):
-        return self.rows[row_key].checked_keys()
-
-    def set_row_panels(self, row_key, panel_keys):
-        submenu = self.rows[row_key]
-        for panel_key in self.panel_keys:
-            submenu.set_checked(panel_key, panel_key in panel_keys)
-
-    def add_toggle(self, label, checked=False):
-        "Adds a plain (non-row) checkable setting to the bottom of the menu, e.g. 'Large FoV'."
-        self.menu.addSeparator()
-        return add_checkable_menu_action(self.menu, label, checked)
-
-class SettingsMenu(QtWidgets.QWidget):
-    "Dropdown of independent checkable settings that aren't mutually exclusive (no rows)."
-    def __init__(self, title, parent=None):
-        super().__init__(parent)
-        self.button = QtWidgets.QToolButton()
-        self.button.setText(title)
-        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu = QtWidgets.QMenu(self.button)
-        self.button.setMenu(self.menu)
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
-        layout.addWidget(self.button)
-
-    def add_toggle(self, label, checked=False):
-        return add_checkable_menu_action(self.menu, label, checked)
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, parent=None):
@@ -555,23 +327,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.stampspath = args.path
         self.main_band = args.main_band
-        self.color_bands = args.color_bands.split(",")
-        self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
+        self.color_bands = args.color_bands
         self.legacy_survey_path = LEGACY_SURVEY_PATH
         self.panstarrs_path = PANSTARRS_PATH
         self.random_seed = args.seed
 
-        color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
-        self.listimage = sorted(set([os.path.basename(x) for x in (
-                                        glob.glob(join(color_bands_path, "*.fits"))+
-                                        glob.glob(join(base_band_path,'*.fits'))
-                                        )]))
+        self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
         self.filetype='FITS'
         print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            print(f"No FITS files found in {base_band_path} or {color_bands_path}. "
+            print(f"No FITS files found in {base_band_path}. "
                   "This tool computes multiband colors on the fly and requires FITS "
                   "input -- PNG/JPG is not supported.")
             sys.exit(1)
@@ -583,15 +350,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
 
-        self.composite_bands = [
-                                "".join(self.color_bands_vis[::-1]),
-                                "".join(self.color_bands[::-1]),
-                                ] #For now, only one composite band.
+        self.composite_bands = args.composite_bands
+        self.composite_band_members = args.composite_band_members
         self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
         self.all_bands = [self.main_band,
                           *self.composite_bands,
                           *self.color_bands,
-                          _VIS_RESAMPLED_BAND,
                           *self.external_bands,
                           _PANSTARRS_KEY]
         self.band_types = ({self.main_band: MAIN_BAND} |
@@ -638,19 +402,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         
         # self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
         self.band2bandname_dict = {band: band for band in self.all_bands}
-        self.band2bandname_dict['HYI'] = 'HYVIS'
 
-        # self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band, _VIS_RESAMPLED_BAND]}
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
-        self.label_plot[_VIS_RESAMPLED_BAND] = BandNamesLabel(alignment=Qt.AlignCenter)
+        self.rows_summary_label = BandNamesLabel(alignment=Qt.AlignCenter)
         # print(f"{self.all_bands = }")
-        font = {band: self.label_plot[band].font() for band in [self.main_band, _VIS_RESAMPLED_BAND]}
-        for band in [self.main_band, _VIS_RESAMPLED_BAND]:
-            font[band].setPointSize(16)
-            self.label_plot[band].setFont(font[band])
+        font = self.label_plot[self.main_band].font()
+        font.setPointSize(16)
+        self.label_plot[self.main_band].setFont(font)
+        summary_font = self.rows_summary_label.font()
+        summary_font.setPointSize(16)
+        self.rows_summary_label.setFont(summary_font)
 
         self.label_layout.addWidget(self.label_plot[self.main_band])
-        self.label_layout.addWidget(self.label_plot[_VIS_RESAMPLED_BAND])
+        self.label_layout.addWidget(self.rows_summary_label)
 
 
         self.plot_layout_area.setSpacing(0)
@@ -687,10 +451,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         visible_panels = set()
         for row_key, row_layout in self.panel_row_layout.items():
             saved = self.config_dict[row_key]
-            row_panels = default_row_panels[row_key] if no_row_config_saved else [b for b in saved.split(',') if b in self.panel_keys]
+            row_panels = default_row_panels[row_key] if no_row_config_saved else [b for b in saved.split(';') if b in self.panel_keys]
             for band in row_panels:
                 row_layout.addWidget(self.canvas[band],1)
-            self.config_dict[row_key] = ','.join(row_panels)
+            self.config_dict[row_key] = ';'.join(row_panels)
             visible_panels.update(row_panels)
 
         for band in self.panel_keys: #Panels not assigned to any row start parked (hidden) in row 1.
@@ -739,7 +503,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.panel_picker = PanelRowPicker(self.panel_keys, self.band2bandname_dict, n_rows=3)
         for row_key in self.panel_row_layout:
-            self.panel_picker.set_row_panels(row_key, [b for b in self.config_dict[row_key].split(',') if b])
+            self.panel_picker.set_row_panels(row_key, [b for b in self.config_dict[row_key].split(';') if b])
         self.panel_picker.rowChanged.connect(self.on_panel_row_changed)
         self.blsarea = self.panel_picker.add_toggle("Large FoV", checked=self.config_dict['legacybigarea'])
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
@@ -1200,7 +964,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def visible_rows_summary(self):
         "List-of-lists of friendly panel names, one list per currently-shown row, empty rows dropped."
-        rows = [[self.band2bandname_dict[b] for b in self.config_dict[row_key].split(',') if b]
+        rows = [[self.band2bandname_dict[b] for b in self.config_dict[row_key].split(';') if b]
                 for row_key in self.panel_row_layout]
         return [row for row in rows if row]
 
@@ -1217,10 +981,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot_layout_0.addWidget(canvas,1) #park hidden panels in row 1
 
         for rk in self.panel_row_layout:
-            self.config_dict[rk] = ','.join(self.panel_picker.row_panels(rk))
-        visible_panels = set(self.config_dict['row_1'].split(',') +
-                             self.config_dict['row_2'].split(',') +
-                             self.config_dict['row_3'].split(','))
+            self.config_dict[rk] = ';'.join(self.panel_picker.row_panels(rk))
+        visible_panels = set(self.config_dict['row_1'].split(';') +
+                             self.config_dict['row_2'].split(';') +
+                             self.config_dict['row_3'].split(';'))
 
         was_colorbandsvisible = self.config_dict['colorbandsvisible']
         was_panstarrs = self.config_dict['panstarrs']
@@ -1233,8 +997,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['panstarrs'] and not was_panstarrs:
             self.set_panstarrs()
         self.update_row_visibility()
-        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
-        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
+        self.rows_summary_label.updateText(self.visible_rows_summary())
+        self.rows_summary_label.updateText(self.visible_rows_summary())
 
 
     @Slot()
@@ -1271,15 +1035,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def open_ds9(self):
         band2zoom = {'VIS': 4,
-                    _VIS_RESAMPLED_BAND:12,
+                    'I':12,
                     'H':12,
                     'J':12,
                     'Y':12,
                     }
+        default_zoom = 12
+        all_referenced_bands = ({self.main_band} | set(self.color_bands) |
+                                {b for members in self.composite_band_members.values() for b in members})
         arguments = ["ds9", '-fits']
-        for band in [self.main_band, _VIS_RESAMPLED_BAND, *self.color_bands]:
+        for band in sorted(all_referenced_bands):
             filename = f"{join(self.stampspath,band,self.filename)}"
-            arguments += [filename, '-zoom', 'to',str(band2zoom[band]), '-colorbar', 'no']
+            arguments += [filename, '-zoom', 'to',str(band2zoom.get(band, default_zoom)), '-colorbar', 'no']
         print(" ".join(arguments))
         subprocess.Popen(arguments)
 
@@ -1434,8 +1201,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         #                             dtype=float)
         composite_image = np.zeros_like(images,
                                     dtype=float)
-        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high,
-                    pixel_boxsize_low=None)
+        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high)
         # print(f"{scale_min = }, {scale_max = }")
         # for i, image in enumerate(images):
         # print(images.shape)
@@ -1494,12 +1260,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             for band in self.composite_bands:
                 self.plot_composite_band(band)
             self.bottom_row_bands_already_plotted = True
-        
-        for band in self.composite_bands[:-1]:
-            band = band.replace(_VIS_RESAMPLED_BAND,self.main_band)
-            # label += f'{band}-'
-        
-        self.label_plot[_VIS_RESAMPLED_BAND].updateText(self.visible_rows_summary())
+
+        self.rows_summary_label.updateText(self.visible_rows_summary())
 
     def plot_band(self, band, scale_min = None, scale_max = None):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
@@ -1528,21 +1290,27 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.canvas[band].draw()
 
     def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
-        # base_bands = [band if band != _VIS_RESAMPLED_BAND else 'VIS' for band in list(composite_band)]
-        base_bands = list(composite_band)
-        # print(base_bands)
-        if len(base_bands) != 3:
-            print(f"RGB image requires exactly 3 images. Bands provided: {base_bands}")
-        
+        base_bands = self.composite_band_members[composite_band]
+
         # self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
-        
+
         if self.filetype == 'FITS':
-            if (not self.color_bands_already_plotted) or (_VIS_RESAMPLED_BAND in base_bands):
+            cached_bands = {self.main_band}
+            if self.color_bands_already_plotted:
+                cached_bands |= set(self.color_bands)
+            if not set(base_bands).issubset(cached_bands):
                 images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
             else:
                 images = self.images
-            image = self.prepare_composite_image(np.stack([images[band] for band in base_bands],axis=2))
+            try:
+                stacked = np.stack([images[band] for band in base_bands],axis=2)
+            except ValueError:
+                shapes = {band: images[band].shape for band in base_bands}
+                raise ValueError(
+                    f"RGB composite '{composite_band}' requires all member bands to have the exact same "
+                    f"image dimensions -- got {shapes}")
+            image = self.prepare_composite_image(stacked)
             self.ax[composite_band].imshow(image, origin='lower')
         else:
             raise Exception("Color RPGs in the form of PNGs are no supported in the ERO edition.")
@@ -1726,15 +1494,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.bactivatedsubclassification = button
 
             
-if __name__ == "__main__":
+def main():
     # Check whether there is already a running QApplication (e.g., if running
     # from an IDE).
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    
+
     app = ApplicationWindow()
     app.show()
     app.activateWindow()
     app.raise_()
     qapp.exec()
+
+
+if __name__ == "__main__":
+    main()

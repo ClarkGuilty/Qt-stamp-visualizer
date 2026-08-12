@@ -131,23 +131,32 @@ class LobbyWindow(QtWidgets.QMainWindow):
         # column holds the compact setup groups, the right column holds the
         # classification table (which is inherently the tallest widget) --
         # so the window's overall height tracks one column, not the sum of
-        # everything.
-        top_row = QtWidgets.QHBoxLayout()
+        # everything. A splitter (rather than a plain HBoxLayout) lets the
+        # user drag the divider between them to reclaim width for whichever
+        # side they're using.
+        splitter = QtWidgets.QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
-        left_col = QtWidgets.QVBoxLayout()
+        left_widget = QtWidgets.QWidget()
+        left_col = QtWidgets.QVBoxLayout(left_widget)
+        left_col.setContentsMargins(0, 0, 0, 0)
         left_col.addWidget(self._build_session_group())
         self.mosaic_group = self._build_mosaic_group()
         left_col.addWidget(self.mosaic_group)
         left_col.addWidget(self._build_extraction_group())
         left_col.addStretch(1)
 
-        right_col = QtWidgets.QVBoxLayout()
+        right_widget = QtWidgets.QWidget()
+        right_col = QtWidgets.QVBoxLayout(right_widget)
+        right_col.setContentsMargins(0, 0, 0, 0)
         self.single_group = self._build_single_group()
         right_col.addWidget(self.single_group)
 
-        top_row.addLayout(left_col, 1)
-        top_row.addLayout(right_col, 2)
-        layout.addLayout(top_row, stretch=1)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, stretch=1)
 
         action_bar = QtWidgets.QHBoxLayout()
         self.run_btn = QtWidgets.QPushButton("Run")
@@ -625,8 +634,12 @@ class LobbyWindow(QtWidgets.QMainWindow):
         event.accept()
 
 
-if __name__ == "__main__":
+def main():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     win = LobbyWindow()
     win.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

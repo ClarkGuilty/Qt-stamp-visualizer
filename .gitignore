@@ -6,3 +6,16 @@
 *.tar*
 old/
 .temp/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editor/OS cruft
+.DS_Store
+*.swp
+
+# Internal docs, not for the public repo
+PLAN.md

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qt-stamp-visualizer"
+version = "0.1.0"
+description = "Qt tool for the visual inspection and classification of astronomical stamps."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Javier Acevedo Barroso" }]
+requires-python = ">=3.9,<3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "pyside6",
+    "pillow",
+    "pyparsing",
+    "astropy",
+]
+
+[project.urls]
+Repository = "https://github.com/ClarkGuilty/Qt-stamp-visualizer"
+
+[project.scripts]
+qtstamp-mosaic = "mosaic_viewer_ERO_edition:main"
+qtstamp-single = "single_viewer_multiband_ERO_edition:main"
+qtstamp-lobby = "lobby:main"
+
+[tool.setuptools]
+py-modules = [
+    "lobby",
+    "mosaic_viewer_ERO_edition",
+    "single_viewer_multiband_ERO_edition",
+    "extraction",
+    "extract_files_from_mosaic",
+    "imaging",
+    "widgets",
+    "workers",
+]

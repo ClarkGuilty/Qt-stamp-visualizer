@@ -21,7 +21,7 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal, QEvent, QSize
-from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut, QIntValidator
+from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut
 
 import shutil
 
@@ -35,16 +35,35 @@ from time import time
 import urllib
 import webbrowser
 
+from imaging import (
+    identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
+    contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
+    natural_sort, find_filename_iteration,
+)
+from widgets import (
+    AlignDelegate, ClickableComboBox, LabelledIntField, NamedLabel,
+    PanelOrderPicker,
+)
+
 
 parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
 parser.add_argument('-p',"--path", help="Path to the images to inspect.",
                     default="Color_stamps_to_inspect")
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default=None)
-# parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS"',
-#                     default="VIS")
-# parser.add_argument('-B',"--color_bands", help='Comma-separated photometric bands, Bluer to Redder. Example: "Y,J,H"',
-#                     default="Y,J,H")
+parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
+                    "tool's default band: the panel that's always individually shown and pre-selected.",
+                    default="VIS")
+parser.add_argument('-B',"--color_bands", help='Comma-separated bands to make individually selectable as '
+                    'their own panel (in addition to the RGB composites). Example: "Y,J,H"',
+                    default="Y,J,H")
+parser.add_argument('--rgb-composites',
+                    help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
+                    "under --path can be a band -- not just VIS/Y/J/H/I). A composite's own name/label is "
+                    'simply its comma-joined member list. Example: "H,Y,I;H,J,Y". '
+                    'All three bands in a composite must have the exact same image dimensions '
+                    '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
+                    default="H,Y,I;H,J,Y")
 parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
                     default=5)
 parser.add_argument('-m',"--nrows", 
@@ -70,227 +89,43 @@ parser.add_argument('--resize',
 
 
 args = parser.parse_args()
-args.main_band = "VIS"
-args.color_bands = "Y,J,H"
+args.color_bands = args.color_bands.split(',')
+
+args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
+args.composite_band_members = {}  # key -> (r, g, b) tuple
+for entry in args.rgb_composites.split(';'):
+    entry = entry.strip()
+    if not entry:
+        continue
+    members = tuple(b.strip() for b in entry.split(','))
+    if len(members) != 3:
+        parser.error(f'--rgb-composites entry "{entry}" must have exactly 3 comma-separated bands (R,G,B).')
+    key = ','.join(members)
+    args.composite_bands.append(key)
+    args.composite_band_members[key] = members
+
+_referenced_bands = ({args.main_band} | set(args.color_bands) |
+                      {b for members in args.composite_band_members.values() for b in members})
+_missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
+if _missing_bands:
+    _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
+        if os.path.isdir(args.path) else []
+    print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
+          f"{', '.join(sorted(_missing_bands))}")
+    print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
+    sys.exit(1)
 
 C_INTERESTING = 2
 C_LENS = 1
 C_UNINTERESTING = 0
 
-
-SINGLE_BAND = 'single_band'
-MAIN_BAND = 'main_band'
-COMPOSITE_BAND = 'composite_band'
-EXTERNAL_BAND = 'external_band'
-_VIS_RESAMPLED_BAND = 'I'
-
-def identity(x):
-    return x
-
 def log_0(x):
     "Simple log base 1000 function that ignores numbers less than 0"
     return np.log(x, out=np.zeros_like(x), where=(x>0)) / np.log(1000)
 
-def log(x,a=1000):
-    "Simple log base 1000 function that ignores numbers less than 0"
-    return np.log(a*x+1) / np.log(a)
-
-def asinh2(x):
-    return np.arcsinh(10*x)/3
-
-
-def get_value_range_asymmetric(x, q_low=1, q_high=1,
-                              ):
-    
-    low = np.nanpercentile(x, q_low)
-    
-    if x.shape[0] > 80:
-        pixel_boxsize_low = np.round(np.sqrt(np.prod(x.shape) * 0.01)).astype(int)
-    else:
-        pixel_boxsize_low = 8
-    xl, yl, _ = np.shape(x)
-    xmin = int((xl) / 2. - (pixel_boxsize_low / 2.))
-    xmax = int((xl) / 2. + (pixel_boxsize_low / 2.))
-    ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
-    ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
-    high = np.nanpercentile(x[xmin:xmax,ymin:ymax], 100-q_high)
-    return low, high
-
-def clip_normalize(x, low=None, high=None):
-    x = np.clip(x, low, high)
-    x = (x - low)/(high - low)
-    return x 
-
-def contrast_bias_scale(x, contrast, bias):
-    x = ((x - bias) * contrast + 0.5 )
-    x = np.clip(x, 0, 1)
-    return x
-
-def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min, scale_max, scale):
-    bkg_level = clip_normalize(value_at_min, scale_min, scale_max)
-    bkg_level = scale(bkg_level)
-    contrast = (bkg_color - 1) / (bkg_level - 1) # with bkg_level != 1 and bkg_color != 1
-    bias = 1 - (bkg_level-1)/(2*(bkg_color-1))
-    return contrast, bias
-
-def natural_sort(l): 
-    "https://stackoverflow.com/a/4836734"
-    convert = lambda text: int(text) if text.isdigit() else text.lower()
-    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
-    return sorted(l, key=alphanum_key)
-
-def find_filename_iteration(latest_filename, max_iterations = 100, initial_iteration = "-(1)"):
-    "Uses regex to find and add 1 to the number in parentheses right before the .csv"
-    re_pattern = re.compile('-\\(([^)]+)\\)')
-    re_search = re_pattern.search(latest_filename)
-    if re_search is None:
-        return initial_iteration
-    iterations = 0
-    while re_search.span()[-1] != len(latest_filename) and (iterations < max_iterations):
-        # print(re_search.span()[-1], len(latest_filename))
-        re_search = re_pattern.search(latest_filename, re_search.span()[-1])
-        if re_search is None:
-            return initial_iteration
-    if re_search.span()[-1] == len(latest_filename): #at this point, re_search cannot be None
-        re_match = re_search[1]
-    try:
-        int_match = int(re_match)
-    except:
-        return initial_iteration
-    return "-({})".format(int_match+1)
-
 def iloc_to_page_and_grid_pos(iloc, gridarea):
     return iloc // gridarea, iloc % gridarea
 
-class LabelledIntField(QtWidgets.QWidget):
-    "Widget for the page number."
-    "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
-    def __init__(self, title, initial_value,  total_pages):
-        QtWidgets.QWidget.__init__(self)
-        layout = QtWidgets.QHBoxLayout()
-        self.setLayout(layout)
-        self.fontsize = 18
-        self.label = QtWidgets.QLabel()
-        self.label.setText(title)
-        # self.label.setFixedWidth(100)
-        self.label.setFont(QFont("Arial",self.fontsize,weight=QFont.Bold))
-        layout.addWidget(self.label)
-        
-        self.lineEdit = QtWidgets.QLineEdit(self)
-        self.lineEdit.setFocusPolicy(Qt.ClickFocus)
-        self.lineEdit.setFixedWidth(50)
-        self.lineEdit.setValidator(QIntValidator(1,total_pages))
-        self.lineEdit.setText(str(initial_value+1))
-        self.lineEdit.setFont(QFont("Arial",self.fontsize))
-        self.lineEdit.setStyleSheet('background-color: black; color: gray')
-        self.lineEdit.setAlignment(Qt.AlignRight)
-        layout.addWidget(self.lineEdit)
-
-        self.total_pages = QtWidgets.QLabel()
-        self.total_pages.setText("/ "+str(total_pages))
-        self.total_pages.setFont(QFont("Arial",self.fontsize))
-        layout.addWidget(self.total_pages)
-
-        # layout.addStretch()
-
-    def setInputText(self, input):
-        self.lineEdit.setText(str(input+1))
-        
-    def getValue(self):
-        return int(self.lineEdit.text())-1
-
-class NamedLabel(QtWidgets.QWidget):
-    "Widget to show unclickable label."
-    "https://www.fundza.com/pyqt_pyside2/pyqt5_int_lineedit/index.html"
-    def __init__(self, title, initial_value):
-        QtWidgets.QWidget.__init__(self)
-        layout = QtWidgets.QHBoxLayout()
-        self.setLayout(layout)
-        self.fontsize = 18
-        
-        self.name = QtWidgets.QLabel()
-        self.name.setText(title)
-        # self.title.setFixedWidth(100)
-        self.name.setFont(QFont("Arial",self.fontsize,weight=QFont.Bold))
-        layout.addWidget(self.name)
-        
-        self.label = QtWidgets.QLineEdit(self)
-        self.label.setFixedWidth(50)
-        self.label.setEnabled(False)
-        # self.label.setEnabled(True)
-        # self.label.setReadOnly(True)
-        # self.label.setFocusPolicy(Qt.NoFocus)
-        self.label.setText(str(initial_value))
-        self.label.setFont(QFont("Arial",self.fontsize))
-        self.label.setStyleSheet('background-color: black; color: gray')
-        self.label.setAlignment(Qt.AlignRight)
-        layout.addWidget(self.label)
-
-    def setText(self, input):
-        self.label.setText(str(input))
-
-        
-    def getValue(self):
-        return int(self.lineEdit.text())-1
-
-class AlignDelegate(QtWidgets.QStyledItemDelegate):
-    "https://stackoverflow.com/a/54262963/10555034"
-    def initStyleOption(self, option, index):
-        super(AlignDelegate, self).initStyleOption(option, index)
-        option.displayAlignment = Qt.AlignCenter
-
-
-class ClickableComboBox(QtWidgets.QComboBox):
-    "QComboBox that opens its dropdown on a click anywhere in its body, not just the arrow."
-    def mousePressEvent(self, event):
-        self.showPopup()
-        super().mousePressEvent(event)
-
-class CheckableSubMenu(QtWidgets.QMenu):
-    "One checkable-item list inside a dropdown menu."
-    def __init__(self, title, parent=None):
-        super().__init__(title, parent)
-        self._checkboxes = {}
-
-    def add_check_item(self, key, label, checked=False):
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(widget)
-        layout.setContentsMargins(6,2,6,2)
-        checkbox = QtWidgets.QCheckBox(label)
-        checkbox.setChecked(checked)
-        layout.addWidget(checkbox)
-        action = QtWidgets.QWidgetAction(self)
-        action.setDefaultWidget(widget)
-        self.addAction(action)
-        self._checkboxes[key] = checkbox
-        return checkbox
-
-    def checked_keys(self):
-        return [key for key, checkbox in self._checkboxes.items() if checkbox.isChecked()]
-
-class PanelOrderPicker(QtWidgets.QWidget):
-    "Dropdown letting the user choose which of the fixed per-thumbnail panels are shown."
-    selectionChanged = Signal()
-
-    def __init__(self, panel_keys, panel_labels, parent=None):
-        super().__init__(parent)
-        self.panel_keys = panel_keys
-        self.button = QtWidgets.QToolButton()
-        self.button.setText("Panels")
-        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu = CheckableSubMenu("Panels", self.button)
-        self.button.setMenu(self.menu)
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
-        layout.addWidget(self.button)
-        for panel_key in panel_keys:
-            checkbox = self.menu.add_check_item(panel_key, panel_labels[panel_key], checked=True)
-            checkbox.toggled.connect(lambda checked: self.selectionChanged.emit())
-
-    def selected_panels(self):
-        "Currently-checked panels, in the fixed canonical order."
-        checked = self.menu.checked_keys()
-        return [key for key in self.panel_keys if key in checked]
 
 
 class MiniMosaicLabels(QtWidgets.QLabel):
@@ -462,13 +297,12 @@ class MiniMosaics(QtWidgets.QLabel):
         # qlabelSizePolicy = QtWidgets.QSizePolicy.Fixed               
         # print(f"{self.sizeHint() = }")
 
-        names = ['VIS','HYI','HJY','bak']
         self.qlabels = [MiniMosaicLabels(self.aspectRatioPolicy,
                                         self.user_minimum_size,
                                         qlabelSizePolicy,
-                                        name = names[i],
+                                        name = name,
                                         # parent = self
-                                        ) for i,_ in enumerate(self.bands)]
+                                        ) for name in self.bands]
         
         if self.is_activate:
             if self.is_a_candidate == C_UNINTERESTING:
@@ -647,18 +481,15 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.stampspath = path_to_the_stamps
 
         self.main_band = args.main_band
-        self.color_bands = args.color_bands.split(",")
-        self.color_bands_vis = [_VIS_RESAMPLED_BAND,'Y','H']
-        self.all_single_bands = (self.main_band, _VIS_RESAMPLED_BAND, *self.color_bands)
-        self.composite_bands = [
-                                "".join(self.color_bands_vis[::-1]),
-                                "".join(self.color_bands[::-1]),
-                                ]
-        self.bands_to_plot = [self.main_band, *self.composite_bands]
+        self.color_bands = args.color_bands
+        self.composite_bands = args.composite_bands
+        self.composite_band_members = args.composite_band_members
+        self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                {b for members in self.composite_band_members.values() for b in members})
+        self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
         # print(f"{self.main_band}")
         # print(f"{self.color_bands}")
-        # print(f"{self.color_bands_vis}")
         # print(f"{self.all_single_bands}")
         # print(f"{self.composite_bands}")
         self.scratchpath = './.temp'
@@ -666,17 +497,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         os.makedirs(self.scratchpath, exist_ok=True)
         self.clean_dir(self.scratchpath)
 
-        color_bands_path = join(self.stampspath, f'[{",".join(self.color_bands+["VIS_resampled"])}]')
         base_band_path = join(self.stampspath, self.main_band)
-        self.listimage = sorted(set([os.path.basename(x) for x in (
-                                        glob.glob(join(color_bands_path, "*.fits"))+
-                                        glob.glob(join(base_band_path,'*.fits'))
-                                        )]))
+        self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
         self.filetype='FITS'
         print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            print(f"No FITS files found in {base_band_path} or {color_bands_path}. "
+            print(f"No FITS files found in {base_band_path}. "
                   "This tool computes multiband colors on the fly and requires FITS "
                   "input -- PNG/JPG is not supported.")
             sys.exit(1)
@@ -747,7 +574,12 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         }
         self.config_dict = self.load_dict()
         if not self.config_dict['panel_order']:
-            self.config_dict['panel_order'] = ','.join(self.bands_to_plot)
+            # Default-checked panels match today's exact view (main band + composites) -- the
+            # individual color bands are available in the picker (self.bands_to_plot) but start
+            # unchecked, so gaining the ability to show them standalone doesn't change what's
+            # shown out of the box.
+            default_panel_order = [self.main_band, *self.composite_bands]
+            self.config_dict['panel_order'] = ';'.join(default_panel_order)
 
         self.interesting_background_path = '.background_interesting.png'
         self.lens_background_path = '.background.png'
@@ -815,12 +647,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
         panel_labels = {band: band for band in self.bands_to_plot}
-        panel_labels[self.composite_bands[0]] = 'HYVIS'
         self.panel_picker = PanelOrderPicker(self.bands_to_plot, panel_labels)
         self.panel_picker.button.setFont(QFont("Arial",self.fontsize))
         self.panel_picker.button.setStyleSheet('background-color: gray')
         for panel_key, checkbox in self.panel_picker.menu._checkboxes.items():
-            checkbox.setChecked(panel_key in self.config_dict['panel_order'].split(','))
+            checkbox.setChecked(panel_key in self.config_dict['panel_order'].split(';'))
         self.panel_picker.selectionChanged.connect(self.change_panel_order)
 
 
@@ -882,7 +713,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                     # image_width=66,
                                     # image_height=66,
                                     )
-            button.reorder_panels(self.config_dict['panel_order'].split(','))
+            button.reorder_panels(self.config_dict['panel_order'].split(';'))
             stamp_grid_layout.addWidget(
                 button, i % self.nrows, i // self.nrows)
             self.buttons.append(button)
@@ -948,7 +779,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.save_dict()
 
     def change_panel_order(self):
-        self.config_dict['panel_order'] = ','.join(self.panel_picker.selected_panels())
+        self.config_dict['panel_order'] = ';'.join(self.panel_picker.selected_panels())
         self.update_grid(single_band_only=True,change_panel_order=True)
         self.save_dict()
 
@@ -1106,7 +937,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     button.set_candidate_status(status)
 
                 if change_panel_order:
-                    button.reorder_panels(self.config_dict['panel_order'].split(','))
+                    button.reorder_panels(self.config_dict['panel_order'].split(';'))
                 self.df.iloc[object_index,
                              self.df.columns.get_loc('grid_pos')] = j
 
@@ -1135,15 +966,23 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def prepare_png(self, i, single_band_only):
         if self.filetype == 'FITS':
             band_images = {band: self.read_fits(i,band) for band in self.all_single_bands}
-            
-            image = self.prepare_single_band(band_images[self.main_band])
-            plt.imsave(self.filepath(i, self.config_dict['page'], band=self.main_band),
-                    image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
+
+            for band in [self.main_band, *self.color_bands]:
+                image = self.prepare_single_band(band_images[band])
+                plt.imsave(self.filepath(i, self.config_dict['page'], band=band),
+                        image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
             if not single_band_only:
                 for composite_band in self.composite_bands:
-                    bands = list(composite_band)
-                    composite_image = self.prepare_composite_band(np.stack([band_images[band] for band in bands],axis=-1))
+                    bands = self.composite_band_members[composite_band]
+                    try:
+                        stacked = np.stack([band_images[band] for band in bands],axis=-1)
+                    except ValueError:
+                        shapes = {band: band_images[band].shape for band in bands}
+                        raise ValueError(
+                            f"RGB composite '{composite_band}' requires all member bands to have the exact "
+                            f"same image dimensions -- got {shapes}")
+                    composite_image = self.prepare_composite_band(stacked)
                     plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
                         composite_image, origin="lower")
 
@@ -1281,7 +1120,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return std
 
 
-if __name__ == "__main__":
+def main():
     # Check whether there is already a running QApplication (e.g., if running
     # from an IDE).
     qapp = QtWidgets.QApplication.instance()
@@ -1293,3 +1132,7 @@ if __name__ == "__main__":
     app.activateWindow()
     # app.raise_()
     qapp.exec()
+
+
+if __name__ == "__main__":
+    main()
