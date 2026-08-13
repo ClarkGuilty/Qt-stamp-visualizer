@@ -2,6 +2,7 @@
 *.fits
 *.csv
 .config*.json
+.predefined_configs/
 *.ipynb
 *.tar*
 old/

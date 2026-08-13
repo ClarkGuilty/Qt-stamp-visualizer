@@ -66,10 +66,10 @@ parser.add_argument("--verbose", help="activates loging to terminal",
 parser.add_argument("--clean", help="cleans the legacy survey folder.",
                     action="store_true")
 parser.add_argument("--legacysurvey",
-                    help="Enables the Legacy Survey panel and downloads. Off by default "
-                    "(the Legacy Survey server can be unreliable); pass --legacysurvey to re-enable.",
+                    help="Enables the Legacy Survey panel and downloads. On by default; "
+                    "pass --no-legacysurvey to disable (e.g. if the Legacy Survey server is unreliable).",
                     action=argparse.BooleanOptionalAction,
-                    default=False)
+                    default=True)
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 parser.add_argument('--classifications',
@@ -179,7 +179,7 @@ def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECOND
 
 
 class FetchThread(QThread):
-    def __init__(self, df, initial_counter, parent=None):
+    def __init__(self, df, initial_counter, fetch_panstarrs=True, fetch_legacysurvey=True, parent=None):
             QThread.__init__(self, parent)
 
             self.df = df
@@ -190,6 +190,8 @@ class FetchThread(QThread):
             self.main_band = args.main_band
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,self.main_band,'*.fits'))])
             self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
+            self.fetch_panstarrs = fetch_panstarrs
+            self.fetch_legacysurvey = fetch_legacysurvey
     def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale='0.262'):
         # residual = (residual and size == 47)
         res = '-resid' if residual else '-grz'
@@ -254,11 +256,12 @@ class FetchThread(QThread):
                 ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
             else:
                 ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
-            n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
-            self.download_panstarrs(ra,dec,size=n_pixels_ps1)
-            self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
+            if self.fetch_panstarrs:
+                n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
+                self.download_panstarrs(ra,dec,size=n_pixels_ps1)
+                self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
 
-            if args.legacysurvey:
+            if self.fetch_legacysurvey:
                 n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size,
                                         image_dim,
                                         pixels_big_fov_ls=488)
@@ -270,11 +273,13 @@ class FetchThread(QThread):
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, clipboard=None):
         super().__init__()
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
+
+        self.clipboard = clipboard
 
         title_strings = ["1-by-1 classifier ERO edition"]
         if args.name is not None:
@@ -291,7 +296,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'legacybigarea':False,
                     'legacyresiduals':False,
                     'panstarrs':False,
-                    'prefetch':False,
+                    'prefetch_panstarrs':False,
+                    'prefetch_legacysurvey':False,
                     'autonext':True,
                     'colormap':'gist_gray',
                     'scale':'log',
@@ -310,7 +316,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
-        self.background_downloading = self.config_dict['prefetch']
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
@@ -438,13 +443,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         # print(f"{self.composite_bands = }")
-        self.panel_keys = [self.main_band, *self.composite_bands, *self.color_bands, _PANSTARRS_KEY]
+        self.panel_keys = [self.main_band, *self.composite_bands, *self.color_bands,
+                          *self.external_bands, _PANSTARRS_KEY]
         for band in self.panel_keys:
             self.canvas[band].setStyleSheet('background-color: black')
-
-        for band in self.external_bands: #LS always lives in row 1, gated by its own checkbox.
-            self.canvas[band].setStyleSheet('background-color: black')
-            self.plot_layout_0.addWidget(self.canvas[band],1)
 
         no_row_config_saved = not any(self.config_dict[row_key] for row_key in self.panel_row_layout)
         default_row_panels = {'row_1': [self.main_band, self.composite_bands[0]], 'row_2': [], 'row_3': []}
@@ -509,27 +511,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.blsarea.clicked.connect(self.checkbox_ls_change_area)
         list_button_row0_layout.append(self.panel_picker)
 
-        if args.legacysurvey:
-            self.blegsur = QtWidgets.QCheckBox('Legacy Survey (LS)')
-            self.blegsur.clicked.connect(self.checkbox_legacy_survey)
-            if self.filetype == 'FITS':
-                if not self.config_dict['legacysurvey']:
-                        self.canvas[_LEGACY_SURVEY_KEY].hide()
-                else:
-                        self.canvas[_LEGACY_SURVEY_KEY].show()
-                        self.blegsur.toggle()
-                        self.set_legacy_survey()
-            else:
-                self.config_dict['legacysurvey'] = False
-                self.blegsur.setEnabled(False)
-                self.canvas[_LEGACY_SURVEY_KEY].hide()
-            list_button_row0_layout.append(self.blegsur)
-
-        #PanSTARRS is one of self.panel_keys now, so its visibility/placement is already
-        #handled by the row-assignment above -- just fetch it if it started out visible.
+        #PanSTARRS and Legacy Survey are both self.panel_keys now, so their visibility/placement
+        #is already handled by the row-assignment above -- just fetch each if it started out visible.
         self.config_dict['panstarrs'] = _PANSTARRS_KEY in visible_panels
         if self.config_dict['panstarrs']:
             self.set_panstarrs()
+
+        self.config_dict['legacysurvey'] = _LEGACY_SURVEY_KEY in visible_panels
+        if self.config_dict['legacysurvey']:
+            self.set_legacy_survey()
 
         if args.legacysurvey:
             self.blsresidual = QtWidgets.QCheckBox("Residuals")
@@ -545,12 +535,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             list_button_row0_layout.append(self.blsresidual)
 
         self.settings_menu = SettingsMenu("Settings")
-        self.bprefetch = self.settings_menu.add_toggle("Pre-fetch")
-        self.bprefetch.clicked.connect(self.prefetch_legacysurvey)
-        if self.config_dict['prefetch']:
-            self.config_dict['prefetch'] = False
-            self.prefetch_legacysurvey()
-            self.bprefetch.setChecked(True)
+        self.bprefetch_ps = self.settings_menu.add_toggle("Pre-fetch PanSTARRS")
+        self.bprefetch_ps.clicked.connect(self.toggle_prefetch_panstarrs)
+        if self.config_dict['prefetch_panstarrs']:
+            self.config_dict['prefetch_panstarrs'] = False
+            self.toggle_prefetch_panstarrs()
+            self.bprefetch_ps.setChecked(True)
+
+        if args.legacysurvey:
+            self.bprefetch_ls = self.settings_menu.add_toggle("Pre-fetch Legacy Survey")
+            self.bprefetch_ls.clicked.connect(self.toggle_prefetch_legacysurvey)
+            if self.config_dict['prefetch_legacysurvey']:
+                self.config_dict['prefetch_legacysurvey'] = False
+                self.toggle_prefetch_legacysurvey()
+                self.bprefetch_ls.setChecked(True)
+        else:
+            self.config_dict['prefetch_legacysurvey'] = False
 
         self.bautopass = self.settings_menu.add_toggle("Auto-next", checked=self.config_dict['autonext'])
         self.bautopass.clicked.connect(self.checkbox_auto_next)
@@ -677,16 +677,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.timer_0 = time()
 
     @Slot()
-    def prefetch_legacysurvey(self):
-        if self.config_dict['prefetch']:
-            self.fetchthread.interrupt()
-            self.config_dict['prefetch'] = False
+    def toggle_prefetch_panstarrs(self):
+        if self.config_dict['prefetch_panstarrs']:
+            self.fetchthread_ps.interrupt()
+            self.config_dict['prefetch_panstarrs'] = False
         else:
-            self.fetchthread = FetchThread(self.df,self.config_dict['counter'],) #Always store in an object.
-            self.fetchthread.finished.connect(self.fetchthread.deleteLater)
-            self.fetchthread.setTerminationEnabled(True)
-            self.fetchthread.start()
-            self.config_dict['prefetch'] = True
+            self.fetchthread_ps = FetchThread(self.df,self.config_dict['counter'],
+                                        fetch_panstarrs=True, fetch_legacysurvey=False) #Always store in an object.
+            self.fetchthread_ps.finished.connect(self.fetchthread_ps.deleteLater)
+            self.fetchthread_ps.setTerminationEnabled(True)
+            self.fetchthread_ps.start()
+            self.config_dict['prefetch_panstarrs'] = True
+
+    @Slot()
+    def toggle_prefetch_legacysurvey(self):
+        if self.config_dict['prefetch_legacysurvey']:
+            self.fetchthread_ls.interrupt()
+            self.config_dict['prefetch_legacysurvey'] = False
+        else:
+            self.fetchthread_ls = FetchThread(self.df,self.config_dict['counter'],
+                                        fetch_panstarrs=False, fetch_legacysurvey=True) #Always store in an object.
+            self.fetchthread_ls.finished.connect(self.fetchthread_ls.deleteLater)
+            self.fetchthread_ls.setTerminationEnabled(True)
+            self.fetchthread_ls.start()
+            self.config_dict['prefetch_legacysurvey'] = True
 
     def closeEvent(self, event):
         # Each of these threads is wired to `finished.connect(thread.deleteLater)`,
@@ -695,11 +709,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # pointing at that now-dead wrapper. Calling isRunning()/wait() on it then
         # raises "Internal C++ object already deleted", so every check here must
         # tolerate that instead of crashing.
-        if hasattr(self, 'fetchthread'):
+        for thread_attr in ('fetchthread_ps', 'fetchthread_ls'):
+            thread = getattr(self, thread_attr, None)
+            if thread is None:
+                continue
             try:
-                if self.fetchthread.isRunning():
-                    self.fetchthread.interrupt()
-                    self.fetchthread.wait(5000)
+                if thread.isRunning():
+                    thread.interrupt()
+                    thread.wait(5000)
             except RuntimeError:
                 pass
         # workerThread/workerThreadPS run a single one-shot network call (Legacy
@@ -762,17 +779,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def copy_RADec_to_keyboard(self):
-        clipboard = QClipboard()
         to_copy = f"{self.ra},{self.dec}"
-        clipboard.setText(to_copy)
+        self.clipboard.setText(to_copy)
         self.status.showMessage(f'RA,Dec copied to clipboard: {self.ra},{self.dec}',10000)
 
 
     @Slot()
     def copy_filename_to_keyboard(self):
-        clipboard = QClipboard()
         to_copy = f"{self.filename}"
-        clipboard.setText(to_copy)
+        self.clipboard.setText(to_copy)
         self.status.showMessage(f'Filename copied to clipboard: {self.filename}',10000)
 
     @Slot()
@@ -968,6 +983,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 for row_key in self.panel_row_layout]
         return [row for row in rows if row]
 
+    def _row_band_order(self, row_key):
+        "Checked bands for the row, in their actual left-to-right widget order (not the fixed panel_keys order)."
+        visible = set(self.panel_picker.row_panels(row_key))
+        canvas_to_band = {canvas: band for band, canvas in self.canvas.items()}
+        row_layout = self.panel_row_layout[row_key]
+        ordered = [canvas_to_band[row_layout.itemAt(i).widget()] for i in range(row_layout.count())]
+        return [band for band in ordered if band in visible]
+
     @Slot()
     def on_panel_row_changed(self, row_key, panel_key, checked):
         canvas = self.canvas[panel_key]
@@ -981,34 +1004,29 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot_layout_0.addWidget(canvas,1) #park hidden panels in row 1
 
         for rk in self.panel_row_layout:
-            self.config_dict[rk] = ';'.join(self.panel_picker.row_panels(rk))
+            self.config_dict[rk] = ';'.join(self._row_band_order(rk))
         visible_panels = set(self.config_dict['row_1'].split(';') +
                              self.config_dict['row_2'].split(';') +
                              self.config_dict['row_3'].split(';'))
 
         was_colorbandsvisible = self.config_dict['colorbandsvisible']
         was_panstarrs = self.config_dict['panstarrs']
+        was_legacysurvey = self.config_dict['legacysurvey']
         self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
         self.config_dict['nisprgbvisible'] = self.composite_bands[-1] in visible_panels
         self.config_dict['panstarrs'] = _PANSTARRS_KEY in visible_panels
+        self.config_dict['legacysurvey'] = _LEGACY_SURVEY_KEY in visible_panels
         if self.config_dict['colorbandsvisible'] and not was_colorbandsvisible and not self.color_bands_already_plotted:
             self.plot()
             self.color_bands_already_plotted = True
         if self.config_dict['panstarrs'] and not was_panstarrs:
             self.set_panstarrs()
+        if self.config_dict['legacysurvey'] and not was_legacysurvey:
+            self.set_legacy_survey()
         self.update_row_visibility()
         self.rows_summary_label.updateText(self.visible_rows_summary())
         self.rows_summary_label.updateText(self.visible_rows_summary())
 
-
-    @Slot()
-    def checkbox_legacy_survey(self):
-        if self.config_dict['legacysurvey']:
-                self.canvas[_LEGACY_SURVEY_KEY].hide()
-        else:
-                self.canvas[_LEGACY_SURVEY_KEY].show()
-                self.set_legacy_survey()
-        self.config_dict['legacysurvey'] = not self.config_dict['legacysurvey']
 
     @Slot()
     def checkbox_ls_change_area(self):
@@ -1501,7 +1519,8 @@ def main():
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 
-    app = ApplicationWindow()
+    clipboard = QtWidgets.QApplication.clipboard()
+    app = ApplicationWindow(clipboard=clipboard)
     app.show()
     app.activateWindow()
     app.raise_()

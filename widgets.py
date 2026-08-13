@@ -3,7 +3,13 @@
 single_viewer_multiband_ERO_edition.py.
 """
 
+import copy
+import glob
+import json
+import os
+import re
 from functools import partial
+from os.path import basename, join, splitext
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Signal
@@ -220,3 +226,117 @@ def join_nested(lines, sep=' | ', line_sep='\n'):
 class BandNamesLabel(QtWidgets.QLabel):
     def updateText(self, status_plot_rows):
         self.setText(join_nested(status_plot_rows))
+
+
+def _sanitize_preset_name(name):
+    "Strips path separators so a preset name can't escape its directory."
+    return re.sub(r'[\\/]+', '_', name.strip())
+
+
+class PredefinedConfigBar(QtWidgets.QWidget):
+    """Row of controls for saving/loading named presets of a tool's config dict.
+
+    Presets are plain JSON files under `directory`, one per name. Picking one
+    from the dropdown immediately applies it via `apply_config`; the config
+    active right before that (fetched via `get_config`) is kept in memory so
+    "Restore previous" can undo the swap without needing its own saved file.
+    """
+
+    PLACEHOLDER = "(current, unsaved)"
+
+    def __init__(self, directory, get_config, apply_config, parent=None):
+        super().__init__(parent)
+        self.directory = directory
+        self.get_config = get_config
+        self.apply_config = apply_config
+        self._pre_snapshot = None
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.addWidget(QtWidgets.QLabel("Preset:"))
+
+        self.combo = QtWidgets.QComboBox()
+        self.combo.setMinimumWidth(160)
+        self.combo.setMaxVisibleItems(12)
+        self.combo.activated.connect(self._on_activated)
+        layout.addWidget(self.combo, 1)
+
+        self.save_btn = QtWidgets.QPushButton("Save as...")
+        self.save_btn.clicked.connect(self._on_save_clicked)
+        layout.addWidget(self.save_btn)
+
+        self.restore_btn = QtWidgets.QPushButton("Restore previous")
+        self.restore_btn.setEnabled(False)
+        self.restore_btn.setToolTip("Go back to the configuration held before a preset was loaded.")
+        self.restore_btn.clicked.connect(self._on_restore_clicked)
+        layout.addWidget(self.restore_btn)
+
+        self.refresh()
+
+    def refresh(self):
+        "Rescans `directory` for *.json presets, preserving the current selection if still valid."
+        current_name = self.combo.currentText() if self.combo.count() else None
+        names = self._list_names()
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItem(self.PLACEHOLDER)
+        self.combo.addItems(names)
+        self.combo.setCurrentText(current_name if current_name in names else self.PLACEHOLDER)
+        self.combo.blockSignals(False)
+
+    def _list_names(self):
+        if not os.path.isdir(self.directory):
+            return []
+        return sorted(splitext(basename(f))[0]
+                      for f in glob.glob(join(self.directory, "*.json")))
+
+    def _on_activated(self, index):
+        if index <= 0:
+            return
+        name = self.combo.itemText(index)
+        path = join(self.directory, f"{name}.json")
+        try:
+            with open(path) as f:
+                preset = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Load preset failed", f"Could not load '{name}':\n{exc}")
+            self.refresh()
+            return
+        self._pre_snapshot = copy.deepcopy(self.get_config())
+        self.restore_btn.setEnabled(True)
+        self.apply_config(preset)
+
+    def _on_restore_clicked(self):
+        if self._pre_snapshot is None:
+            return
+        self.apply_config(self._pre_snapshot)
+        self._pre_snapshot = None
+        self.restore_btn.setEnabled(False)
+        self.combo.blockSignals(True)
+        self.combo.setCurrentText(self.PLACEHOLDER)
+        self.combo.blockSignals(False)
+
+    def _on_save_clicked(self):
+        name, ok = QtWidgets.QInputDialog.getText(self, "Save preset", "Preset name:")
+        if not ok:
+            return
+        name = _sanitize_preset_name(name)
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Save preset failed", "Preset name can't be empty.")
+            return
+        path = join(self.directory, f"{name}.json")
+        if os.path.exists(path):
+            reply = QtWidgets.QMessageBox.question(
+                self, "Overwrite preset?",
+                f"A preset named '{name}' already exists. Overwrite it?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+        os.makedirs(self.directory, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(self.get_config(), f, ensure_ascii=False, indent=4)
+        self.refresh()
+        self.combo.blockSignals(True)
+        self.combo.setCurrentText(name)
+        self.combo.blockSignals(False)

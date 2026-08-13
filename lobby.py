@@ -15,9 +15,11 @@ from PySide6.QtCore import QByteArray, QProcess, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
+from widgets import PredefinedConfigBar
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 PATH_TO_LOBBY_CONFIG = join(REPO_ROOT, ".config_lobby.json")
+PATH_TO_PREDEFINED_CONFIGS = join(REPO_ROOT, ".predefined_configs")
 
 MODE_MOSAIC_ONLY = 0
 MODE_SINGLE_ONLY = 1
@@ -185,6 +187,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.stage_status_label = QtWidgets.QLabel("")
         action_bar.addWidget(self.run_btn)
         action_bar.addWidget(self.stage_status_label, stretch=1)
+        self.preset_bar = PredefinedConfigBar(
+            PATH_TO_PREDEFINED_CONFIGS, self._preset_snapshot, self._apply_preset)
+        action_bar.addWidget(self.preset_bar)
         toolbar.addWidget(action_bar_widget)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
@@ -827,6 +832,41 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c['color_bands'] = self._checked_color_bands()
         c['rgb_composites'] = [list(triple) for triple in self._composite_rows()]
         c['dock_state'] = bytes(self.saveState().toBase64()).decode('ascii')
+
+    def _preset_snapshot(self):
+        "Current widget state as a plain dict, suitable for saving/comparing as a preset."
+        self._sync_widgets_to_config()
+        return {k: v for k, v in self.config_dict.items() if k != 'dock_state'}
+
+    def _apply_preset(self, preset):
+        "Applies a preset (or a snapshot from _preset_snapshot) on top of the current config."
+        merged = dict(self.defaults)
+        merged.update(self.config_dict)
+        merged.update({k: v for k, v in preset.items() if k != 'dock_state'})
+        self.config_dict = merged
+        self._apply_config_to_widgets()
+        self.on_mode_changed()
+        self._rescan_bands()
+        self._log_missing_preset_bands(preset)
+
+    def _log_missing_preset_bands(self, preset):
+        """Warns about bands a preset asks for that aren't subdirectories of the current data
+        path. The preset still loads in full -- rescanning has already dropped those bands from
+        the color-bands checklist (and the composite/main-band combos won't offer them either)
+        since only real subdirectories are listed there, so this is purely a heads-up."""
+        if not self.available_bands:
+            return
+        referenced = set()
+        main_band = (preset.get('main_band') or '').strip()
+        if main_band:
+            referenced.add(main_band)
+        referenced.update(b.strip() for b in preset.get('color_bands', []) if b.strip())
+        for triple in preset.get('rgb_composites', []):
+            referenced.update(b.strip() for b in triple if b and b.strip())
+        missing = sorted(b for b in referenced if b not in self.available_bands)
+        if missing:
+            self.log(f"Preset references band(s) not found under the current data path -- "
+                      f"not offered in the band configuration: {', '.join(missing)}")
 
     def save_dict(self):
         self._sync_widgets_to_config()
