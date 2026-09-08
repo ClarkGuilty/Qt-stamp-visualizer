@@ -2,19 +2,29 @@
 """Launcher GUI: pick a data path, pick/configure a tool (mosaic, 1-by-1, or a
 mosaic-then-1-by-1 chain), configure the 1-by-1 classification scheme, and
 extract "positive" classifications into a fresh directory for the next stage.
+
+The same launcher can also run headless -- ``python lobby.py --no-gui ...`` (or
+``--print-command`` to just print the viewer command line) drives the whole
+workflow, chained extraction included, without ever showing the lobby window.
+Run ``python lobby.py --help`` for the CLI.
 """
 
+import argparse
+import copy
 import glob
 import json
 import os
+import shlex
+import subprocess
 import sys
 from os.path import join
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import QByteArray, QProcess, Qt
+from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
+from imaging import detect_band_filetype
 from widgets import PredefinedConfigBar
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -38,9 +48,48 @@ DEFAULT_SCHEME_ROWS = [
     {'type': 'major', 'major': 'I', 'sub': '', 'key': '5', 'positive': False},
 ]
 
+DEFAULT_CONFIG = {
+    'data_path': '',
+    'output_path': '',
+    'session_name': '',
+    'seed_enabled': False,
+    'seed_value': 0,
+    'run_mode_index': MODE_CHAINED,
+    'mosaic_ncols': 5,
+    'mosaic_nrows': 8,
+    'mosaic_printname': True,
+    'mosaic_uninteresting_positive': False,
+    'mosaic_lens_positive': True,
+    'mosaic_interesting_positive': False,
+    'copy_instead_of_symlink': False,
+    'scheme_rows': DEFAULT_SCHEME_ROWS,
+    'main_band': 'VIS',
+    'color_bands': ['Y', 'J', 'H'],
+    'rgb_composites': [['H', 'Y', 'I'], ['H', 'J', 'Y']],
+    'dock_state': None,
+}
+
+
+def load_config_dict(path=PATH_TO_LOBBY_CONFIG):
+    """Config file contents layered on top of DEFAULT_CONFIG (missing keys filled
+    from the defaults). Returns a fresh, fully-owned dict -- safe to mutate."""
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+    try:
+        with open(path) as f:
+            merged.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    return merged
+
 
 def count_vis_images(source_path):
-    return len({os.path.basename(f) for f in glob.glob(join(source_path, "VIS", "*.fits"))})
+    vis_path = join(source_path, "VIS")
+    count = len({os.path.basename(f) for f in glob.glob(join(vis_path, "*.fits"))})
+    if count:
+        return count
+    return len({os.path.basename(f) for f in (glob.glob(join(vis_path, "*.png")) +
+                                                glob.glob(join(vis_path, "*.jpg")) +
+                                                glob.glob(join(vis_path, "*.jpeg")))})
 
 
 def discover_bands(path):
@@ -53,7 +102,7 @@ def discover_bands(path):
 def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
     """Best-effort prediction of the CSV the mosaic tool just wrote.
 
-    Replicates mosaic_viewer_ERO_edition.py's own obtain_df() base_filename
+    Replicates mosaic.py's own obtain_df() base_filename
     formula exactly -- including its no-seed-branch bug where nrows is
     silently dropped and replaced by a literal '99'. Rather than also
     replicating obtain_df()'s pre-run file-selection quirks (natural-sort +
@@ -80,38 +129,42 @@ def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
 def build_band_argv(main_band, color_bands, composites):
     """Shared -b/-B/--rgb-composites fragment, appended to both tools' argv.
 
-    Omits a flag entirely when it's empty, so the launched tool falls back to
-    its own built-in default instead of receiving an explicit empty value.
+    Empty -B/--rgb-composites values are passed explicitly rather than omitted:
+    "no color bands" and "no composites" are states the lobby can be in
+    deliberately (and the latter is forced on any dataset with fewer than 3 FITS
+    bands), so falling back to the tool's Y,J,H / H,Y,I;H,J,Y defaults would
+    launch a viewer that exits with "band directory not found" before its window
+    opens. Only an unset main band is omitted -- there "unset" means no path has
+    been scanned yet, and -b '' would name a band directory that cannot exist.
     """
     argv = []
     main_band = (main_band or '').strip()
     if main_band:
         argv += ["-b", main_band]
     color_bands = [b.strip() for b in color_bands if b.strip()]
-    if color_bands:
-        argv += ["-B", ",".join(color_bands)]
+    argv += ["-B", ",".join(color_bands)]
     composite_terms = [",".join(b.strip() for b in triple)
                         for triple in composites if all(b.strip() for b in triple)]
-    if composite_terms:
-        argv += ["--rgb-composites", ";".join(composite_terms)]
+    argv += ["--rgb-composites", ";".join(composite_terms)]
     return argv
 
 
 def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False, band_argv=None):
-    argv = [join(REPO_ROOT, "mosaic_viewer_ERO_edition.py"),
+    argv = [join(REPO_ROOT, "mosaic.py"),
             "-p", path, "-l", str(ncols), "-m", str(nrows)]
     if name:
         argv += ["-N", name]
     if seed is not None:
         argv += ["-s", str(seed)]
-    if printname:
-        argv += ["--printname"]
+    # Passed explicitly either way: mosaic prints names by default, so leaving the
+    # flag out would not turn the printing off.
+    argv += ["--printname" if printname else "--no-printname"]
     argv += band_argv or []
     return argv
 
 
 def build_single_argv(path, name, seed, classifications_string, band_argv=None):
-    argv = [join(REPO_ROOT, "single_viewer_multiband_ERO_edition.py"),
+    argv = [join(REPO_ROOT, "single_viewer.py"),
             "-p", path, "--classifications", classifications_string]
     if name:
         argv += ["-N", name]
@@ -121,37 +174,59 @@ def build_single_argv(path, name, seed, classifications_string, band_argv=None):
     return argv
 
 
+def classifications_string_from_rows(rows, log=None):
+    """Turn scheme rows (as produced by the scheme table / stored in the config)
+    into the single viewer's --classifications string.
+
+    Returns (classifications_string, positive_majors). `log`, if given, is
+    called with warning messages for unknown-major subclasses and duplicate
+    keyboard shortcuts.
+    """
+    def warn(message):
+        if log is not None:
+            log(message)
+
+    tokens = []
+    positive_majors = set()
+    seen_keys = {}
+    known_majors = {r['major'] for r in rows if r.get('type') == 'major'}
+
+    for row_dict in rows:
+        major, sub, key = row_dict.get('major', ''), row_dict.get('sub', ''), row_dict.get('key', '')
+        if not major or not key:
+            continue
+        if row_dict.get('type') == 'major':
+            tokens.append(f"{major}={key}")
+            if row_dict.get('positive'):
+                positive_majors.add(major)
+        else:
+            if major not in known_majors:
+                warn(f"Warning: subclass '{sub}' refers to unknown major '{major}'")
+            tokens.append(f"{major}:{sub}={key}")
+        label = f"{major}:{sub}" if row_dict.get('type') == 'subclass' and sub else major
+        seen_keys.setdefault(key, []).append(label)
+
+    for key, labels in seen_keys.items():
+        if len(labels) > 1:
+            warn(f"Warning: keyboard shortcut '{key}' is assigned to more than "
+                 f"one button: {', '.join(labels)}")
+
+    return ";".join(tokens), positive_majors
+
+
 class LobbyWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Qt-stamp-visualizer Lobby")
 
-        self.defaults = {
-            'data_path': '',
-            'output_path': '',
-            'session_name': '',
-            'seed_enabled': False,
-            'seed_value': 0,
-            'run_mode_index': MODE_CHAINED,
-            'mosaic_ncols': 5,
-            'mosaic_nrows': 8,
-            'mosaic_printname': False,
-            'mosaic_uninteresting_positive': False,
-            'mosaic_lens_positive': True,
-            'mosaic_interesting_positive': False,
-            'copy_instead_of_symlink': False,
-            'scheme_rows': DEFAULT_SCHEME_ROWS,
-            'main_band': 'VIS',
-            'color_bands': ['Y', 'J', 'H'],
-            'rgb_composites': [['H', 'Y', 'I'], ['H', 'J', 'Y']],
-            'dock_state': None,
-        }
+        self.defaults = DEFAULT_CONFIG
         self.config_dict = self.load_dict()
 
         self._launched_process = None
         self.stage1_proc = None
         self._stage1_extraction_context = None
         self.available_bands = []
+        self.fits_bands = []
 
         self._build_ui()
         self._apply_config_to_widgets()
@@ -295,15 +370,20 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.composites_table.setMinimumHeight(60)
         form.addRow("RGB composites:", self.composites_table)
 
+        self.composites_hint_label = QtWidgets.QLabel(
+            "RGB composites need at least 3 FITS-format bands -- rescan a path to check.")
+        self.composites_hint_label.setWordWrap(True)
+        form.addRow(self.composites_hint_label)
+
         composite_btn_row = QtWidgets.QHBoxLayout()
-        add_composite_btn = QtWidgets.QPushButton("Add composite")
-        add_composite_btn.clicked.connect(lambda: self._add_composite_row())
-        remove_composite_btn = QtWidgets.QPushButton("Remove selected")
-        remove_composite_btn.clicked.connect(self._remove_selected_composite_row)
+        self.add_composite_btn = QtWidgets.QPushButton("Add composite")
+        self.add_composite_btn.clicked.connect(lambda: self._add_composite_row())
+        self.remove_composite_btn = QtWidgets.QPushButton("Remove selected")
+        self.remove_composite_btn.clicked.connect(self._remove_selected_composite_row)
         rescan_btn = QtWidgets.QPushButton("Rescan bands")
         rescan_btn.clicked.connect(self._rescan_bands)
-        composite_btn_row.addWidget(add_composite_btn)
-        composite_btn_row.addWidget(remove_composite_btn)
+        composite_btn_row.addWidget(self.add_composite_btn)
+        composite_btn_row.addWidget(self.remove_composite_btn)
         composite_btn_row.addWidget(rescan_btn)
         form.addRow(composite_btn_row)
 
@@ -391,7 +471,12 @@ class LobbyWindow(QtWidgets.QMainWindow):
     def _rescan_bands(self):
         path = self.path_edit.text().strip()
         self.available_bands = discover_bands(path)
+        self.fits_bands = [b for b in self.available_bands
+                            if detect_band_filetype(join(path, b)) == 'FITS']
+        self._reconcile_main_band()
         self._refresh_band_widgets()
+        self._prune_missing_composite_bands()
+        self._update_composites_availability()
         if not path:
             self.bands_status_label.setText(
                 "Set a path above, then Rescan bands -- subdirectories of the path become available bands.")
@@ -399,6 +484,48 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.bands_status_label.setText("Available bands: " + ", ".join(self.available_bands))
         else:
             self.bands_status_label.setText(f"No subdirectories found under {path}.")
+
+    def _reconcile_main_band(self):
+        """If the current main band no longer exists under the (re)scanned path, fall back to
+        the first available band -- otherwise the launched tool exits with an error (band
+        directory not found) before its window even opens."""
+        current = self.main_band_combo.currentText().strip()
+        if not self.available_bands or current in self.available_bands:
+            return
+        fallback = self.available_bands[0]
+        self.main_band_combo.setCurrentText(fallback)
+        self.log(f"Main band '{current}' not found under the new path -- switched to '{fallback}'.")
+
+    def _prune_missing_composite_bands(self):
+        """Clears any composite-table cell referencing a band no longer found under the path --
+        same crash risk as a stale main band, since build_band_argv only skips a composite row
+        when a cell is empty, not when it names a nonexistent directory."""
+        pruned = set()
+        for row in range(self.composites_table.rowCount()):
+            for col in range(3):
+                combo = self.composites_table.cellWidget(row, col)
+                if combo is None:
+                    continue
+                value = combo.currentText().strip()
+                if value and value not in self.available_bands:
+                    pruned.add(value)
+                    combo.setCurrentText('')
+        if pruned:
+            self.log(f"Composite band(s) not found under the new path -- cleared: {', '.join(sorted(pruned))}")
+
+    def _update_composites_availability(self):
+        "RGB composites need >=3 FITS bands -- PNG/JPG bands can never be composite members."
+        enough_fits = len(self.fits_bands) >= 3
+        self.composites_table.setEnabled(enough_fits)
+        self.add_composite_btn.setEnabled(enough_fits)
+        if enough_fits:
+            self.composites_hint_label.setText(
+                "FITS bands available for composites: " + ", ".join(self.fits_bands))
+        else:
+            self.composites_table.setRowCount(0)
+            found = f" (found: {', '.join(self.fits_bands)})" if self.fits_bands else " (found none)"
+            self.composites_hint_label.setText(
+                f"RGB composites need at least 3 FITS-format bands{found}.")
 
     def _refresh_band_widgets(self):
         "Repopulate every band combo/list with self.available_bands, preserving current selections."
@@ -423,7 +550,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
                 current = combo.currentText().strip()
                 combo.blockSignals(True)
                 combo.clear()
-                combo.addItems(bands)
+                combo.addItems(self.fits_bands)
                 combo.setCurrentText(current)
                 combo.blockSignals(False)
 
@@ -449,7 +576,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         for col, value in enumerate((r, g, b)):
             combo = QComboBox()
             combo.setEditable(True)
-            combo.addItems(self.available_bands)
+            combo.addItems(self.fits_bands)
             combo.setCurrentText(value)
             self.composites_table.setCellWidget(row, col, combo)
 
@@ -486,6 +613,13 @@ class LobbyWindow(QtWidgets.QMainWindow):
         missing = sorted(b for b in referenced if b not in self.available_bands)
         if missing:
             self.log(f"Warning: band(s) not found as subdirectories of the data path: {', '.join(missing)}")
+
+        composite_bands_referenced = {b for triple in self._composite_rows() if all(triple) for b in triple}
+        non_fits = sorted(b for b in composite_bands_referenced
+                           if b in self.available_bands and b not in self.fits_bands)
+        if non_fits:
+            self.log(f"Warning: RGB composite band(s) are not FITS and will be skipped by the viewer: "
+                      f"{', '.join(non_fits)}")
 
     # ---------------------------------------------------------- scheme table
 
@@ -565,37 +699,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def build_classifications_string(self):
         """Returns (classifications_string, positive_majors)."""
-        tokens = []
-        positive_majors = set()
-        seen_keys = {}
-        known_majors = set()
-
-        rows = self._scheme_table_to_rows()
-        for row_dict in rows:
-            if row_dict['type'] == 'major':
-                known_majors.add(row_dict['major'])
-
-        for row_dict in rows:
-            major, sub, key = row_dict['major'], row_dict['sub'], row_dict['key']
-            if not major or not key:
-                continue
-            if row_dict['type'] == 'major':
-                tokens.append(f"{major}={key}")
-                if row_dict['positive']:
-                    positive_majors.add(major)
-            else:
-                if major not in known_majors:
-                    self.log(f"Warning: subclass '{sub}' refers to unknown major '{major}'")
-                tokens.append(f"{major}:{sub}={key}")
-            label = f"{major}:{sub}" if row_dict['type'] == 'subclass' and sub else major
-            seen_keys.setdefault(key, []).append(label)
-
-        for key, labels in seen_keys.items():
-            if len(labels) > 1:
-                self.log(f"Warning: keyboard shortcut '{key}' is assigned to more than "
-                          f"one button: {', '.join(labels)}")
-
-        return ";".join(tokens), positive_majors
+        return classifications_string_from_rows(self._scheme_table_to_rows(), log=self.log)
 
     def update_classifications_preview(self, *_args):
         classifications_string, _ = self.build_classifications_string()
@@ -675,6 +779,11 @@ class LobbyWindow(QtWidgets.QMainWindow):
         inheriting the parent's terminal, so without this, printed output
         (e.g. --printname) would go nowhere visible at all."""
         proc.setProcessChannelMode(QProcess.MergedChannels)
+        # Python block-buffers a piped stdout, so a child's prints would only show up
+        # here when it exits; unbuffered output makes the log pane live.
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        proc.setProcessEnvironment(env)
         proc.readyReadStandardOutput.connect(
             lambda: self.log(bytes(proc.readAllStandardOutput())
                               .decode(errors='replace').rstrip('\n')))
@@ -874,26 +983,228 @@ class LobbyWindow(QtWidgets.QMainWindow):
             json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
 
     def load_dict(self):
-        try:
-            with open(PATH_TO_LOBBY_CONFIG) as f:
-                temp_dict = json.load(f)
-                for key in self.defaults.keys():
-                    if key not in temp_dict.keys():
-                        temp_dict[key] = self.defaults[key]
-                return temp_dict
-        except FileNotFoundError:
-            return dict(self.defaults)
+        return load_config_dict(PATH_TO_LOBBY_CONFIG)
 
     def closeEvent(self, event):
         self.save_dict()
         event.accept()
 
 
+# ------------------------------------------------------------------ headless CLI
+
+MODE_NAMES = {'mosaic': MODE_MOSAIC_ONLY, 'single': MODE_SINGLE_ONLY,
+              'chained': MODE_CHAINED}
+
+
+def mosaic_positive_values_from_config(c):
+    "The mosaic numeric codes marked 'positive' for chained-mode extraction."
+    values = set()
+    if c.get('mosaic_uninteresting_positive'):
+        values.add(0)
+    if c.get('mosaic_lens_positive'):
+        values.add(1)
+    if c.get('mosaic_interesting_positive'):
+        values.add(2)
+    return values
+
+
+def _parse_rgb_composites(text):
+    return [[b.strip() for b in triple.split(',')]
+            for triple in text.split(';') if triple.strip()]
+
+
+def config_from_cli(args):
+    """Lobby config dict: the file named by --config, with whichever CLI
+    overrides were actually passed layered on top."""
+    c = load_config_dict(args.config)
+    if args.mode is not None:
+        c['run_mode_index'] = MODE_NAMES[args.mode]
+    if args.path is not None:
+        c['data_path'] = args.path
+    if args.output is not None:
+        c['output_path'] = args.output
+    if args.name is not None:
+        c['session_name'] = args.name
+    if args.seed is not None:
+        c['seed_enabled'], c['seed_value'] = True, args.seed
+    if args.no_seed:
+        c['seed_enabled'] = False
+    if args.main_band is not None:
+        c['main_band'] = args.main_band
+    if args.color_bands is not None:
+        c['color_bands'] = [b.strip() for b in args.color_bands.split(',') if b.strip()]
+    if args.rgb_composites is not None:
+        c['rgb_composites'] = _parse_rgb_composites(args.rgb_composites)
+    if args.ncols is not None:
+        c['mosaic_ncols'] = args.ncols
+    if args.nrows is not None:
+        c['mosaic_nrows'] = args.nrows
+    if args.printname is not None:
+        c['mosaic_printname'] = args.printname
+    if args.copy_files is not None:
+        c['copy_instead_of_symlink'] = args.copy_files
+    return c
+
+
+def run_headless(config, classifications_override=None, print_command_only=False,
+                 log=print):
+    """Run the configured workflow without the lobby window; returns an exit code.
+
+    With print_command_only, prints the viewer command line(s) the lobby would
+    launch -- chained mode prints both stages -- and returns 0 without running
+    anything.
+    """
+    mode = config['run_mode_index']
+    path = config['data_path']
+    name = config['session_name']
+    seed = config['seed_value'] if config['seed_enabled'] else None
+    band_argv = build_band_argv(config['main_band'], config['color_bands'],
+                                config['rgb_composites'])
+
+    if classifications_override is not None:
+        classifications_string = classifications_override
+    else:
+        classifications_string, _ = classifications_string_from_rows(
+            config['scheme_rows'], log=log)
+
+    def emit(argv):
+        log(shlex.join([sys.executable, *argv]))
+
+    def run(argv):
+        log("Launching: " + shlex.join([sys.executable, *argv]))
+        return subprocess.run([sys.executable, *argv], cwd=REPO_ROOT).returncode
+
+    if print_command_only:
+        path = path or "<path>"
+    elif not path:
+        log("No data path -- pass --path or set 'data_path' in the lobby config.")
+        return 2
+
+    if mode == MODE_MOSAIC_ONLY:
+        argv = build_mosaic_argv(path, name, seed, config['mosaic_ncols'],
+                                 config['mosaic_nrows'],
+                                 printname=config['mosaic_printname'],
+                                 band_argv=band_argv)
+        if print_command_only:
+            emit(argv)
+            return 0
+        return run(argv)
+
+    if mode == MODE_SINGLE_ONLY:
+        argv = build_single_argv(path, name, seed, classifications_string,
+                                 band_argv=band_argv)
+        if print_command_only:
+            emit(argv)
+            return 0
+        return run(argv)
+
+    # chained: mosaic -> extract positives -> 1-by-1
+    ncols, nrows = config['mosaic_ncols'], config['mosaic_nrows']
+    mosaic_argv = build_mosaic_argv(path, name, seed, ncols, nrows,
+                                    printname=config['mosaic_printname'],
+                                    band_argv=band_argv)
+    output_path = config['output_path']
+
+    if print_command_only:
+        emit(mosaic_argv)
+        emit(build_single_argv(output_path or "<output_path>", name, seed,
+                               classifications_string, band_argv=band_argv))
+        return 0
+
+    if not output_path:
+        log("Chained mode needs an output path -- pass --output or set 'output_path'.")
+        return 2
+
+    code = run(mosaic_argv)
+    if code != 0:
+        log(f"Mosaic stage exited with code {code} -- stopping before extraction.")
+        return code
+
+    csv_path = predict_mosaic_csv_path(path, name, ncols, nrows, seed)
+    if not csv_path:
+        log("Could not auto-detect the mosaic classification CSV -- run the chained "
+            "workflow from the lobby GUI instead, or extract manually.")
+        return 3
+    log(f"Auto-detected classification CSV: {csv_path}")
+
+    result = extraction.extract(
+        csv_path, path, output_path, mosaic_positive_values_from_config(config),
+        use_symlink=not config['copy_instead_of_symlink'], on_progress=log)
+    log(f"Extraction complete. {result.summary()}")
+
+    return run(build_single_argv(output_path, name, seed, classifications_string,
+                                 band_argv=band_argv))
+
+
+def _build_arg_parser():
+    p = argparse.ArgumentParser(
+        prog="lobby.py",
+        description="Launcher for the mosaic and 1-by-1 stamp viewers. With no "
+                    "arguments it opens the lobby window; --no-gui / --print-command "
+                    "run the configured workflow straight from the command line, "
+                    "reading unspecified values from the lobby config file.")
+    p.add_argument("--no-gui", action="store_true",
+                   help="Run the configured workflow without opening the lobby window.")
+    p.add_argument("--print-command", action="store_true",
+                   help="Print the viewer command line(s) that would run, then exit "
+                        "(implies --no-gui; chained mode prints both stages).")
+    p.add_argument("--config", default=PATH_TO_LOBBY_CONFIG, metavar="PATH",
+                   help="Lobby config JSON to read defaults from (default: %(default)s).")
+
+    g = p.add_argument_group("workflow overrides (with --no-gui / --print-command)")
+    g.add_argument("-m", "--mode", choices=sorted(MODE_NAMES),
+                   help="mosaic only, 1-by-1 (single) only, or mosaic->1-by-1 chained.")
+    g.add_argument("-p", "--path", help="Path to the images to inspect.")
+    g.add_argument("-o", "--output", help="Output path for chained-mode extraction.")
+    g.add_argument("-N", "--name", help="Session name.")
+    g.add_argument("-s", "--seed", type=int, help="Shuffle seed.")
+    g.add_argument("--no-seed", action="store_true",
+                   help="Ignore any seed set in the config.")
+    g.add_argument("-b", "--main-band", help='Main / high-resolution band (e.g. "VIS").')
+    g.add_argument("-B", "--color-bands", metavar="A,B,C",
+                   help="Comma-separated individually-selectable bands.")
+    g.add_argument("--rgb-composites", metavar="R,G,B;R,G,B",
+                   help="Semicolon-separated R,G,B band-name triples.")
+    g.add_argument("--classifications", metavar="SPEC",
+                   help='1-by-1 scheme string (e.g. "A=1;B=2;C=3;X=4;I=5"); '
+                        "overrides the scheme rows from the config.")
+    g.add_argument("--ncols", type=int, help="Mosaic columns per page.")
+    g.add_argument("--nrows", type=int, help="Mosaic rows per page.")
+    g.add_argument("--printname", action=argparse.BooleanOptionalAction,
+                   help="Mosaic: print the filename on click.")
+    copy_group = g.add_mutually_exclusive_group()
+    copy_group.add_argument("--copy", dest="copy_files", action="store_true", default=None,
+                            help="Chained extraction copies files.")
+    copy_group.add_argument("--symlink", dest="copy_files", action="store_false",
+                            default=None, help="Chained extraction symlinks files (default).")
+    return p
+
+
 def main():
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    win = LobbyWindow()
-    win.show()
-    sys.exit(app.exec())
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    headless = args.no_gui or args.print_command
+    gave_override = any([
+        args.mode is not None, args.path is not None, args.output is not None,
+        args.name is not None, args.seed is not None, args.no_seed,
+        args.main_band is not None, args.color_bands is not None,
+        args.rgb_composites is not None, args.classifications is not None,
+        args.ncols is not None, args.nrows is not None,
+        args.printname is not None, args.copy_files is not None,
+    ])
+    if gave_override and not headless:
+        parser.error("workflow overrides only apply with --no-gui or --print-command")
+
+    if not headless:
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+        win = LobbyWindow()
+        win.show()
+        sys.exit(app.exec())
+
+    sys.exit(run_headless(config_from_cli(args),
+                          classifications_override=args.classifications,
+                          print_command_only=args.print_command))
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ import webbrowser
 from imaging import (
     identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
     contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
-    natural_sort, find_filename_iteration,
+    natural_sort, find_filename_iteration, detect_band_filetype, find_band_file,
 )
 from widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, NamedLabel,
@@ -73,9 +73,12 @@ parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=
                     default=None)
 parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The default (66) should be good enough, but you can try smaller values if the mosaic is too big for your screen. You can change this even after you started a classification.",type=int,
                     default=None)
-parser.add_argument("--printname", help="Whether to print the name when you click.",
+parser.add_argument("--printname",
+                    help="Print the file name of every stamp you click (shown in the "
+                    "lobby's log pane when mosaic is launched from it). Enabled by "
+                    "default; use --no-printname to silence it.",
                     action=argparse.BooleanOptionalAction,
-                    default=False)
+                    default=True)
 parser.add_argument("--page", help="Initial page.",type=int,
                     default=None)
 parser.add_argument('--resize',
@@ -89,7 +92,10 @@ parser.add_argument('--resize',
 
 
 args = parser.parse_args()
-args.color_bands = args.color_bands.split(',')
+# Empty entries dropped: -B '' means "no color bands", not one band named ''
+# (which passes the missing-directory check below -- it resolves to --path itself
+# -- and then fails at image load).
+args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
 
 args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
 args.composite_band_members = {}  # key -> (r, g, b) tuple
@@ -482,16 +488,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.main_band = args.main_band
         self.color_bands = args.color_bands
-        self.composite_bands = args.composite_bands
-        self.composite_band_members = args.composite_band_members
-        self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                {b for members in self.composite_band_members.values() for b in members})
-        self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
-        # print(f"{self.main_band}")
-        # print(f"{self.color_bands}")
-        # print(f"{self.all_single_bands}")
-        # print(f"{self.composite_bands}")
         self.scratchpath = './.temp'
         self.deactivated_path = './dark.png'
         os.makedirs(self.scratchpath, exist_ok=True)
@@ -500,13 +497,43 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         base_band_path = join(self.stampspath, self.main_band)
         self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
         self.filetype='FITS'
+        if len(self.listimage) < 1:
+            self.listimage = sorted(os.path.basename(x)
+                            for x in (glob.glob(join(base_band_path, '*.png')) +
+                                      glob.glob(join(base_band_path, '*.jpg')) +
+                                      glob.glob(join(base_band_path, '*.jpeg'))))
+            self.filetype='COMPRESSED'
         print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            print(f"No FITS files found in {base_band_path}. "
-                  "This tool computes multiband colors on the fly and requires FITS "
-                  "input -- PNG/JPG is not supported.")
+            print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
             sys.exit(1)
+
+        # Each band's format is a property of its own directory (detected independently),
+        # so bands can mix FITS and PNG/JPG within the same session -- only the main band
+        # (self.filetype) governs the object list.
+        self.band_filetype = {self.main_band: self.filetype}
+        for band in (set(self.color_bands) |
+                     {b for members in args.composite_band_members.values() for b in members}):
+            self.band_filetype.setdefault(band, detect_band_filetype(join(self.stampspath, band)))
+
+        # RGB composites require all three member bands to be FITS -- drop any composite
+        # that isn't, rather than crashing or silently mixing formats into one image.
+        self.composite_bands = []
+        self.composite_band_members = {}
+        for key in args.composite_bands:
+            members = args.composite_band_members[key]
+            non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
+            if non_fits:
+                print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
+                      f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
+                continue
+            self.composite_bands.append(key)
+            self.composite_band_members[key] = members
+
+        self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                {b for members in self.composite_band_members.values() for b in members})
+        self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
         if self.random_seed is not None:
             # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
@@ -720,7 +747,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             button.setAlignment(Qt.AlignCenter) #TODO CHECK HOW TO REACTIVATE THIS. (OR IF IT'S NEEDED)
 
             # button.adjustSize()
-        if self.filetype != 'FITS':
+        if not any(self.band_filetype.get(b) == 'FITS' for b in self.all_single_bands):
             self.cbscale.setEnabled(False)
             self.cbcolormap.setEnabled(False)
         
@@ -791,8 +818,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print('Something is wrong. This condition should not be trigger.')
         else:
             object_index = self.gridarea*self.config_dict['page']+i
-            print(self.df.iloc[object_index,
-                        self.df.columns.get_loc('file_name')]) if args.printname else True
+            if args.printname:
+                print(self.df.iloc[object_index,
+                            self.df.columns.get_loc('file_name')])
             self.df.iloc[object_index,
                         self.df.columns.get_loc('classification')] = new_class
             
@@ -963,28 +991,44 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     plt.imsave(self.filepath(i, self.config_dict['page']),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
-    def prepare_png(self, i, single_band_only):
-        if self.filetype == 'FITS':
-            band_images = {band: self.read_fits(i,band) for band in self.all_single_bands}
+    def _band_filepath(self, i, band):
+        "Resolves band's file for object i -- matched by stem so bands with different formats/extensions for the same object still line up."
+        if band == self.main_band:
+            return join(self.stampspath, band, self.listimage[i])
+        stem = os.path.splitext(self.listimage[i])[0]
+        filepath = find_band_file(self.stampspath, band, stem)
+        if filepath is None:
+            raise FileNotFoundError(f"No FITS/PNG/JPG file found for '{stem}' in band '{band}'.")
+        return filepath
 
-            for band in [self.main_band, *self.color_bands]:
+    def prepare_png(self, i, single_band_only):
+        # self.composite_bands only ever contains composites whose 3 members are all FITS
+        # bands (filtered at startup), so no per-composite format branching is needed below.
+        fits_bands = [band for band in self.all_single_bands if self.band_filetype.get(band) == 'FITS']
+        band_images = {band: self.read_fits(self._band_filepath(i, band)) for band in fits_bands}
+
+        for band in [self.main_band, *self.color_bands]:
+            if self.band_filetype.get(band) == 'FITS':
                 image = self.prepare_single_band(band_images[band])
                 plt.imsave(self.filepath(i, self.config_dict['page'], band=band),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
+            else:
+                src = self._band_filepath(i, band)
+                Image.open(src).save(self.filepath(i, self.config_dict['page'], band=band))
 
-            if not single_band_only:
-                for composite_band in self.composite_bands:
-                    bands = self.composite_band_members[composite_band]
-                    try:
-                        stacked = np.stack([band_images[band] for band in bands],axis=-1)
-                    except ValueError:
-                        shapes = {band: band_images[band].shape for band in bands}
-                        raise ValueError(
-                            f"RGB composite '{composite_band}' requires all member bands to have the exact "
-                            f"same image dimensions -- got {shapes}")
-                    composite_image = self.prepare_composite_band(stacked)
-                    plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
-                        composite_image, origin="lower")
+        if not single_band_only:
+            for composite_band in self.composite_bands:
+                bands = self.composite_band_members[composite_band]
+                try:
+                    stacked = np.stack([band_images[band] for band in bands],axis=-1)
+                except ValueError:
+                    shapes = {band: band_images[band].shape for band in bands}
+                    raise ValueError(
+                        f"RGB composite '{composite_band}' requires all member bands to have the exact "
+                        f"same image dimensions -- got {shapes}")
+                composite_image = self.prepare_composite_band(stacked)
+                plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
+                    composite_image, origin="lower")
 
     def prepare_single_band(self, image):
         scale_min, scale_max = self.scale_val(image)
@@ -1034,10 +1078,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
 
-    def read_fits(self, i, band = ''):
-        file = join(self.stampspath, band, self.listimage[i])
+    def read_fits(self, filepath):
         # Note : memmap=False is much faster when opening/closing many small files
-        with fits.open(file, memmap=False) as hdu_list:
+        with fits.open(filepath, memmap=False) as hdu_list:
             image = hdu_list[0].data
         return image
 

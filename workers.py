@@ -1,7 +1,6 @@
 # This Python file uses the following encoding: utf-8
 """Background QObject workers for fetching external cutouts (PanSTARRS),
-meant to be moved to a QThread by the caller. Used by
-single_viewer_multiband_ERO_edition.py.
+meant to be moved to a QThread by the caller. Used by single_viewer.py.
 """
 
 import urllib.error

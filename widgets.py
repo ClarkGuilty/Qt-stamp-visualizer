@@ -1,6 +1,5 @@
 # This Python file uses the following encoding: utf-8
-"""Shared, generic Qt widgets used by both mosaic_viewer_ERO_edition.py and
-single_viewer_multiband_ERO_edition.py.
+"""Shared, generic Qt widgets used by both mosaic.py and single_viewer.py.
 """
 
 import copy

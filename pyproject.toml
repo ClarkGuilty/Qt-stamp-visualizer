@@ -24,15 +24,15 @@ dependencies = [
 Repository = "https://github.com/ClarkGuilty/Qt-stamp-visualizer"
 
 [project.scripts]
-qtstamp-mosaic = "mosaic_viewer_ERO_edition:main"
-qtstamp-single = "single_viewer_multiband_ERO_edition:main"
+qtstamp-mosaic = "mosaic:main"
+qtstamp-single = "single_viewer:main"
 qtstamp-lobby = "lobby:main"
 
 [tool.setuptools]
 py-modules = [
     "lobby",
-    "mosaic_viewer_ERO_edition",
-    "single_viewer_multiband_ERO_edition",
+    "mosaic",
+    "single_viewer",
     "extraction",
     "extract_files_from_mosaic",
     "imaging",

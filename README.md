@@ -68,8 +68,8 @@ pip install -e .
 
 Either way, this also installs three console commands you can run from
 anywhere in the environment: `qtstamp-mosaic`, `qtstamp-single`, and
-`qtstamp-lobby`, equivalent to running `mosaic_viewer_ERO_edition.py`,
-`single_viewer_multiband_ERO_edition.py`, and `lobby.py` directly.
+`qtstamp-lobby`, equivalent to running `mosaic.py`, `single_viewer.py`, and
+`lobby.py` directly.
 
 If plain `pip`/`python` fail, try `pip3`/`python3` instead.
 
@@ -116,9 +116,9 @@ or, if installed via pip/uv (see Installation above):
 qtstamp-lobby
 </code></pre>
 
-It takes no command-line arguments; everything is set in the window, and it
-remembers your settings (data path, session name, seed, mosaic layout, 1-by-1
-classification scheme, etc.) between runs.
+Run with no arguments, everything is set in the window, and it remembers your
+settings (data path, session name, seed, mosaic layout, 1-by-1 classification
+scheme, etc.) between runs.
 
 In the window you can:
 
@@ -140,7 +140,32 @@ In the window you can:
 * Use `Extract only...` to run just the CSV-to-extracted-subset step on its
   own, without launching either tool afterward.
 
-A log pane at the bottom streams the output of whichever tool Lobby launches.
+A log pane at the bottom streams the output of whichever tool Lobby launches,
+live while it runs. Mosaic prints the file name of every stamp you click there
+(untick `Print name on click` to silence it).
+
+#### Lobby without the window (headless)
+
+Lobby can also run the whole workflow from the command line, chained extraction
+included, without ever opening its window. Anything you don't pass on the
+command line is read from the saved lobby config, so the usual pattern is to
+set things up once in the GUI, then script the reruns.
+
+<pre><code class="shell">
+# Run the configured workflow headless
+python lobby.py --no-gui -m chained -p PATH_TO_FILES -o OUTPUT_PATH -N NAME -s SEED
+
+# Just print the viewer command(s) it would launch, then exit
+# (chained mode prints both the mosaic and the 1-by-1 stage)
+python lobby.py --print-command -m chained -p PATH_TO_FILES -o OUTPUT_PATH -N NAME
+</code></pre>
+
+`-m/--mode` is one of `mosaic`, `single`, or `chained`. Other overrides:
+`-p/--path`, `-o/--output`, `-N/--name`, `-s/--seed` (`--no-seed` to force
+off), `-b/--main-band`, `-B/--color-bands`, `--rgb-composites`,
+`--classifications` (the 1-by-1 scheme string, in place of the config's scheme
+table), `--ncols`, `--nrows`, `--printname/--no-printname`, `--copy/--symlink`,
+and `--config PATH` to read a different config file. See `python lobby.py --help`.
 
 ---
 
@@ -158,7 +183,7 @@ ones, then hand anything worth a closer look to the 1-by-1 tool.
 
 <pre><code class="shell">
 
-python mosaic_viewer_ERO_edition.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
+python mosaic.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -189,7 +214,9 @@ optional arguments:
                         The default (66) should be good enough, but you can try smaller values if the mosaic is too big for your screen.
                         You can change this even after you started a classification.
   --printname, --no-printname
-                        Whether to print the name when you click. (default False)
+                        Print the file name of every stamp you click (shown in the
+                        lobby's log pane when mosaic is launched from it).
+                        (default True)
   --page PAGE           Initial page.
   --resize, --no-resize
                         Whether to let the stamps resize with the window. (default False)
@@ -227,7 +254,7 @@ optional per-object lookups in Legacy Survey, PanSTARRS, ds9, and ESASky.
 Please replace NAME with your name, and SEED_NUMBER with any number larger than 1000.
 
 <pre><code class="bash">
-python single_viewer_multiband_ERO_edition.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
+python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 
 optional arguments:
 

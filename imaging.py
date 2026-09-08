@@ -1,12 +1,42 @@
 # This Python file uses the following encoding: utf-8
 """Shared pure functions for image scaling/normalization and filename
-handling, used by both mosaic_viewer_ERO_edition.py and
-single_viewer_multiband_ERO_edition.py.
+handling, used by both mosaic.py and single_viewer.py.
 """
 
+import glob
+import os
+from os.path import join
 import re
 
 import numpy as np
+
+FITS_EXT = '.fits'
+COMPRESSED_EXTS = ('.png', '.jpg', '.jpeg')
+
+
+def detect_band_filetype(band_dir):
+    """Returns 'FITS' if band_dir contains FITS files, 'COMPRESSED' if it contains
+    PNG/JPG/JPEG instead, or None if band_dir has neither (or doesn't exist).
+    A band's format is a property of its whole directory, not of individual files --
+    this lets different bands in the same dataset use different formats."""
+    if glob.glob(join(band_dir, '*' + FITS_EXT)):
+        return 'FITS'
+    if any(glob.glob(join(band_dir, '*' + ext)) for ext in COMPRESSED_EXTS):
+        return 'COMPRESSED'
+    return None
+
+
+def find_band_file(stampspath, band, stem):
+    """Resolves an object's stem (filename without extension, taken from the main
+    band's listing) to the actual file inside another band's directory -- FITS first,
+    then PNG/JPG/JPEG -- so bands with different formats/extensions for the same
+    object still match up by name. Returns None if nothing matches."""
+    base = join(stampspath, band, stem)
+    for ext in (FITS_EXT, *COMPRESSED_EXTS):
+        candidate = base + ext
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def identity(x):

@@ -20,3 +20,6 @@ __pycache__/
 
 # Internal docs, not for the public repo
 PLAN.md
+
+# Local dev fixtures, not part of the repo
+test_stamps_png_jpg/

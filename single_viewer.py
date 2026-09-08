@@ -40,7 +40,7 @@ from imaging import (
     identity, log, asinh2, print_range, get_value_range,
     get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
     get_contrast_bias_reasonable_assumptions, natural_sort,
-    find_filename_iteration,
+    find_filename_iteration, detect_band_filetype, find_band_file,
 )
 from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel
 from workers import (
@@ -88,7 +88,10 @@ parser.add_argument('--rgb-composites',
 
 args = parser.parse_args()
 
-args.color_bands = args.color_bands.split(',')
+# Empty entries dropped: -B '' means "no color bands", not one band named ''
+# (which passes the missing-directory check below -- it resolves to --path itself
+# -- and then fails at image load).
+args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
 
 args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
 args.composite_band_members = {}  # key -> (r, g, b) tuple
@@ -340,23 +343,47 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         base_band_path = join(self.stampspath, self.main_band)
         self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
         self.filetype='FITS'
+        if len(self.listimage) < 1:
+            self.listimage = sorted(os.path.basename(x)
+                            for x in (glob.glob(join(base_band_path, '*.png')) +
+                                      glob.glob(join(base_band_path, '*.jpg')) +
+                                      glob.glob(join(base_band_path, '*.jpeg'))))
+            self.filetype='COMPRESSED'
         print(f"Classifying {len(self.listimage)} sources.")
 
         if len(self.listimage) < 1:
-            print(f"No FITS files found in {base_band_path}. "
-                  "This tool computes multiband colors on the fly and requires FITS "
-                  "input -- PNG/JPG is not supported.")
+            print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
             sys.exit(1)
         if self.config_dict['counter'] > len(self.listimage):
             self.config_dict['counter'] = 0
-        
+
         if self.random_seed is not None:
             print(f"Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
 
-        self.composite_bands = args.composite_bands
-        self.composite_band_members = args.composite_band_members
+        # Each band's format is a property of its own directory (detected independently),
+        # so bands can mix FITS and PNG/JPG within the same session -- only the main band
+        # (self.filetype) governs the object list and RA/Dec-dependent tools.
+        self.band_filetype = {self.main_band: self.filetype}
+        for band in (set(self.color_bands) |
+                     {b for members in args.composite_band_members.values() for b in members}):
+            self.band_filetype.setdefault(band, detect_band_filetype(join(self.stampspath, band)))
+
+        # RGB composites require all three member bands to be FITS -- drop any composite
+        # that isn't, rather than crashing or silently mixing formats into one image.
+        self.composite_bands = []
+        self.composite_band_members = {}
+        for key in args.composite_bands:
+            members = args.composite_band_members[key]
+            non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
+            if non_fits:
+                print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
+                      f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
+                continue
+            self.composite_bands.append(key)
+            self.composite_band_members[key] = members
+
         self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
         self.all_bands = [self.main_band,
                           *self.composite_bands,
@@ -449,7 +476,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.canvas[band].setStyleSheet('background-color: black')
 
         no_row_config_saved = not any(self.config_dict[row_key] for row_key in self.panel_row_layout)
-        default_row_panels = {'row_1': [self.main_band, self.composite_bands[0]], 'row_2': [], 'row_3': []}
+        default_row_panels = {'row_1': [self.main_band] + self.composite_bands[:1], 'row_2': [], 'row_3': []}
         visible_panels = set()
         for row_key, row_layout in self.panel_row_layout.items():
             saved = self.config_dict[row_key]
@@ -465,7 +492,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.canvas[band].hide()
 
         self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
-        self.config_dict['nisprgbvisible'] = self.composite_bands[-1] in visible_panels
+        self.config_dict['nisprgbvisible'] = bool(self.composite_bands) and self.composite_bands[-1] in visible_panels
 
         # print(f"{self.all_bands = }")
 
@@ -500,6 +527,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         tools_menu.addAction("Open LS", self.viewls)
         tools_menu.addAction("Open PanSTARRS", self.viewPanSTARRS)
         tools_menu.addAction("Open ESASky", self.viewESASky)
+        if self.filetype != 'FITS': #These all need FITS pixel data and/or RA/Dec from WCS.
+            for action in tools_menu.actions():
+                action.setEnabled(False)
         self.tools_button.setMenu(tools_menu)
         list_button_row0_layout.append(self.tools_button)
 
@@ -537,7 +567,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.settings_menu = SettingsMenu("Settings")
         self.bprefetch_ps = self.settings_menu.add_toggle("Pre-fetch PanSTARRS")
         self.bprefetch_ps.clicked.connect(self.toggle_prefetch_panstarrs)
-        if self.config_dict['prefetch_panstarrs']:
+        if self.filetype != 'FITS':
+            self.bprefetch_ps.setEnabled(False)
+            self.config_dict['prefetch_panstarrs'] = False
+        elif self.config_dict['prefetch_panstarrs']:
             self.config_dict['prefetch_panstarrs'] = False
             self.toggle_prefetch_panstarrs()
             self.bprefetch_ps.setChecked(True)
@@ -545,7 +578,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if args.legacysurvey:
             self.bprefetch_ls = self.settings_menu.add_toggle("Pre-fetch Legacy Survey")
             self.bprefetch_ls.clicked.connect(self.toggle_prefetch_legacysurvey)
-            if self.config_dict['prefetch_legacysurvey']:
+            if self.filetype != 'FITS':
+                self.bprefetch_ls.setEnabled(False)
+                self.config_dict['prefetch_legacysurvey'] = False
+            elif self.config_dict['prefetch_legacysurvey']:
                 self.config_dict['prefetch_legacysurvey'] = False
                 self.toggle_prefetch_legacysurvey()
                 self.bprefetch_ls.setChecked(True)
@@ -678,6 +714,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def toggle_prefetch_panstarrs(self):
+        if self.filetype != 'FITS':
+            self.status.showMessage("Pre-fetching PanSTARRS requires FITS input.",5000)
+            return
         if self.config_dict['prefetch_panstarrs']:
             self.fetchthread_ps.interrupt()
             self.config_dict['prefetch_panstarrs'] = False
@@ -691,6 +730,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def toggle_prefetch_legacysurvey(self):
+        if self.filetype != 'FITS':
+            self.status.showMessage("Pre-fetching Legacy Survey requires FITS input.",5000)
+            return
         if self.config_dict['prefetch_legacysurvey']:
             self.fetchthread_ls.interrupt()
             self.config_dict['prefetch_legacysurvey'] = False
@@ -779,6 +821,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def copy_RADec_to_keyboard(self):
+        if self.filetype != 'FITS':
+            self.status.showMessage("RA,Dec is only available for FITS input.",5000)
+            return
         to_copy = f"{self.ra},{self.dec}"
         self.clipboard.setText(to_copy)
         self.status.showMessage(f'RA,Dec copied to clipboard: {self.ra},{self.dec}',10000)
@@ -856,6 +901,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_legacy_survey(self):
+        if self.filetype != 'FITS':
+            self.status.showMessage("Legacy Survey requires FITS input (RA/Dec from WCS).",5000)
+            return
         pixscale = str(LEGACY_SURVEY_PIXEL_SIZE)
         n_pixels_in_ls, pixels_big_fov_ls = legacy_survey_number_of_pixels(self.image_pixel_size, 
                                     np.max(self.images[self.main_band].shape),
@@ -929,6 +977,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def set_panstarrs(self):
+        if self.filetype != 'FITS':
+            self.status.showMessage("PanSTARRS requires FITS input (RA/Dec from WCS).",5000)
+            return
         n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
                                     np.max(self.images[self.main_band].shape))
 
@@ -1013,7 +1064,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         was_panstarrs = self.config_dict['panstarrs']
         was_legacysurvey = self.config_dict['legacysurvey']
         self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
-        self.config_dict['nisprgbvisible'] = self.composite_bands[-1] in visible_panels
+        self.config_dict['nisprgbvisible'] = bool(self.composite_bands) and self.composite_bands[-1] in visible_panels
         self.config_dict['panstarrs'] = _PANSTARRS_KEY in visible_panels
         self.config_dict['legacysurvey'] = _LEGACY_SURVEY_KEY in visible_panels
         if self.config_dict['colorbandsvisible'] and not was_colorbandsvisible and not self.color_bands_already_plotted:
@@ -1063,7 +1114,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 {b for members in self.composite_band_members.values() for b in members})
         arguments = ["ds9", '-fits']
         for band in sorted(all_referenced_bands):
-            filename = f"{join(self.stampspath,band,self.filename)}"
+            band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
+            if band_filetype != 'FITS': #ds9 only understands FITS -- skip any non-FITS band.
+                continue
+            filename = self._band_filepath(band)
             arguments += [filename, '-zoom', 'to',str(band2zoom.get(band, default_zoom)), '-colorbar', 'no']
         print(" ".join(arguments))
         subprocess.Popen(arguments)
@@ -1259,19 +1313,29 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.image_size = np.max(w.array_shape)
         return sky[0][0], sky[1][0]#, image_pixel_size
 
+    def _band_filepath(self, band):
+        "Resolves band's file for the current object -- main band uses self.filename directly, other bands are matched by stem since their format/extension can differ."
+        if band == self.main_band:
+            return join(self.stampspath, band, self.filename)
+        stem = os.path.splitext(self.filename)[0]
+        filepath = find_band_file(self.stampspath, band, stem)
+        if filepath is None:
+            raise FileNotFoundError(f"No FITS/PNG/JPG file found for '{stem}' in band '{band}'.")
+        return filepath
+
     def plot(self, scale_min = None, scale_max = None, band = None):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
         # label = ""
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.plot_band(band)
-                # label += f"{band}-" 
+                # label += f"{band}-"
             self.color_bands_already_plotted = True
             # label = label[:-1]+'\n'
         else:
             self.color_bands_already_plotted = False
         # label += f'{self.main_band}-'
-        
+
         if not self.bottom_row_bands_already_plotted:
             for band in [self.main_band]:
                 self.plot_band(band)
@@ -1285,8 +1349,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         get_radec = True if band == self.main_band else False
-        if self.filetype == 'FITS':
-            image = self.load_fits(join(self.stampspath, band, self.filename),get_radec)
+        band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
+        filepath = self._band_filepath(band)
+        if band_filetype == 'FITS':
+            image = self.load_fits(filepath, get_radec)
             # scaling_factor = np.nanpercentile(image,q=90)
             # if scaling_factor == 0:
             #     # scaling_factor = np.nanpercentile(image,q=99)
@@ -1301,37 +1367,36 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image = self.rescale_image(image, scale_min, scale_max)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            image = np.asarray(Image.open(self.filename))
-            self.image = np.copy(image)
+            image = np.asarray(Image.open(filepath))
+            self.images[band] = np.copy(image)
             self.ax[band].imshow(image, origin='upper') #For pngs this is best.
         self.ax[band].set_axis_off() #Always before .draw()!
         self.canvas[band].draw()
 
     def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
+        # self.composite_bands only ever contains composites whose 3 members are all
+        # FITS bands (filtered at startup), so no format branching is needed here.
         base_bands = self.composite_band_members[composite_band]
 
         # self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
 
-        if self.filetype == 'FITS':
-            cached_bands = {self.main_band}
-            if self.color_bands_already_plotted:
-                cached_bands |= set(self.color_bands)
-            if not set(base_bands).issubset(cached_bands):
-                images = {band: self.load_fits(join(self.stampspath, band, self.filename),get_radec=False) for band in base_bands}
-            else:
-                images = self.images
-            try:
-                stacked = np.stack([images[band] for band in base_bands],axis=2)
-            except ValueError:
-                shapes = {band: images[band].shape for band in base_bands}
-                raise ValueError(
-                    f"RGB composite '{composite_band}' requires all member bands to have the exact same "
-                    f"image dimensions -- got {shapes}")
-            image = self.prepare_composite_image(stacked)
-            self.ax[composite_band].imshow(image, origin='lower')
+        cached_bands = {self.main_band}
+        if self.color_bands_already_plotted:
+            cached_bands |= set(self.color_bands)
+        if not set(base_bands).issubset(cached_bands):
+            images = {band: self.load_fits(self._band_filepath(band),get_radec=False) for band in base_bands}
         else:
-            raise Exception("Color RPGs in the form of PNGs are no supported in the ERO edition.")
+            images = self.images
+        try:
+            stacked = np.stack([images[band] for band in base_bands],axis=2)
+        except ValueError:
+            shapes = {band: images[band].shape for band in base_bands}
+            raise ValueError(
+                f"RGB composite '{composite_band}' requires all member bands to have the exact same "
+                f"image dimensions -- got {shapes}")
+        image = self.prepare_composite_image(stacked)
+        self.ax[composite_band].imshow(image, origin='lower')
         self.ax[composite_band].set_axis_off() #Always before .draw()!
         self.canvas[composite_band].draw()
 
@@ -1347,7 +1412,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.color_bands_already_plotted = False
         else:
             self.color_bands_already_plotted = False
-        
+
         for band in [self.main_band]:
             self.replot_band(band)
         for band in self.composite_bands:
@@ -1357,11 +1422,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         image = np.copy(self.images[band])
-        if self.filetype == 'FITS':
+        band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
+        if band_filetype == 'FITS':
             image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.ax[band].imshow(image, origin='lower')
+            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
         self.ax[band].set_axis_off()
         self.canvas[band].draw()
 
