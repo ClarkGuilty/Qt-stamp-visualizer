@@ -1,9 +1,7 @@
 # This Python file uses the following encoding: utf-8
 
 import argparse
-import PySide6 #Must be imported before matplotlib. #TODO remove rewrite without matplotlib widgets
 
-#import time
 import numpy as np
 import astropy.units as u
 from astropy.io import fits
@@ -19,9 +17,11 @@ import pandas as pd
 import subprocess
 from PIL import Image
 
+# PySide6 must be imported before matplotlib, so the Qt backend below binds to
+# these bindings. #TODO remove: rewrite without matplotlib widgets
 from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, Slot, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QClipboard
+from PySide6.QtCore import Qt, Slot, QThread
+from PySide6.QtGui import QKeySequence, QShortcut
 
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
@@ -30,22 +30,22 @@ from matplotlib import image as mpimg
 import os
 from os.path import join
 
-import re
 import sys
 from time import time
-import urllib
 import webbrowser
 
 from imaging import (
-    identity, log, asinh2, print_range, get_value_range,
+    identity, log, asinh2,
     get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
     get_contrast_bias_reasonable_assumptions, natural_sort,
     find_filename_iteration, detect_band_filetype, find_band_file,
 )
 from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel
 from workers import (
-    PS1_FITSCUT_URL, get_panstarrs_filenames, SingleFetchWorker,
-    PanstarrsFetchWorker,
+    CacheState, SingleFetchWorker, PanstarrsFetchWorker,
+    cache_state, fetch_legacy_survey, fetch_panstarrs,
+    legacy_survey_cache_name, panstarrs_cache_name,
+    purge_placeholder_cutouts,
 )
 
 parser = argparse.ArgumentParser(description='configure the parameters of the execution.')
@@ -70,6 +70,13 @@ parser.add_argument("--legacysurvey",
                     "pass --no-legacysurvey to disable (e.g. if the Legacy Survey server is unreliable).",
                     action=argparse.BooleanOptionalAction,
                     default=True)
+parser.add_argument("--ls-big-fov-residuals",
+                    help="Also pre-fetch the large-field-of-view Legacy Survey residual "
+                    "cutout, so that turning on both 'Large FoV' and 'Residuals' shows a "
+                    "cached image instead of downloading on demand. Off by default: it "
+                    "adds a fourth Legacy Survey download per object.",
+                    action=argparse.BooleanOptionalAction,
+                    default=False)
 parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
                     default=None)
 parser.add_argument('--classifications',
@@ -161,9 +168,20 @@ if args.reset_config:
 
 if args.clean:
     for f in (glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")) +
-              glob.glob(join(PANSTARRS_PATH,"*.jpg"))):
+              glob.glob(join(PANSTARRS_PATH,"*.jpg")) +
+              glob.glob(join(LEGACY_SURVEY_PATH,"*.miss")) +
+              glob.glob(join(PANSTARRS_PATH,"*.miss"))):
         if os.path.exists(f):
             os.remove(f)
+else:
+    # Older versions wrote a black 66x66 JPEG into the cache whenever a
+    # download failed, and every reader then treated that file's existence as a
+    # cache hit -- so one outage blacked out those coordinates permanently.
+    # Misses are sidecar markers now; clear the placeholders left behind.
+    _purged = purge_placeholder_cutouts(LEGACY_SURVEY_PATH, PANSTARRS_PATH)
+    if _purged:
+        print(f"Removed {_purged} cached failure placeholder(s); "
+              "those cutouts will be downloaded again when needed.")
 
 def legacy_survey_number_of_pixels(image_pixel_size,
                                     image_dim,
@@ -182,7 +200,8 @@ def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECOND
 
 
 class FetchThread(QThread):
-    def __init__(self, df, initial_counter, fetch_panstarrs=True, fetch_legacysurvey=True, parent=None):
+    def __init__(self, df, initial_counter, fetch_panstarrs=True, fetch_legacysurvey=True,
+                 fetch_big_fov_residuals=False, parent=None):
             QThread.__init__(self, parent)
 
             self.df = df
@@ -192,49 +211,23 @@ class FetchThread(QThread):
             self.stampspath = args.path
             self.main_band = args.main_band
             self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,self.main_band,'*.fits'))])
-            self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
             self.fetch_panstarrs = fetch_panstarrs
             self.fetch_legacysurvey = fetch_legacysurvey
-    def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale='0.262'):
-        # residual = (residual and size == 47)
-        res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
-        savefile = os.path.join(self.legacy_survey_path, savename)        
-        if os.path.exists(savefile):
-            print('File already exists:', savefile) if args.verbose else False
-            return True
-        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
-         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
-        print(url) if args.verbose else False
-        try:
-            urllib.request.urlretrieve(url, savefile)
-        except (urllib.error.URLError, OSError):
-            with open(savefile,'w') as f:
-                self.im.save(f)
-            return False
+            self.fetch_big_fov_residuals = fetch_big_fov_residuals
+            # interrupt() can arrive before run() has started (isRunning() is
+            # already true by then), so this must exist from construction.
+            self._active = True
 
-        return True
+    def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale='0.262'):
+        savefile = os.path.join(self.legacy_survey_path,
+                                legacy_survey_cache_name(ra, dec, size, residual=residual))
+        return fetch_legacy_survey(savefile, ra, dec, size, residual=residual,
+                                   pixscale=pixscale, verbose=args.verbose)
 
     def download_panstarrs(self,ra,dec,size=240):
-        savename = 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
-        savefile = os.path.join(self.panstarrs_path, savename)
-        if os.path.exists(savefile):
-            print('File already exists:', savefile) if args.verbose else False
-            return True
-        try:
-            filenames = get_panstarrs_filenames(ra,dec,filters='grz')
-            if filenames is None:
-                raise urllib.error.URLError('no PS1 filenames found')
-            url = (f"{PS1_FITSCUT_URL}?red={filenames['z']}&green={filenames['r']}&blue={filenames['g']}"+
-                   f"&ra={ra}&dec={dec}&size={size}&output_size=256&autoscale=99.5&format=jpg")
-            print(url) if args.verbose else False
-            urllib.request.urlretrieve(url, savefile)
-        except (urllib.error.URLError, OSError):
-            with open(savefile,'w') as f:
-                self.im.save(f)
-            return False
-
-        return True
+        savefile = os.path.join(self.panstarrs_path,
+                                panstarrs_cache_name(ra, dec, size))
+        return fetch_panstarrs(savefile, ra, dec, size, verbose=args.verbose)
 
     def get_ra_dec(self,header):
         w = WCS(header,fix=False)
@@ -249,29 +242,40 @@ class FetchThread(QThread):
     def interrupt(self):
         self._active = False
 
+    def fetch_one(self, index):
+        "Download every cutout wanted for the object at `index`."
+        stamp = self.df.iloc[index]
+        if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
+            f = join(self.stampspath,self.main_band,self.listimage[index])
+            ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
+        else:
+            ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
+        if self.fetch_panstarrs:
+            n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
+            self.download_panstarrs(ra,dec,size=n_pixels_ps1)
+            self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
+
+        if self.fetch_legacysurvey:
+            n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size,
+                                    image_dim,
+                                    pixels_big_fov_ls=488)
+            self.download_legacy_survey(ra,dec,size=n_pixels_ls)
+            self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
+            self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
+            if self.fetch_big_fov_residuals:
+                self.download_legacy_survey(ra,dec,size=n_pixels_big_ls,residual=True)
+
     def run(self):
         index = self.initial_counter
         self._active = True
-        while self._active and index < len(self.df): 
-            stamp = self.df.iloc[index]
-            if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
-                f = join(self.stampspath,self.main_band,self.listimage[index])
-                ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
-            else:
-                ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
-            if self.fetch_panstarrs:
-                n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
-                self.download_panstarrs(ra,dec,size=n_pixels_ps1)
-                self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
-
-            if self.fetch_legacysurvey:
-                n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size,
-                                        image_dim,
-                                        pixels_big_fov_ls=488)
-                self.download_legacy_survey(ra,dec,size=n_pixels_ls)
-                self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
-                self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
-                # self.download_legacy_survey(ra,dec,size=n_pixels_big_ls, residual=True) #uncomment for large FoV residuals.
+        while self._active and index < len(self.df):
+            # One unreadable header or malformed survey response must not end
+            # the prefetch pass: everything after this index would silently
+            # never be prefetched, for the rest of the session.
+            try:
+                self.fetch_one(index)
+            except Exception as E:
+                print(f"Skipping pre-fetch for object {index}: {type(E).__name__}: {E}")
             index+=1
         return 0
 
@@ -314,16 +318,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.config_dict = self.load_dict()
         if not args.legacysurvey:
             self.config_dict['legacysurvey'] = False
-        self.im = Image.fromarray(np.zeros((66,66),dtype=np.uint8))
-
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
         self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
-        # self.scratchpath = './.temp_multiband'
-        # os.makedirs(self.scratchpath,exist_ok=True)
         self.scale2funct = {'identity':identity,
                             'sqrt':np.sqrt,
                             'log':log,
@@ -396,20 +396,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                           {band: EXTERNAL_BAND for band in self.external_bands} |
                           {_PANSTARRS_KEY: EXTERNAL_BAND})
 
-        # print(self.all_bands)
         self.df = self.obtain_df()
 
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
-        # self.filename = join(self.stampspath, 'VIS',self.listimage[self.config_dict['counter']])
         self.filename = join(self.listimage[self.config_dict['counter']])
-        # self.status.showMessage(self.listimage[self.config_dict['counter']],)
-
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
-        # self.plot_layout_area = QtWidgets.QGridLayout()
         self.plot_layout_area = QtWidgets.QVBoxLayout()
         self.plot_layout_0_Widget = QtWidgets.QWidget()
         self.plot_layout_0 = QtWidgets.QHBoxLayout(self.plot_layout_0_Widget)
@@ -432,12 +427,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
         self.counter_widget.setStyleSheet("font-size: 14px")
         
-        # self.label_plot = {band: QtWidgets.QLabel(f"{self.listimage[self.config_dict['counter']]} - {band}", alignment=Qt.AlignCenter) for band in self.all_bands}
         self.band2bandname_dict = {band: band for band in self.all_bands}
 
         self.label_plot = {band: QtWidgets.QLabel(f"{band}", alignment=Qt.AlignCenter) for band in [self.main_band]}
         self.rows_summary_label = BandNamesLabel(alignment=Qt.AlignCenter)
-        # print(f"{self.all_bands = }")
         font = self.label_plot[self.main_band].font()
         font.setPointSize(16)
         self.label_plot[self.main_band].setFont(font)
@@ -459,17 +452,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.figure = {band: Figure(figsize=(5,3),layout="constrained",facecolor='black') for band in self.all_bands}
         self.canvas = {band: FigureCanvas(self.figure[band]) for band in self.all_bands}
         
-        # bands_positions = {
-        #                 'VIS': (0,0),
-        #                 'J': (1,0),
-        #                 'H': (1,1),
-        #                 'Y': (1,2),
-        # }
-        # for band in self.all_bands:
-            # self.plot_layout_0.addWidget(self.canvas[band], *bands_positions[band]) #Use this if the layout is a grid
-
-
-        # print(f"{self.composite_bands = }")
         self.panel_keys = [self.main_band, *self.composite_bands, *self.color_bands,
                           *self.external_bands, _PANSTARRS_KEY]
         for band in self.panel_keys:
@@ -493,8 +475,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.config_dict['colorbandsvisible'] = any(band in visible_panels for band in self.color_bands)
         self.config_dict['nisprgbvisible'] = bool(self.composite_bands) and self.composite_bands[-1] in visible_panels
-
-        # print(f"{self.all_bands = }")
 
         self.ax = {band: self.figure[band].subplots() for band in self.all_bands}
         self.images = {}
@@ -698,9 +678,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         button_layout.addLayout(button_row11_layout, button_layout_spacing)
 
 
-        # self.plot_layout_area.addLayout(self.plot_layout_0,1,0)
-        # self.plot_layout_area.addWidget(self.plot_layout_1_Widget,0,0)
-
         self.plot_layout_area.addWidget(self.plot_layout_0_Widget,1)
         self.plot_layout_area.addWidget(self.plot_layout_1_Widget,1)
         self.plot_layout_area.addWidget(self.plot_layout_2_Widget,1)
@@ -712,18 +689,45 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.timer_0 = time()
 
+    def stop_prefetch_thread(self, thread_attr):
+        """Interrupt a prefetch pass if it is still running.
+
+        `finished` is wired to deleteLater, so a pass that ran to completion
+        leaves the Python attribute pointing at a destroyed C++ object; calling
+        into it raises RuntimeError instead of doing nothing."""
+        thread = getattr(self, thread_attr, None)
+        if thread is None:
+            return
+        try:
+            thread.interrupt()
+        except RuntimeError:
+            pass
+
+    def on_prefetch_finished(self, config_key, button):
+        "Keep the toggle's state honest once a prefetch pass ends by itself."
+        self.config_dict[config_key] = False
+        try:
+            button.setChecked(False)
+        except RuntimeError:
+            pass
+
     @Slot()
     def toggle_prefetch_panstarrs(self):
         if self.filetype != 'FITS':
             self.status.showMessage("Pre-fetching PanSTARRS requires FITS input.",5000)
             return
         if self.config_dict['prefetch_panstarrs']:
-            self.fetchthread_ps.interrupt()
+            self.stop_prefetch_thread('fetchthread_ps')
             self.config_dict['prefetch_panstarrs'] = False
         else:
             self.fetchthread_ps = FetchThread(self.df,self.config_dict['counter'],
                                         fetch_panstarrs=True, fetch_legacysurvey=False) #Always store in an object.
             self.fetchthread_ps.finished.connect(self.fetchthread_ps.deleteLater)
+            # A finished pass leaves the config flag claiming a thread is still
+            # running; the next toggle would then try to interrupt a destroyed
+            # object instead of starting a new pass.
+            self.fetchthread_ps.finished.connect(
+                partial(self.on_prefetch_finished, 'prefetch_panstarrs', self.bprefetch_ps))
             self.fetchthread_ps.setTerminationEnabled(True)
             self.fetchthread_ps.start()
             self.config_dict['prefetch_panstarrs'] = True
@@ -734,12 +738,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.status.showMessage("Pre-fetching Legacy Survey requires FITS input.",5000)
             return
         if self.config_dict['prefetch_legacysurvey']:
-            self.fetchthread_ls.interrupt()
+            self.stop_prefetch_thread('fetchthread_ls')
             self.config_dict['prefetch_legacysurvey'] = False
         else:
             self.fetchthread_ls = FetchThread(self.df,self.config_dict['counter'],
-                                        fetch_panstarrs=False, fetch_legacysurvey=True) #Always store in an object.
+                                        fetch_panstarrs=False, fetch_legacysurvey=True,
+                                        fetch_big_fov_residuals=args.ls_big_fov_residuals) #Always store in an object.
             self.fetchthread_ls.finished.connect(self.fetchthread_ls.deleteLater)
+            self.fetchthread_ls.finished.connect(
+                partial(self.on_prefetch_finished, 'prefetch_legacysurvey', self.bprefetch_ls))
             self.fetchthread_ls.setTerminationEnabled(True)
             self.fetchthread_ls.start()
             self.config_dict['prefetch_legacysurvey'] = True
@@ -837,15 +844,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def classify(self, grade, subgrade):
-        t0 = time()
-        cnt = self.config_dict['counter']# - 1
+        cnt = self.config_dict['counter']
         assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
-        # self.df.at[cnt,'comment'] = grade
         self.df.at[cnt,'pixel_size'] = self.image_pixel_size
         self.df.at[cnt,'image_dim'] = self.image_size
         self.df.at[cnt,'time'] += (time() - self.timer_0)
@@ -859,20 +864,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.next()
         
 
-    def generate_legacy_survey_filename_url(self,ra,dec,pixscale='0.262',residual=False,size=47):
-        # pixscale = '0.262'
-        residual = residual
-        # residual = (residual and size == 47) #Uncomment to deactivate large FoV residuals.
-        res = '-resid' if residual else '-grz'
-        savename = 'N' + '_' + str(ra) + '_' + str(dec) +f"_{size}" + f'ls-dr10{res}.jpg'
-        savefile = os.path.join(self.legacy_survey_path, savename) 
-        print(f"Quering for {savename} ")       
-        if os.path.exists(savefile):
-            return savefile, ''
-        self.status.showMessage("Downloading legacy survey jpeg.")
-        url = (f'http://legacysurvey.org/viewer/cutout.jpg?ra={ra}&dec={dec}'+
-         f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
-        return savefile, url
+    def legacy_survey_cache_lookup(self,ra,dec,residual=False,size=47):
+        "Cache path for this cutout plus its HIT/MISS/RETRY state."
+        savename = legacy_survey_cache_name(ra, dec, size, residual=residual)
+        savefile = os.path.join(self.legacy_survey_path, savename)
+        print(f"Quering for {savename} ")
+        return savefile, cache_state(savefile)
 
     def generate_title(self, size_in_sky, residuals=False, bigarea=False):
         units = 'arcmin' if bigarea else 'arcsec'
@@ -883,16 +880,29 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return "{0:.2f} x {0:.2f}".format(size_in_sky.to(units))
 
     def plot_legacy_survey(self, savefile, title):
-        self.ax[_LEGACY_SURVEY_KEY].cla()
+        # Guard before clearing: a worker for a previously-shown object can
+        # finish after the user has moved on, and must leave this panel alone.
         if savefile != self.legacy_filename:
             return
-        self.ax[_LEGACY_SURVEY_KEY].imshow(mpimg.imread(savefile))
+        self.ax[_LEGACY_SURVEY_KEY].cla()
+        try:
+            image = mpimg.imread(savefile)
+        except (OSError, ValueError, SyntaxError) as E:
+            print("Could not read the Legacy Survey cutout:", E)
+            self.plot_no_legacy_survey(title='No Legacy Survey data available',
+                                       colormap='viridis')
+            return
+        self.ax[_LEGACY_SURVEY_KEY].imshow(image)
         self.ax[_LEGACY_SURVEY_KEY].set_title(title, color='white', fontsize=10)
         self.ax[_LEGACY_SURVEY_KEY].set_axis_off()
         self.canvas[_LEGACY_SURVEY_KEY].draw()
 
     def plot_no_legacy_survey(self, title='Waiting for data',
-                            colormap='Greys_r'):
+                            colormap='Greys_r', savefile=None):
+        # Same staleness guard as above: a late failure from the previous
+        # object used to wipe out the current object's perfectly good panel.
+        if savefile is not None and savefile != self.legacy_filename:
+            return
         self.ax[_LEGACY_SURVEY_KEY].cla()
         self.ax[_LEGACY_SURVEY_KEY].imshow(np.zeros(self.images[self.main_band].shape), cmap=colormap)
         self.ax[_LEGACY_SURVEY_KEY].set_title(title, color='white', fontsize=10)
@@ -912,23 +922,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         size = pixels_big_fov_ls if self.config_dict['legacybigarea'] else n_pixels_in_ls
         size_in_sky = (LEGACY_SURVEY_PIXEL_SIZE * u.arcsec) * size
         try:
-            savefile, url = self.generate_legacy_survey_filename_url(self.ra,self.dec,
-                                        pixscale=pixscale,
+            savefile, state = self.legacy_survey_cache_lookup(self.ra,self.dec,
                                         residual=self.config_dict['legacyresiduals'],
-                                        size=size) 
+                                        size=size)
 
             title = self.generate_title(
                                         size_in_sky = size_in_sky, 
                                         residuals=self.config_dict['legacyresiduals'],
                                         bigarea=self.config_dict['legacybigarea'])
-            if url == '':
-                self.legacy_filename = savefile
+            self.legacy_filename = savefile
+            if state is CacheState.HIT:
                 self.plot_legacy_survey(savefile, title)
                 return
-            self.plot_no_legacy_survey()
-            self.legacy_filename = savefile
+            if state is CacheState.MISS:
+                # Known gap in coverage, recorded recently enough to trust.
+                # Say so at once instead of spawning a thread to re-confirm it.
+                self.plot_no_legacy_survey(title='No Legacy Survey data available',
+                                           colormap='viridis', savefile=savefile)
+                return
+            self.plot_no_legacy_survey(savefile=savefile)
+            self.status.showMessage("Downloading legacy survey jpeg.")
             self.workerThread = QThread(parent=self)
-            self.singleFetchWorker = SingleFetchWorker(url, savefile, title)
+            self.singleFetchWorker = SingleFetchWorker(savefile, self.ra, self.dec, size,
+                            residual=self.config_dict['legacyresiduals'],
+                            pixscale=pixscale, verbose=args.verbose)
             self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
             self.workerThread.started.connect(self.singleFetchWorker.run)
         
@@ -936,39 +953,51 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
             self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
             self.singleFetchWorker.failed_download.connect(partial(self.plot_no_legacy_survey,title='No Legacy Survey data available',
-                            colormap='viridis'))
+                            colormap='viridis', savefile=savefile))
             self.workerThread.finished.connect(self.workerThread.deleteLater)
             self.workerThread.setTerminationEnabled(True)
 
             self.workerThread.start()
             self.workerThread.quit()
         
-        except FileNotFoundError as E:
+        except FileNotFoundError:
             self.plot_no_legacy_survey()
-            # raise
         except Exception as E:
             print("Exception while setting up the Legacy Survey image:")
             print(E.args)
             print(type(E))
-            # raise
 
-    def generate_panstarrs_filename_url(self,ra,dec,size=240):
-        savename = 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
+    def panstarrs_cache_lookup(self,ra,dec,size=240):
+        "Cache path for this cutout plus its HIT/MISS/RETRY state."
+        savename = panstarrs_cache_name(ra, dec, size)
         savefile = os.path.join(self.panstarrs_path, savename)
         print(f"Quering for {savename} ")
-        return savefile, os.path.exists(savefile)
+        return savefile, cache_state(savefile)
 
     def plot_panstarrs(self, savefile, title):
-        self.ax[_PANSTARRS_KEY].cla()
+        # Guard before clearing: a worker for a previously-shown object can
+        # finish after the user has moved on, and must leave this panel alone.
         if savefile != self.panstarrs_filename:
             return
-        self.ax[_PANSTARRS_KEY].imshow(mpimg.imread(savefile))
+        self.ax[_PANSTARRS_KEY].cla()
+        try:
+            image = mpimg.imread(savefile)
+        except (OSError, ValueError, SyntaxError) as E:
+            print("Could not read the PanSTARRS cutout:", E)
+            self.plot_no_panstarrs(title='No PanSTARRS data available',
+                                   colormap='viridis')
+            return
+        self.ax[_PANSTARRS_KEY].imshow(image)
         self.ax[_PANSTARRS_KEY].set_title(title, color='white', fontsize=10)
         self.ax[_PANSTARRS_KEY].set_axis_off()
         self.canvas[_PANSTARRS_KEY].draw()
 
     def plot_no_panstarrs(self, title='Waiting for data',
-                            colormap='Greys_r'):
+                            colormap='Greys_r', savefile=None):
+        # Same staleness guard as above: a late failure from the previous
+        # object used to wipe out the current object's perfectly good panel.
+        if savefile is not None and savefile != self.panstarrs_filename:
+            return
         self.ax[_PANSTARRS_KEY].cla()
         self.ax[_PANSTARRS_KEY].imshow(np.zeros(self.images[self.main_band].shape), cmap=colormap)
         self.ax[_PANSTARRS_KEY].set_title(title, color='white', fontsize=10)
@@ -986,19 +1015,26 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         size = pixels_big_fov_ps1 if self.config_dict['legacybigarea'] else n_pixels_in_ps1
         size_in_sky = (PANSTARRS_PIXEL_SIZE * u.arcsec) * size
         try:
-            savefile, cached = self.generate_panstarrs_filename_url(self.ra,self.dec,size=size)
+            savefile, state = self.panstarrs_cache_lookup(self.ra,self.dec,size=size)
 
             title = self.generate_title(
                                         size_in_sky = size_in_sky,
                                         bigarea=self.config_dict['legacybigarea'])
             self.panstarrs_filename = savefile
-            if cached:
+            if state is CacheState.HIT:
                 self.plot_panstarrs(savefile, title)
                 return
-            self.plot_no_panstarrs()
+            if state is CacheState.MISS:
+                # Known gap in coverage, recorded recently enough to trust.
+                # Say so at once instead of spawning a thread to re-confirm it.
+                self.plot_no_panstarrs(title='No PanSTARRS data available',
+                                       colormap='viridis', savefile=savefile)
+                return
+            self.plot_no_panstarrs(savefile=savefile)
             self.status.showMessage("Downloading PanSTARRS jpeg.")
             self.workerThreadPS = QThread(parent=self)
-            self.singleFetchWorkerPS = PanstarrsFetchWorker(self.ra, self.dec, savefile, size)
+            self.singleFetchWorkerPS = PanstarrsFetchWorker(self.ra, self.dec, savefile, size,
+                                                            verbose=args.verbose)
             self.workerThreadPS.finished.connect(self.singleFetchWorkerPS.deleteLater)
             self.workerThreadPS.started.connect(self.singleFetchWorkerPS.run)
 
@@ -1006,21 +1042,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
             self.singleFetchWorkerPS.successful_download.connect(partial(self.plot_panstarrs, savefile, title))
             self.singleFetchWorkerPS.failed_download.connect(partial(self.plot_no_panstarrs,title='No PanSTARRS data available',
-                            colormap='viridis'))
+                            colormap='viridis', savefile=savefile))
             self.workerThreadPS.finished.connect(self.workerThreadPS.deleteLater)
             self.workerThreadPS.setTerminationEnabled(True)
 
             self.workerThreadPS.start()
             self.workerThreadPS.quit()
 
-        except FileNotFoundError as E:
+        except FileNotFoundError:
             self.plot_no_panstarrs()
-            # raise
         except Exception as E:
             print("Exception while setting up the PanSTARRS image:")
             print(E.args)
             print(type(E))
-            # raise
 
 
     def update_row_visibility(self):
@@ -1138,7 +1172,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def viewESASky(self):
         fov = (self.image_pixel_size * np.max(self.images[self.main_band].shape)) / 3600
         website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov={fov}&cooframe=J2000&sci=true&lang=en&"
-        # website += "&euclid_image=perseus" #Use this to add the Euclid ERO overlay. Sadly, this is always centered on the same coordinate.
         webbrowser.open(website)
 
     @Slot()
@@ -1174,26 +1207,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         std = np.nanstd(l)
         return std
 
-    def background_rms_image_old(self,cb, image):
-        xg, yg = np.shape(image)
-        cut0 = image[0:cb, 0:cb]
-        cut1 = image[xg - cb:xg, 0:cb]
-        cut2 = image[0:cb, yg - cb:yg]
-        cut3 = image[xg - cb:xg, yg - cb:yg]
-        l = [cut0, cut1, cut2, cut3]
-        m = np.nanmean(np.nanmean(l, axis=1), axis=1)
-        ml = min(m)
-        mm = max(m)
-        if ml is np.nan or mm is np.nan:
-            print(f"WARNING: {ml = }, {mm = }")
-        if mm > 5 * ml:
-            s = np.sort(l, axis=0)
-            nl = s[:-1]
-            std = np.nanstd(nl)
-        else:
-            std = np.nanstd([cut0, cut1, cut2, cut3])
-        return std
-    
     def scale_val(self,image_array):
         if len(np.shape(image_array)) == 2:
             image_array = [image_array]
@@ -1205,10 +1218,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             #Sensible default values
             box_size_vmin = 5
             box_size_vmax = 14
-        # print(len(image_array))
         vmin = np.nanmin([self.background_rms_image(box_size_vmin, image) for image in image_array])
-        
-        # print(f"{box_size_vmin = }, {box_size_vmax = }")
         xl, yl = np.shape(image_array[0])
         xmin = int((xl) / 2. - (box_size_vmax / 2.))
         xmax = int((xl) / 2. + (box_size_vmax / 2.))
@@ -1219,7 +1229,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def rescale_image_composite(self, image, scale_min, scale_max, composite = False):
         factor = self.scale(scale_max - scale_min)
-        # print(f"{scale_min = }, {scale_max = }")
         image = np.clip(image, scale_min, scale_max)
         image -= scale_min
 
@@ -1232,13 +1241,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 p_high = 1,
                                 value_at_min = 0,
                                 color_bkg_level = 0.1):
-        # scale_min, scale_max = get_value_range(image,p)
         scale_min, scale_max = get_value_range_asymmetric(image,p_low,p_high)
 
         image = clip_normalize(image,scale_min,scale_max)
         image = self.scale(image)
         contrast, bias = get_contrast_bias_reasonable_assumptions(
-                                                                    # 0,
                                                                     max(value_at_min,scale_min),
                                                                     color_bkg_level,
                                                                     scale_min,
@@ -1269,14 +1276,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 value_at_min=0,
                                 color_bkg_level=-0.05,
                                 ):
-        # composite_image = np.zeros((*images[0].shape, 3),
-        #                             dtype=float)
         composite_image = np.zeros_like(images,
                                     dtype=float)
         scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high)
-        # print(f"{scale_min = }, {scale_max = }")
-        # for i, image in enumerate(images):
-        # print(images.shape)
         for i in range(images.shape[-1]):
             composite_image[:,:,i] = self.rescale_single_band(
                             images[:,:,i],
@@ -1293,7 +1295,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             indices0 = np.where(image < scale_min)
             indices1 = np.where((image >= scale_min) & (image <= scale_max))
             indices2 = np.where(image > scale_max)
-            # image = image - scale_min
             image[indices0] = 0.0 #Why would there be a value below scale_min?
             image[indices2] = 1.0 #This is probably useless
             image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
@@ -1325,16 +1326,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def plot(self, scale_min = None, scale_max = None, band = None):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
-        # label = ""
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.plot_band(band)
-                # label += f"{band}-"
             self.color_bands_already_plotted = True
-            # label = label[:-1]+'\n'
         else:
             self.color_bands_already_plotted = False
-        # label += f'{self.main_band}-'
 
         if not self.bottom_row_bands_already_plotted:
             for band in [self.main_band]:
@@ -1346,22 +1343,15 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.rows_summary_label.updateText(self.visible_rows_summary())
 
     def plot_band(self, band, scale_min = None, scale_max = None):
-        # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         get_radec = True if band == self.main_band else False
         band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
         filepath = self._band_filepath(band)
         if band_filetype == 'FITS':
             image = self.load_fits(filepath, get_radec)
-            # scaling_factor = np.nanpercentile(image,q=90)
-            # if scaling_factor == 0:
-            #     # scaling_factor = np.nanpercentile(image,q=99)
-            #     scaling_factor = 1
-            # image = image / scaling_factor*300 #Rescaling for better visualization.
             self.images[band] = np.copy(image)
             if scale_min is None or scale_max is None:
                 scale_min, scale_max = self.scale_val(image)
-            # print(f"{band}: {scale_min = }, {scale_max = }, {image.max()}")
             self.scale_mins[band] = scale_min
             self.scale_maxs[band] = scale_max
             image = self.rescale_image(image, scale_min, scale_max)
@@ -1377,8 +1367,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # self.composite_bands only ever contains composites whose 3 members are all
         # FITS bands (filtered at startup), so no format branching is needed here.
         base_bands = self.composite_band_members[composite_band]
-
-        # self.label_plot[composite_band].setText(self.listimage[self.config_dict['counter']])
         self.ax[composite_band].cla()
 
         cached_bands = {self.main_band}
@@ -1401,11 +1389,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.canvas[composite_band].draw()
 
     def replot(self, scale_min = None, scale_max = None):
-        # for band in self.all_bands:
-        #     if self.band_types[band] in [COMPOSITE_BAND,
-        #                                  EXTERNAL_BAND]:
-        #         continue
-        #     self.replot_band(band)
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.replot_band(band)
@@ -1419,7 +1402,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.plot_composite_band(band)
 
     def replot_band(self, band, scale_min = None, scale_max = None):
-        # self.label_plot[band].setText(self.listimage[self.config_dict['counter']])
         self.ax[band].cla()
         image = np.copy(self.images[band])
         band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
@@ -1436,14 +1418,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.random_seed is None:
             base_filename = f'classification_single_{self.name}_{len(self.listimage)}'
             string_to_glob = f'./Classifications/{base_filename}-*.csv'
-            # print("Globing for", string_to_glob)
-            # string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
-            # glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
             string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
             glob_results = (set(glob.glob(string_to_glob)) -
                             set(glob.glob(string_to_glob_for_files_with_seed)) |
                             set(glob.glob(f'./Classifications/{base_filename}.csv')))
-            # print("first glob:", set(glob.glob(string_to_glob)))
         else:
             base_filename = f'classification_single_{self.name}_{len(self.listimage)}_{self.random_seed}'
             string_to_glob = f'./Classifications/{base_filename}*.csv'
@@ -1451,7 +1429,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         
         file_iteration = ""
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
-        # print(class_file)
         if len(class_file) >= 1:
             file_index = 0
             if len(class_file) > 1:
@@ -1474,10 +1451,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 string_tested = os.path.basename(self.df_name).split(".csv")[0]
                 file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
 
-        # self.config_dict['counter'] = 0
-        # self.update_counter()
-
-        self.dfc = ['file_name', 'classification', 'grid_pos','page']
         self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
         print('A new csv will be created', self.df_name)
         if file_iteration != "":
@@ -1486,7 +1459,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         dfc = ['file_name', 'classification',
                 'subclassification',
                 'ra','dec',
-                # 'comment',
                 'image_dim',
                 'time']
         df = pd.DataFrame(columns=dfc)
@@ -1495,7 +1467,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
-        # df['comment'] = ['Empty'] * len(self.listimage)
         df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0.0)
         return df
@@ -1555,10 +1526,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
         if self.bactivatedclassification is not None:
-            # self.bactivatedclassification.setStyleSheet("background-color : white;color : black;")
             self.bactivatedclassification.setStyleSheet(self.original_button_style)
 
-        #if grade is not None and not np.isnan(float(grade)) and grade != 'None':
         if grade is not None and grade != 'None' and grade != 'Empty':
             button = self.dict_class2button[grade]
             if button is not None:
@@ -1570,7 +1539,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet(self.original_button_style)
 
-#        if subgrade is not None and not np.isnan(subgrade) and subgrade != 'None':
         if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
             button = self.dict_subclass2button[subgrade]
             if button is not None:

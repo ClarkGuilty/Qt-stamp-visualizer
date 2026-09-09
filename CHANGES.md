@@ -95,6 +95,13 @@ forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band
 * "Open PanSTARRS" browser button, "Large FoV" toggle, and Pre-fetch support, matching the
   existing Legacy Survey controls.
 
+## New: `--ls-big-fov-residuals` (1-by-1 tool)
+* The Legacy Survey pre-fetch can now also warm the large-field-of-view
+  *residual* cutout, so switching on both "Large FoV" and "Residuals" shows a
+  cached image instead of waiting on a download. Off by default — it adds a
+  fourth Legacy Survey request per object. This replaces a commented-out
+  line in the pre-fetch loop that previously had to be edited in by hand.
+
 ## Legacy Survey behind its own flag (on by default)
 * The LS panel/checkbox/prefetch now sit behind a `--legacysurvey` flag. It was
   briefly off by default, since the LS server has proven unreliable, but it is
@@ -143,11 +150,74 @@ forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band
   thread on close).
 * Legacy Survey / PanSTARRS panels now actually refresh when you page to a new object
   (previously stayed frozen on whichever object was showing when first enabled).
-* Network failures (e.g. "no route to host") degrade gracefully to a placeholder instead
-  of crashing the app.
+* Network failures (e.g. "no route to host") degrade gracefully instead of crashing the
+  app. (The placeholder image this originally used is gone -- see "Survey cutout caching
+  rewritten" below for why it caused more trouble than it solved.)
+
+## Survey cutout caching rewritten (1-by-1 tool)
+A failed download used to be written into the cache as a black 66x66 JPEG, at the exact
+path a successful one would occupy. Every reader treated that file's existence as a cache
+hit, so a single missed download -- one coverage gap, one dropped connection, one slow
+server -- blacked out those coordinates permanently, across sessions, with no retry. In
+practice this poisoned most of a working cache: one local `PanSTARRS/` directory had 201
+of 251 entries stuck on the placeholder, for coordinates the survey covers perfectly well.
+
+* **Misses are no longer images.** A failure now writes a `<cutout>.jpg.miss` JSON marker
+  next to where the image would go, recording the reason and the time. The cache lookup
+  is tri-state: image on disk, known-miss, or go-fetch.
+* **Misses expire.** A genuine coverage gap is trusted for 7 days (so panning back to the
+  object doesn't re-query the survey every time); a transient failure -- timeout, 5xx,
+  garbled response -- expires after 15 minutes, so the cutout is simply retried once the
+  connection is back.
+* **Failures are classified.** HTTP 400/404 and an empty `ps1filenames` answer mean "no
+  coverage"; everything else is transient. Notably, a `ValueError` from `ps1filenames.py`
+  answering with an HTML error page instead of a table is now caught -- it used to escape
+  the `except (URLError, OSError)` handler, kill the pre-fetch thread outright, and leave
+  every later object unfetched for the rest of the session.
+* **Downloads are bounded and atomic.** `urlretrieve` (which accepts no timeout, and so
+  could hang on a stalled server forever) is replaced by `urlopen(..., timeout=15)` into a
+  temp file that is moved into place only once complete. An interrupted transfer can no
+  longer leave a truncated image behind for the next run to serve as valid.
+* **Blank Legacy Survey cutouts are rejected.** Out-of-footprint requests come back as a
+  valid but completely flat JPEG, which was being cached as real data. A uniform image is
+  now recorded as a coverage gap (a real cutout of empty sky is noise, never uniform).
+* **Pre-existing placeholders are cleaned up on startup**, identified precisely: under
+  1 KB, exactly 66x66, and entirely black. Real cutouts never match. `--clean` also drops
+  miss markers now.
+* **Stale callbacks can no longer touch the wrong panel.** A late *failure* from the
+  previous object used to overwrite the current object's perfectly good image with "No
+  data available"; a late *success* cleared the axes before checking whether it was still
+  relevant. Both paths now check first and clear second.
+* Pre-fetch toggles survive a pass that ends on its own (the config flag and the checkbox
+  used to keep claiming a thread was running, and the next toggle called into a destroyed
+  C++ object), and `FetchThread` keeps going when one object fails instead of ending the
+  whole pass.
+* The four near-duplicate copies of the download logic (two in `workers.py`, two in
+  `single_viewer.py`) are now one implementation in `workers.py` -- that duplication is
+  why the same bug existed in four places. Cache filenames are byte-for-byte unchanged,
+  so already-downloaded cutouts still hit.
 
 ## Restored from `main`
 * `--clean`, `--verbose` CLI flags.
 * `Legacy_survey/` cache directory (was missing entirely in `ERO_edition_2026`).
+
+## Dead-code cleanup
+* Removed ~350 lines of commented-out code from `mosaic.py` and
+  `single_viewer.py` — alternative `resizeEvent`/`sizeHint` implementations,
+  layout experiments, debug `print()`s, superseded glob strings, and
+  `# raise` lines left after exception handlers. Anything that survived only
+  to feed those comments went with them (unused locals, a never-added
+  `QSpacerItem`, a no-op `residual = residual`), along with three dead
+  functions (`log_0`, `scale_val_percentile`, and both copies of
+  `background_rms_image_old`) and 22 unused imports. No behavior changes.
+* The ESASky Euclid ERO overlay (`&euclid_image=perseus`) went with them. It
+  had been commented out with a note that the overlay is always centered on
+  the same coordinate, so it was never generally useful.
+* Deleted `extract_files_from_mosaic.py`. `extraction.py` — the module Lobby
+  already uses — does the same job and more: symlinks as well as copies,
+  understands both the mosaic tool's numeric class codes and the 1-by-1
+  tool's string codes, and reports missing files. The old script was also
+  listed in `pyproject.toml`'s `py-modules` despite parsing `sys.argv` at
+  import time.
 
 See the CLI `--help` on either tool for the full current argument list.

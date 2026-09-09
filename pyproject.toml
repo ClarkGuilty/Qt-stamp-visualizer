@@ -34,7 +34,6 @@ py-modules = [
     "mosaic",
     "single_viewer",
     "extraction",
-    "extract_files_from_mosaic",
     "imaging",
     "widgets",
     "workers",

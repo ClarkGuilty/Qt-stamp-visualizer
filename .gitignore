@@ -1,4 +1,5 @@
 *.jpg
+*.miss
 *.fits
 *.csv
 .config*.json
@@ -21,5 +22,6 @@ __pycache__/
 # Internal docs, not for the public repo
 PLAN.md
 
-# Local dev fixtures, not part of the repo
+# Local dev fixtures and scratch output, not part of the repo
 test_stamps_png_jpg/
+temp_extract/
