@@ -706,8 +706,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
+            self.df.at[cnt,'pixel_size'] = self.image_pixel_size
         self.df.at[cnt,'comment'] = grade
-        self.df.at[cnt,'pixel_size'] = self.image_pixel_size
         self.df.at[cnt,'image_dim'] = int(np.max(self.image.shape))
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
