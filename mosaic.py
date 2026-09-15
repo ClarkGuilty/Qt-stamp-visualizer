@@ -4,7 +4,6 @@ import argparse
 from astropy.io import fits
 
 import glob
-import json
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,7 +14,7 @@ from PIL import Image
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, Signal
-from PySide6.QtGui import QPixmap, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QPixmap, QPainter, QFont, QKeySequence, QShortcut
 
 import os
 from os.path import join
@@ -26,8 +25,11 @@ from time import time
 from imaging import (
     identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
     contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
-    natural_sort, find_filename_iteration, detect_band_filetype, find_band_file,
+    natural_sort, detect_band_filetype, find_band_file,
+    resolve_classifications_dir, ClassificationWriter,
+    next_free_csv_path, NEW_DATASET_FORK,
 )
+import state
 from widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, NamedLabel,
     PanelOrderPicker,
@@ -73,6 +75,19 @@ parser.add_argument('--resize',
                     help="Set to allow the resizing of the stamps with the window.",
                     action=argparse.BooleanOptionalAction,
                     default=False)
+parser.add_argument("--reset-config", help="Forgets the saved preferences (colormap, scale, "
+                    "panels) during startup. Resume positions are kept; use --reset-position "
+                    "for those.",
+                    action="store_true", default=False)
+parser.add_argument("--reset-position", help="Forgets the saved resume page for this "
+                    "--path/--name/--seed, so the session restarts at the first page. "
+                    "Preferences are kept.",
+                    action="store_true", default=False)
+parser.add_argument("--classifications-dir", metavar="PATH",
+                    help="Directory for the autosaved classification CSVs. Absolute, or "
+                    "relative to the directory you launch from; created if it does not "
+                    "exist. Default: ./Classifications",
+                    default=None)
 
 
 args = parser.parse_args()
@@ -109,6 +124,42 @@ C_INTERESTING = 2
 C_LENS = 1
 C_UNINTERESTING = 0
 
+SESSION_TOOL = 'mosaic'
+# Pre-split config file. Read once, at the first startup after the split, then
+# kept as a .bak -- see state.migrate_legacy_config.
+LEGACY_CONFIG_FILE = '.config_mosaic.json'
+
+if args.reset_config:
+    if state.reset_preferences(SESSION_TOOL):
+        print("Preferences reset.")
+    if os.path.exists(LEGACY_CONFIG_FILE):
+        # Otherwise the migration below would immediately restore what was just reset.
+        os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
+
+if args.reset_position:
+    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed)):
+        print("Resume position reset.")
+
+def _solid_pixmap(color, size=128):
+    pixmap = QPixmap(size, size)
+    pixmap.fill(color)
+    return pixmap
+
+
+def _letter_pixmap(letter, size=128):
+    "Black tile with a bold white letter, used to mark a classified stamp."
+    pixmap = _solid_pixmap(Qt.black, size)
+    painter = QPainter(pixmap)
+    painter.setPen(Qt.white)
+    font = painter.font()
+    font.setBold(True)
+    font.setPixelSize(int(size * 0.7))
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, letter)
+    painter.end()
+    return pixmap
+
+
 def iloc_to_page_and_grid_pos(iloc, gridarea):
     return iloc // gridarea, iloc % gridarea
 
@@ -140,8 +191,8 @@ class MiniMosaics(QtWidgets.QLabel):
     "Widget to hold the image Qlabels"
     def __init__(self,
                     filepaths,
-                    bands, lens_background_path,
-                    interesting_background_path, deactivated_path, i,
+                    bands, lens_background_pixmap,
+                    interesting_background_pixmap, deactivated_pixmap, i,
                     status, activation, update_df_func,
                     image_width=None,
                     image_height=None,
@@ -151,14 +202,14 @@ class MiniMosaics(QtWidgets.QLabel):
         self.bands = bands
         self.n_bands = len(self.bands)
         self.is_activate = activation
-        self.lens_background_path = lens_background_path
-        self.interesting_background_path = interesting_background_path
+        self.lens_background_pixmap = lens_background_pixmap
+        self.interesting_background_pixmap = interesting_background_pixmap
 
         self.mini_layout = QtWidgets.QHBoxLayout(self)
         self.mini_layout.setSpacing(0) #TODO: FIND A GOOD VALUE/RECIPE
         self.mini_layout.setContentsMargins(0,0,0,0)
 
-        self.deactivated_path = deactivated_path
+        self.deactivated_pixmap = deactivated_pixmap
         self.is_a_candidate = status
         self.update_df_func = update_df_func
         self.i = i
@@ -191,11 +242,11 @@ class MiniMosaics(QtWidgets.QLabel):
             if self.is_a_candidate == C_UNINTERESTING:
                 self.change_pixmaps(self.filepaths)
             elif self.is_a_candidate == C_LENS:
-                self.change_pixmaps([self.lens_background_path]*self.n_bands)
+                self.change_pixmaps([self.lens_background_pixmap]*self.n_bands)
             elif self.is_a_candidate == C_INTERESTING:
-                self.change_pixmaps([self.interesting_background_path]*self.n_bands)
+                self.change_pixmaps([self.interesting_background_pixmap]*self.n_bands)
         else:
-            self.change_pixmaps([self.deactivated_path]*self.n_bands)
+            self.change_pixmaps([self.deactivated_pixmap]*self.n_bands)
 
         for qlabel in self.qlabels:   
             qlabel.setPixmap(qlabel._pixmap.scaled(
@@ -228,9 +279,9 @@ class MiniMosaics(QtWidgets.QLabel):
                 qlabel.width(), qlabel.height(),
                 self.aspectRatioPolicy))
 
-    def deactivate(self): 
-        self.change_and_paint_pixmap(self.deactivated_path) 
-        self.is_activate = False 
+    def deactivate(self):
+        self.change_and_paint_pixmap([self.deactivated_pixmap] * self.n_bands)
+        self.is_activate = False
 
     def set_candidate_status(self, status):
         if self.is_activate:
@@ -247,9 +298,9 @@ class MiniMosaics(QtWidgets.QLabel):
         if self.is_activate:
             self.repaint_pixmaps()
 
-    def paint_background_pixmap(self, background_path):
+    def paint_background_pixmap(self, background_pixmap):
         if self.is_activate:
-            self.change_pixmaps([background_path]*self.n_bands)
+            self.change_pixmaps([background_pixmap]*self.n_bands)
             self.repaint_pixmaps()
 
 
@@ -261,10 +312,10 @@ class MiniMosaics(QtWidgets.QLabel):
                 new_class = C_UNINTERESTING
             else:
                 if modifiers in [Qt.ControlModifier, Qt.ShiftModifier]:
-                    self.paint_background_pixmap(self.interesting_background_path)
+                    self.paint_background_pixmap(self.interesting_background_pixmap)
                     new_class = C_INTERESTING
                 elif modifiers == Qt.NoModifier:
-                    self.paint_background_pixmap(self.lens_background_path)
+                    self.paint_background_pixmap(self.lens_background_pixmap)
                     new_class = C_LENS
 
             self.update_df_func(event, self.i, new_class)
@@ -297,6 +348,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.scratchpath = './.temp'
         os.makedirs(self.scratchpath, exist_ok=True)
+        self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
+        os.makedirs(self.classifications_dir, exist_ok=True)
         self.clean_dir(self.scratchpath)
 
         base_band_path = join(self.stampspath, self.main_band)
@@ -391,16 +444,41 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.name = ''
         self.setWindowTitle(' - '.join(title_strings))
 
+        # Preferences only: they follow the *user*, so they survive a change of
+        # --path/--name/--seed. The resume page follows the *dataset* and lives
+        # in the session store instead (see state.py). Neither nrows/ncols nor
+        # the file count appear anywhere here: the page is re-derived from the
+        # stored *filename*, so a reshape lands on whichever page now holds the
+        # same object instead of being reset to 0.
         self.defaults = {
-            'page': 0, #Defaults to 0. Gets overwritten by --page argument.
             'colormap': 'gist_gray',
             'scale': 'log',
-            'name': self.name,
-            'ncols': self.ncols,
-            'nrows': self.nrows,
             'panel_order':'',
         }
-        self.config_dict = self.load_dict()
+        self.session_id = state.SessionId(SESSION_TOOL, self.stampspath, self.name, self.random_seed)
+        self.df = self.obtain_df()  # sets self.df_name
+        # Every autosave goes through this: atomic, and never clobbers a file
+        # another process has written since we last saved it.
+        self.csv_writer = ClassificationWriter(self.df_name, index=False)
+
+        state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
+                                    self.listimage, self.legacy_page_index, csv=self.df_name)
+        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults)
+        if self.config_dict['scale'] == 'log10':  # renamed upstream long ago
+            self.config_dict['scale'] = 'log'
+        if self.config_dict['colormap'] == 'gray':
+            self.config_dict['colormap'] = 'gist_gray'
+
+        # resolve_position cross-checks the CSV: if obtain_df just resolved to a
+        # different classification file than the one the position was recorded
+        # against, the two disagree about which session is open and the position
+        # is stale by definition.
+        position = state.resolve_position(state.load_session(self.session_id),
+                                          self.listimage, csv=self.df_name)
+        self.page = min(position // self.gridarea, max(self.PAGE_MAX - 1, 0))
+        if args.page is not None:
+            self.page = max(min(args.page - 1, self.PAGE_MAX - 1), 0)
+
         if not self.config_dict['panel_order']:
             # Default-checked panels match today's exact view (main band + composites) -- the
             # individual color bands are available in the picker (self.bands_to_plot) but start
@@ -409,26 +487,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             default_panel_order = [self.main_band, *self.composite_bands]
             self.config_dict['panel_order'] = ';'.join(default_panel_order)
 
-        self.interesting_background_path = '.background_interesting.png'
-        self.lens_background_path = '.background.png'
-        self.deactivated_path = '.backgrounddark.png'
-        self.status2background_dict = {C_LENS:self.lens_background_path,
-                                        C_INTERESTING:self.interesting_background_path}               
+        self.interesting_background_pixmap = _letter_pixmap('I')
+        self.lens_background_pixmap = _letter_pixmap('L')
+        self.deactivated_pixmap = _solid_pixmap(Qt.black)
+        self.status2background_dict = {C_LENS: self.lens_background_pixmap,
+                                       C_INTERESTING: self.interesting_background_pixmap}
 
-        self.bcounter = LabelledIntField('Page', self.config_dict['page'], self.PAGE_MAX)
+        self.bcounter = LabelledIntField('Page', self.page, self.PAGE_MAX)
         self.bcounter.setStyleSheet('background-color: black; color: gray')
         self.bcounter.lineEdit.returnPressed.connect(self.goto)
-        self.bcounter.setInputText(self.config_dict['page'])
+        self.bcounter.setInputText(self.page)
 
         self.buttons = []
         self.clean_dir(self.scratchpath)
 
-        self.df = self.obtain_df()
-
-        if self.config_dict['page'] >= self.PAGE_MAX:
-            self.bcounter.setInputText(0)
-            self.goto()
-            
         self.prepare_pngs(self.gridarea)
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
@@ -511,7 +583,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         page_counter_layout.addWidget(self.bcounter)
 
         self.total_n_frame = int(len(self.listimage)/(self.gridarea))
-        start = self.config_dict['page']*self.gridarea
+        start = self.page*self.gridarea
 
         for i in range(start,start+self.gridarea):
             try:
@@ -522,11 +594,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 activation = False
 
             button = MiniMosaics(
-                                    self.filepaths(i, self.config_dict['page']),
+                                    self.filepaths(i, self.page),
                                     self.bands_to_plot,
-                                    self.lens_background_path,
-                                    self.interesting_background_path,
-                                    self.deactivated_path,
+                                    self.lens_background_pixmap,
+                                    self.interesting_background_pixmap,
+                                    self.deactivated_pixmap,
                                     i-start, classification, activation,
                                     self.my_label_clicked,
                                     )
@@ -542,83 +614,86 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.time_0 = time()
 
     def go_to_page(self, target_page):
-        range_low = self.config_dict['page']*self.gridarea
-        range_high = min(len(self.df),(self.config_dict['page']+1)*(self.gridarea))
+        range_low = self.page*self.gridarea
+        range_high = min(len(self.df),(self.page+1)*(self.gridarea))
         if hasattr(self, 'time_0'):
             self.df.iloc[range(range_low,range_high),
                         self.df.columns.get_loc('time')] += (time() - self.time_0)
             self.time_0 = time()
         else:
             True
-        self.config_dict['page'] = target_page
+        self.page = target_page
         self.clean_dir(self.scratchpath)
         self.update_grid()
-        self.bcounter.setInputText(self.config_dict['page'])
-        self.save_dict()
-        self.df.to_csv(
-                self.df_name, index=False)
+        self.bcounter.setInputText(self.page)
+        # Save the CSV first: if the writer has to fork to a new name, the
+        # session entry must record the name we actually ended up writing.
+        self.df_name = self.csv_writer.save(self.df)
+        self.save_position()
 
     @Slot()
     def goto(self):
-        if self.bcounter.getValue()>self.PAGE_MAX:
+        # Pages are 0..PAGE_MAX-1: PAGE_MAX itself used to be accepted here and
+        # then fell off the end of listimage, which update_grid's try/except
+        # quietly turned into a gridful of blank buttons.
+        if self.bcounter.getValue()>=self.PAGE_MAX:
             print("page: ",self.PAGE_MAX)
             self.status.showMessage('WARNING: There are only {} pages.'.format(
-                self.PAGE_MAX+1),10000)
+                self.PAGE_MAX),10000)
         elif self.bcounter.getValue()<0:
-            self.status.showMessage('WARNING: Pages go from 1 to {}.'.format(
-                self.PAGE_MAX+1),10000)
+            self.status.showMessage('WARNING: Pages go from 0 to {}.'.format(
+                self.PAGE_MAX-1),10000)
         else:
             self.go_to_page(self.bcounter.getValue())
             self.bcounter.lineEdit.clearFocus()
     @Slot()
     def next(self):
-        if self.config_dict['page']+1 >= self.PAGE_MAX:
+        if self.page+1 >= self.PAGE_MAX:
             self.status.showMessage('You are already at the last page',10000)
         else:
-            self.go_to_page(self.config_dict['page'] + 1)
+            self.go_to_page(self.page + 1)
     @Slot()
     def prev(self):
-        if self.config_dict['page'] -1 < 0:
+        if self.page -1 < 0:
             self.status.showMessage('You are already at the first page',10000)
         else:
-            self.go_to_page(self.config_dict['page'] - 1)
+            self.go_to_page(self.page - 1)
 
     def change_scale(self,i):
         self.config_dict['scale'] = self.cbscale.currentText()
         self.update_grid()
-        self.save_dict()
+        self.save_preferences()
 
     def change_colormap(self,i):
         self.config_dict['colormap'] = self.cbcolormap.currentText()
         self.update_grid(single_band_only=True)
-        self.save_dict()
+        self.save_preferences()
 
     def change_panel_order(self):
         self.config_dict['panel_order'] = ';'.join(self.panel_picker.selected_panels())
         self.update_grid(single_band_only=True,change_panel_order=True)
-        self.save_dict()
+        self.save_preferences()
 
     def my_label_clicked(self, event, i, new_class):
-        if self.config_dict['page']*self.gridarea+i > len(self.listimage):
+        if self.page*self.gridarea+i > len(self.listimage):
             print('Something is wrong. This condition should not be trigger.')
         else:
-            object_index = self.gridarea*self.config_dict['page']+i
+            object_index = self.gridarea*self.page+i
             if args.printname:
                 print(self.df.iloc[object_index,
                             self.df.columns.get_loc('file_name')])
             self.df.iloc[object_index,
                         self.df.columns.get_loc('classification')] = new_class
             
-            range_low = self.config_dict['page']*self.gridarea
-            range_high = min(len(self.df),(self.config_dict['page']+1)*(self.gridarea))
+            range_low = self.page*self.gridarea
+            range_high = min(len(self.df),(self.page+1)*(self.gridarea))
             if hasattr(self, 'time_0'):
                 self.df.iloc[range(range_low,range_high),
                         self.df.columns.get_loc('time')] += (time() - self.time_0)
                 self.time_0 = time()
 
             self.bclickcounter.setText((self.df['classification'] == C_LENS).sum().astype(int))
-            self.df.to_csv(
-                self.df_name, index=False)
+            self.df_name = self.csv_writer.save(self.df)
 
     def filepath(self, i, page, band = ''):
         colormap = self.config_dict['colormap'] if band == '' else ''
@@ -635,54 +710,71 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return [self.filepath(i,page,band) 
                     for band in self.bands_to_plot[:nvisiblebands]]
 
-    def save_dict(self):
-        with open('.config_mosaic.json', 'w') as f:
-            json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+    def save_preferences(self):
+        state.save_preferences(SESSION_TOOL, self.config_dict)
 
-    def load_dict(self):
-        try:
-            with open('.config_mosaic.json', ) as f:
-                temp_dict = json.load(f)
-                if ((temp_dict['name'] != self.name) 
-                    ):
-                    temp_dict['name'] = self.name
-                    temp_dict['page'] = 0
-                if (('nrows' not in temp_dict) or
-                  ('ncols' not in temp_dict) or
-                  (temp_dict['nrows'] != self.nrows) or
-                  (temp_dict['ncols'] != self.ncols)):
+    def save_position(self):
+        """Persist the page as the filename of the object in its top-left cell.
 
-                    temp_dict['nrows'] = self.nrows
-                    temp_dict['ncols'] = self.ncols
-                    temp_dict['page'] = 0
-                if args.page is not None:
-                    temp_dict['page'] = max(min(args.page - 1,self.PAGE_MAX), 0)
-                if temp_dict['scale'] == 'log10':
-                    temp_dict['scale'] = 'log'
-                if temp_dict['colormap'] == 'gray':
-                    temp_dict['colormap'] = 'gist_gray'
-                for key in self.defaults.keys():
-                    if key not in temp_dict.keys():
-                        temp_dict[key] = self.defaults[key]
-                return temp_dict
-        except FileNotFoundError:
-            print("Loaded default configuration.")
-            return self.defaults
+        Storing the filename rather than the page number is what lets the grid
+        shape stay out of the session identity: a reshaped grid re-derives its
+        page from wherever that object now falls.
+        """
+        index = min(self.page * self.gridarea, len(self.listimage) - 1)
+        state.save_session(self.session_id,
+                           position_filename=self.listimage[index],
+                           csv=self.df_name)
+
+    def legacy_page_index(self, legacy):
+        """The index the pre-split `.config_mosaic.json` was pointing at, or None.
+
+        The old file stored a page number, valid only for the grid shape it was
+        saved under -- so both that shape and `--name` have to match before its
+        page can be turned into an index.
+        """
+        if (legacy.get('name') or '') != self.name:
+            return None
+        if legacy.get('nrows') != self.nrows or legacy.get('ncols') != self.ncols:
+            return None
+        page = legacy.get('page')
+        if not isinstance(page, int) or isinstance(page, bool):
+            return None
+        return page * self.gridarea
 
     def obtain_df(self):
+        """The classification CSV for this session, read or created.
+
+        The filename carries the dataset identity -- name, image count and seed
+        -- and deliberately *not* the grid shape. The shape is a display choice:
+        how many stamps you can comfortably fit on screen, changeable mid-session
+        (and `--minimum_size` exists for exactly that). It says nothing about
+        which objects are being classified, so it has no business forking the
+        file that records the grades. The `page`/`grid_pos` columns, the only
+        shape-dependent thing in here, are recomputed on load below.
+
+        The naming now matches `single_viewer.py`'s, which never had a grid to
+        encode: `-` introduces an iteration suffix and `_` introduces the seed,
+        so the two never collide in a glob.
+        """
+        base_prefix = 'classification_mosaic_autosave_{}_{}'.format(
+                                self.name, len(self.listimage))
         if self.random_seed is None:
-            base_filename = 'classification_mosaic_autosave_{}_{}_{}_99'.format(
-                                    self.name,len(self.listimage),self.ncols)
-            string_to_glob = './Classifications/{}*.csv'.format(base_filename)
-            string_to_glob_for_files_with_seed = './Classifications/{}_*.csv'.format(base_filename)
-            glob_results = set(glob.glob(string_to_glob)) - set(glob.glob(string_to_glob_for_files_with_seed))
+            base_filename = base_prefix
+            string_to_glob = join(self.classifications_dir, '{}-*.csv'.format(base_filename))
+            string_to_glob_for_files_with_seed = join(self.classifications_dir,
+                                                      '{}_*.csv'.format(base_filename))
+            glob_results = (set(glob.glob(string_to_glob))
+                            - set(glob.glob(string_to_glob_for_files_with_seed))
+                            | set(glob.glob(join(self.classifications_dir,
+                                                 '{}.csv'.format(base_filename)))))
         else:
-            base_filename = 'classification_mosaic_autosave_{}_{}_{}_{}_{}'.format(
-                                    self.name,len(self.listimage),self.ncols,self.nrows,self.random_seed)
-            string_to_glob = './Classifications/{}*.csv'.format(base_filename)
-            glob_results = glob.glob(string_to_glob)
+            base_filename = '{}_{}'.format(base_prefix, self.random_seed)
+            string_to_glob = join(self.classifications_dir, '{}*.csv'.format(base_filename))
+            glob_results = set(glob.glob(string_to_glob))
+
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
-        file_iteration = ""
+        fresh_name = join(self.classifications_dir, '{}.csv'.format(base_filename))
+        new_dataset_name = ''
         if len(class_file) >= 1:
             file_index = 0
             if len(class_file) > 1:
@@ -693,18 +785,28 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             if np.all(self.listimage == df['file_name'].values):
                 if 'time' not in df.keys():
                     df['time'] = 0
+                # `page`/`grid_pos` record where a stamp sat in the grid, so they are
+                # only meaningful for the shape they were written under. The unseeded
+                # filename does not carry `nrows`, so this same CSV is legitimately
+                # reopened after an `--nrows` change -- recompute both from the
+                # current grid instead of trusting the old shape's values, which
+                # otherwise survive on every page the user doesn't happen to visit
+                # and leave the file describing two grids at once.
+                page, grid_pos = iloc_to_page_and_grid_pos(np.array(df.index),
+                                                           gridarea=self.gridarea)
+                df['page'] = page
+                df['grid_pos'] = grid_pos
                 return df
             else:
                 print("Classification file corresponds to a different dataset.")
-                string_tested = os.path.basename(self.df_name).split(".csv")[0]
-                file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
+                if os.path.exists(fresh_name):
+                    new_dataset_name = next_free_csv_path(fresh_name, NEW_DATASET_FORK)
 
-        
         self.dfc = ['file_name', 'classification', 'grid_pos','page']
-        self.df_name = './Classifications/{}{}.csv'.format(base_filename,file_iteration)
+        self.df_name = new_dataset_name or fresh_name
         print('A new csv will be created', self.df_name)
-        
-        if file_iteration != "":
+
+        if new_dataset_name:
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
         df = pd.DataFrame(columns=self.dfc)
         df['file_name'] = self.listimage
@@ -716,22 +818,22 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         return df
 
     def update_grid(self, single_band_only = False, change_panel_order=False):
-        start = self.config_dict['page']*self.gridarea
+        start = self.page*self.gridarea
         n_images = self.gridarea
         self.prepare_pngs(n_images, single_band_only)
         i = start
         j = 0
         for button in self.buttons:
             try:
-                object_index = self.gridarea*self.config_dict['page']+j
+                object_index = self.gridarea*self.page+j
                 status = self.df.iloc[object_index,self.df.columns.get_loc('classification')]
                 if status == 0:
                     button.activate()
-                    button.change_and_paint_pixmap(self.filepaths(i,self.config_dict['page']))
+                    button.change_and_paint_pixmap(self.filepaths(i,self.page))
                     button.set_candidate_status(status)
                 else:
                     button.activate()
-                    button.change_filepath(self.filepaths(i,self.config_dict['page']))
+                    button.change_filepath(self.filepaths(i,self.page))
                     button.paint_background_pixmap(self.status2background_dict[status])
                     button.set_candidate_status(status)
 
@@ -741,7 +843,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                              self.df.columns.get_loc('grid_pos')] = j
 
                 self.df.iloc[object_index,
-                             self.df.columns.get_loc('page')] = self.config_dict['page']
+                             self.df.columns.get_loc('page')] = self.page
 
             except (KeyError,IndexError):
                 button.deactivate()
@@ -750,13 +852,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     def prepare_pngs(self, number, single_band_only = False):
             "Generates the png files from the fits."
-            start = self.config_dict['page']*self.gridarea
+            start = self.page*self.gridarea
             for i in np.arange(start, start + number + 0): 
                 if i < len(self.listimage):
                     self.prepare_png(i, single_band_only)
                 else:
                     image = np.zeros((66, 66))
-                    plt.imsave(self.filepath(i, self.config_dict['page']),
+                    plt.imsave(self.filepath(i, self.page),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
     def _band_filepath(self, i, band):
@@ -778,11 +880,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         for band in [self.main_band, *self.color_bands]:
             if self.band_filetype.get(band) == 'FITS':
                 image = self.prepare_single_band(band_images[band])
-                plt.imsave(self.filepath(i, self.config_dict['page'], band=band),
+                plt.imsave(self.filepath(i, self.page, band=band),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
             else:
                 src = self._band_filepath(i, band)
-                Image.open(src).save(self.filepath(i, self.config_dict['page'], band=band))
+                Image.open(src).save(self.filepath(i, self.page, band=band))
 
         if not single_band_only:
             for composite_band in self.composite_bands:
@@ -795,7 +897,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                         f"RGB composite '{composite_band}' requires all member bands to have the exact "
                         f"same image dimensions -- got {shapes}")
                 composite_image = self.prepare_composite_band(stacked)
-                plt.imsave(self.filepath(i, self.config_dict['page'], band=composite_band),
+                plt.imsave(self.filepath(i, self.page, band=composite_band),
                     composite_image, origin="lower")
 
     def prepare_single_band(self, image):

@@ -35,6 +35,7 @@ py-modules = [
     "single_viewer",
     "extraction",
     "imaging",
+    "state",
     "widgets",
     "workers",
 ]

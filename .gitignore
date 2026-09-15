@@ -21,6 +21,7 @@ __pycache__/
 
 # Internal docs, not for the public repo
 PLAN.md
+PLAN-DONE.md
 
 # Local dev fixtures and scratch output, not part of the repo
 test_stamps_png_jpg/

@@ -1,5 +1,10 @@
 Autosaved classification CSVs land here.
 
+This is the default location: `./Classifications`, relative to wherever you
+launch the tool from (created automatically if it doesn't exist yet). Pass
+`--classifications-dir PATH` to any of the three tools (mosaic, 1-by-1, lobby)
+to use a different directory instead.
+
 Mosaic tool:
   no seed:   classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_99.csv
   with seed: classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_{nrows}_{seed}.csv
@@ -8,5 +13,16 @@ Mosaic tool:
   no seed:   classification_single_{name}_{n_stamps}.csv
   with seed: classification_single_{name}_{n_stamps}_{seed}.csv
 
-A "-(N)" suffix is appended when a file with the same name already exists
-but describes a different dataset.
+When a name is already taken, the file that moves aside says why in its own
+name rather than carrying a bare number. Two cases:
+
+  -new_dataset_N   the name was taken by a *different* dataset. Pass -N name
+                   to give your sessions distinct names and avoid this.
+  -simultaneous_N  another viewer is grading this same session right now. Its
+                   file is left untouched and this viewer's grades go here, so
+                   neither set is lost; reconcile them afterwards.
+
+Both count up (_1, _2, ...) as the situation repeats. Files named with the
+older "-(N)" suffix are still found, read and resumed; that suffix is simply
+not written any more, since parentheses have to be quoted or escaped in a
+shell before you can copy or move the file.

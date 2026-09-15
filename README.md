@@ -231,6 +231,7 @@ Workflow overrides, valid only with `--no-gui` or `--print-command`:
 | `--ncols`, `--nrows` | Mosaic columns and rows per page. |
 | `--printname` / `--no-printname` | Mosaic: print the filename on click. |
 | `--copy` / `--symlink` | Chained extraction copies or symlinks files (symlink is the default). |
+| `--classifications-dir` | Directory for the autosaved classification CSVs (default: `./Classifications`, relative to wherever the lobby is launched from). Passed straight through to the viewer(s). |
 
 See `python lobby.py --help` for the authoritative list.
 
@@ -264,8 +265,11 @@ python mosaic.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 | `-s`, `--seed` | none | Seed used to shuffle the images. |
 | `--minimum_size` | `66` | Minimum stamp size in the mosaic. Safe to change mid-classification; try smaller values if the mosaic doesn't fit your screen. |
 | `--printname` / `--no-printname` | on | Print the file name of every stamp you click (shown in the lobby's Log panel). |
-| `--page` | none | Initial page. |
+| `--page` | none | Initial page (1-based). Overrides the resume page. |
 | `--resize` / `--no-resize` | off | Let the stamps resize with the window. |
+| `--reset-config` | off | Forget the saved preferences (colormap, scale, panels). Resume positions are kept. |
+| `--reset-position` | off | Forget the resume page for this `--path`/`--name`/`--seed`, so the session restarts at the first page. Preferences are kept. |
+| `--classifications-dir` | `./Classifications` | Directory for the autosaved classification CSVs. Absolute, or relative to the directory you launch from; created if it doesn't exist. |
 
 **Controls**
 
@@ -281,10 +285,16 @@ main band, the RGB composites (`H,Y,I` and `H,J,Y` by default), and the individu
 bands (`Y`, `J`, `H` by default). The color bands start unchecked, so the out-of-the-box
 view is the main band plus the two composites.
 
-> **Careful with `--ncols` / `--nrows`.** They're part of the classification CSV's
-> filename, so changing either after you've started means starting a *new* classification.
-> If the images are too big for your screen, prefer `--minimum_size`, which is safe to
-> change at any time.
+> **`--ncols` / `--nrows` are safe to change mid-classification.** The grid shape is a
+> display choice — how many stamps fit comfortably on your screen — so it is no longer
+> part of the classification CSV's filename. Reshaping keeps the same file and the grades
+> already in it, and your *place* in the deck is kept too: the position is stored as a
+> filename, so the tool reopens on whichever page now holds the object you were on.
+> `--minimum_size` is equally safe, and is still the better knob if the stamps themselves
+> are too big.
+>
+> What *does* start a new classification is a change of dataset identity: `-N/--name`,
+> `-s/--seed`, or the number of images under `--path`. Those are in the filename.
 
 ### 1-by-1 sequential tool
 
@@ -311,9 +321,11 @@ python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 | `-s`, `--seed` | none | Seed used to shuffle the images. |
 | `--legacysurvey` / `--no-legacysurvey` | **on** | Legacy Survey panel and downloads. Pass `--no-legacysurvey` to drop the panel entirely (the LS server can be unreliable). |
 | `--ls-big-fov-residuals` / `--no-...` | off | Also pre-fetch the large-FoV Legacy Survey *residual* cutout, so **Large FoV** + **Residuals** shows a cached image instead of downloading on demand. Costs a fourth LS request per object. |
-| `--reset-config` | off | Remove the saved configuration dictionary during startup. |
+| `--reset-config` | off | Forget the saved preferences (colormap, scale, panels, toggles). Resume positions are kept. |
+| `--reset-position` | off | Forget the resume position for this `--path`/`--name`/`--seed`, so the session restarts at the first image. Preferences are kept. |
 | `--verbose` | off | Log to the terminal. |
 | `--clean` | off | Clean the Legacy Survey cache folder. |
+| `--classifications-dir` | `./Classifications` | Directory for the autosaved classification CSVs. Absolute, or relative to the directory you launch from; created if it doesn't exist. |
 
 **Classification scheme.** `--classifications` takes one semicolon-separated string of
 `MAJOR=KEY` or `MAJOR:SUB=KEY` entries. A bare `MAJOR=KEY` (or an empty `SUB`) makes a
@@ -360,10 +372,11 @@ change the classes, subclasses and keys.
 
 | Path | Contents |
 | --- | --- |
-| `Classifications/` | Classification CSVs, auto-saved as you work. Named after the session, the number of images, the seed — and, for the mosaic, the page layout. |
+| `Classifications/` | Classification CSVs, auto-saved as you work. Named after the session, the number of images and the seed — the same scheme in both viewers, and deliberately not the mosaic's grid shape, so reshaping the grid doesn't fork your classification. Defaults to `./Classifications` relative to wherever you launch the tool, and is created on demand; override with `--classifications-dir` (all three tools, same flag). |
 | `.config_lobby.json` | Saved lobby settings. |
-| `.config_mosaic.json` | Saved mosaic settings. |
-| `.config.json` | Saved 1-by-1 settings (`--reset-config` clears it). |
+| `.preferences_mosaic.json`, `.preferences_single.json` | Saved viewer preferences — colormap, scale, panels, toggles. They follow *you*, so they survive a change of `--path`/`--name`/`--seed` (`--reset-config` clears them). |
+| `sessions.json` | Where you are in each dataset, one entry per `(tool, path, name, seed)`. Positions are stored as filenames, so they survive a mosaic reshape or files being added and removed (`--reset-position` clears the current one). Capped at 50 sessions, least-recently-opened dropped first. |
+| `.config_mosaic.json.bak`, `.config.json.bak` | The pre-split config files, kept after they are migrated into the two above. Safe to delete. |
 | `.predefined_configs/` | Named lobby presets. |
 | `Legacy_survey/`, `PanSTARRS/` | Downloaded cutout caches (`--clean` clears the Legacy Survey one). |
 

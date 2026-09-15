@@ -220,4 +220,296 @@ of 251 entries stuck on the placeholder, for coordinates the survey covers perfe
   listed in `pyproject.toml`'s `py-modules` despite parsing `sys.argv` at
   import time.
 
+## Fixed: autosave crash outside the repo root
+Both viewers built the classification CSV path relative to the current
+working directory and never created it, so running either one from anywhere
+but the repo checkout — exactly what the installed `qtstamp-*` console
+scripts invite — raised `FileNotFoundError` on the first autosave, after the
+user had already classified a page.
+
+* All three tools now take `--classifications-dir PATH` (absolute, or
+  relative to wherever you launch from). It defaults to `./Classifications`
+  and is created automatically if it doesn't exist.
+* `lobby.py` used to resolve `Classifications/` against its own install
+  directory (`REPO_ROOT`) rather than the CWD, so it silently disagreed with
+  the viewers whenever a viewer was launched from somewhere else. It now
+  resolves against its own CWD, the same rule the viewers use, and always
+  passes the resolved absolute path down to the mosaic/1-by-1 processes it
+  launches — so launching the lobby and launching a viewer directly, from
+  the same directory, land on the same `Classifications/` and can resume
+  each other's CSVs.
+  **Behavior change:** a lobby launched from outside the checkout now
+  writes to its own CWD instead of `<repo>/Classifications`. Launching from
+  inside the checkout, as the README documents, is unchanged.
+
+## Fixed: crash when classifying a PNG/JPG stamp (1-by-1 tool)
+Classifying any non-FITS object raised `AttributeError: 'ApplicationWindow'
+object has no attribute 'image_pixel_size'`. `classify()` recorded the stamp's
+pixel scale and dimension unconditionally, but both came from the WCS, which
+only the FITS path reads — so the grade was lost and the autosave never
+happened. The `ra`/`dec` columns right above them were already guarded.
+
+* `pixel_size` (arcsec/pixel) genuinely needs a WCS, so it is now written only
+  for FITS input and left empty for PNG/JPG, like `ra`/`dec`.
+* `image_dim` does not: the stamp is loaded whatever its format. It is now read
+  off the loaded image for every filetype, so PNG/JPG rows carry a real size
+  instead of a blank.
+* `pixel_size` was also missing from the column list used when a classification
+  CSV is created from scratch, so it only showed up — appended after `time` —
+  once a FITS object had been graded. It is declared with the others now.
+
+## Fixed: resuming at the wrong place (both viewers)
+Both viewers kept *everything* in one config file per tool — `.config.json`
+and `.config_mosaic.json` — shared across every invocation regardless of
+`--path`, `--seed` or grid shape, and invalidated the saved position only
+when the `--name` string changed. Since `--name` defaults to empty on both
+runs when omitted, opening a *different* dataset under no name at all passed
+that check and silently resumed whatever position was last saved, landing you
+mid-deck in a dataset you had never classified.
+
+The underlying problem was that one file held two kinds of state with
+different lifetimes, guarded by one weak key. They are now split three ways:
+
+* **Identity** — `(tool, realpath(path), name, seed)`. Note what's *not* in
+  there: grid shape and file count.
+* **Session state**, per identity, in one `sessions.json`: where you are, the
+  CSV it belongs to, when it was last opened. Keyed by a short hash, with the
+  identity stored in plain text beside it so the file stays readable.
+* **Preferences**, global per tool, in `.preferences_single.json` /
+  `.preferences_mosaic.json`: colormap, scale, autonext, panel rows, prefetch
+  toggles. These follow *you*, so changing the seed no longer resets your
+  colormap — the reason simply keying the old file on the session identity
+  would have been the wrong fix.
+
+**Positions are stored as filenames, not indices.** That one decision pays for
+itself several times over:
+
+* The mosaic's grid shape drops out of the session identity entirely. The page
+  is re-derived from where that same object now falls, so switching a 100-image
+  deck from 5×8 to 5×2 reopens on page 4 instead of page 0, and switching back
+  returns to page 1. The old code reset to page 0 on *any* shape change,
+  in-place, destroying the position it was leaving. (The grid shape had to leave
+  the CSV filename as well before this worked in every case — see the next
+  entry.)
+* Adding or removing files no longer invalidates the position.
+* A filename that has since disappeared is a *defined* fallback (start at 0)
+  rather than an out-of-range index. That removed the stale-counter `assert`
+  in the 1-by-1 tool's `classify()` (and its `#TODO handling this possibility
+  better`), and an off-by-one where a saved counter exactly equal to the file
+  count cleared `counter > len(listimage)` and then indexed off the end —
+  reachable any time the dataset shrank between runs. The mosaic had the same
+  off-by-one in its page bounds, where `update_grid`'s `try:` absorbed it into
+  a gridful of blank buttons instead of a crash.
+
+**Cross-checked against the CSV.** The session entry records which
+classification CSV the position belongs to; if `obtain_df()` later resolves to
+a different one, the two disagree about which session is open, so the position
+is stale by definition and resets to 0. This replaces the partial, accidental
+invalidation that used to fire on only one of the several paths that needed it.
+
+`seed` deliberately *stays* in the identity: a new seed is a new pass in a new
+order, and resuming on the same object would strand you mid-deck with
+unclassified stamps on both sides.
+
+* New `state.py` holds all of it — `SessionId`, `session_key`, `load_store`,
+  `save_session`, `resolve_position`, `load_preferences`, `migrate_legacy_config`.
+  Pure functions, no Qt, covered by `tests/test_state.py` (28 tests, runnable
+  with pytest or directly as `python tests/test_state.py`).
+* Store writes are read-modify-write plus an atomic `os.replace` from a temp
+  file in the same directory — the two viewers wrote to separate files before,
+  so consolidating them introduced a clobber risk that didn't exist. The store
+  is pruned to the 50 most recently opened sessions.
+* **Migration is automatic.** The first run after this change splits each
+  existing `.config*.json` into preferences plus one session entry, then keeps
+  the original as `.config.json.bak` / `.config_mosaic.json.bak` rather than
+  deleting it. The old file only ever guarded its position with a `--name`
+  check, so that's all the migration honours: an old position is carried over
+  only if the name still matches (and, for the mosaic, the grid shape it was
+  saved under).
+* `--reset-config` is now well-defined against the split — it forgets
+  *preferences* only — and the new `--reset-position` forgets the resume
+  position for the current `--path`/`--name`/`--seed`. Both viewers take both
+  flags; the mosaic had neither before.
+
+`lobby.py` has the same class of bug one level up (`scheme_rows`, `main_band`,
+`mosaic_ncols`/`nrows` all live in one global `.config_lobby.json` and persist
+across a change of session name). That's a real change to the lobby's UI rather
+than a correctness fix, so it's sequenced separately — see PLAN.md.
+
+## Classification autosaves are now crash-safe
+The classification CSV is the only irreplaceable thing either tool produces, and
+both rewrite it *in full* on every grade — a page at a time in the mosaic, an
+object at a time in the 1-by-1 tool. That is hundreds of full-file rewrites in a
+session, over a file that may hold hours of work.
+
+Every one of those rewrites was a `DataFrame.to_csv` straight onto the live
+path. `to_csv` truncates the target and streams into it, so the file spends a
+moment empty on every single click, and an interruption in that window — a
+crash, a kill, a full disk, a closed laptop — leaves a truncated or empty CSV
+where the completed classification used to be.
+
+Measured, killing the writing process with `SIGKILL` mid-save, ten times, on a
+20,000-row file:
+
+| Write path | Intact | Lost or truncated |
+| --- | --- | --- |
+| `df.to_csv(path)` (before) | 0/10 | **10/10** — eight unreadable, two cut to 9,463 rows |
+| `ClassificationWriter` (now) | **10/10** | 0/10 |
+
+Saves now go through `imaging.ClassificationWriter`, which writes a temp file in
+the same directory, `fsync`s it, and `os.replace`s it over the target. The rename
+is atomic, so a reader sees either the whole previous file or the whole new one,
+and an interrupted save leaves the previous one exactly as it was.
+
+**A save also never overwrites a file this process did not write.** The writer
+remembers the target's fingerprint after each save; if it changed underneath —
+two viewers open on the same session being the realistic way that happens — the
+other process's grades would otherwise be silently replaced on the next click.
+The same is true of a target that *appeared* underneath us, which is what
+running the same command twice on a session nobody has started yet looks like:
+both viewers begin with no fingerprint at all, so the check has to compare
+against what is on disk right now rather than only against our own last save.
+Either way the other file is left alone and this session continues in the next
+free `-simultaneous_N` name, so both sets of work survive to be reconciled
+afterwards. The session entry records whichever name was actually written.
+
+**A save does not change how the file is shared.** `os.replace` carries the
+temp file's permissions onto the target, and the obvious way to make a temp
+file — `tempfile.mkstemp` — creates it at 0600. Taken together that meant every
+autosave silently rewrote the CSV as owner-only: a classification sitting in a
+group directory lost its group read on the first grade of the session, with no
+error on either side. So the temp file is now opened by hand with `os.open(...,
+0o666)`, letting the kernel apply the umask exactly as it would for any other
+file the tools write, and an *existing* target's mode is copied onto the temp
+before the rename. A new CSV therefore comes out exactly as `df.to_csv(path)`
+would have made it, and an existing one keeps whatever mode it had — in both
+directions, so a deliberately private file is not widened either. (Ownership,
+ACLs and xattrs cannot survive a rename and are not preserved; in the usual
+setgid shared directory the group is inherited by the temp file anyway.)
+
+Reading the umask back to reproduce it would have been the other way to do
+this, and is not safe here: `os.umask` is read-modify-write and process-global,
+and both viewers have worker threads creating files of their own.
+
+The mechanism is `imaging.atomic_write`, with `atomic_to_csv` a two-line wrapper
+over it. `state.py` writes `sessions.json` and the two `.preferences_*.json`
+through the same helper, so the whole of what the tools persist follows one rule
+rather than two.
+
+Covered by `tests/test_classification_writer.py` (21 tests: completeness, a
+failed write leaving the previous file byte-identical, no scratch files left
+behind, fork-on-foreign-write, no re-forking afterwards, a file that appeared
+since startup forking to `-simultaneous_N` instead of clobbering it, a third
+viewer taking the next `-simultaneous_N`, a deleted target being recreated
+rather than forked, both markers' numbering and de-stacking rules, a legacy
+`-(N)` name forking to a named marker, the forks surviving the viewers'
+seedless-discovery glob, and the four permission properties above — asserted against a probe file written with a plain
+`open()` rather than a literal 0644, so they hold under any umask) and
+`tests/test_state.py` (33 tests, three of them the same rule for the store).
+
+## Fork names say which collision happened, and have no parentheses
+A classification CSV is named after the dataset, so two runs can legitimately
+want the same name. Two quite different things cause that, and both used to be
+spelled `-(N)`:
+
+* the name is taken by a **different dataset** — same `--name` (or none) and
+  the same image count over different files;
+* **another viewer is grading this same session** right now, and the writer
+  refuses to overwrite its file (see above).
+
+A bare number says nothing about which, so the directory afterwards is a
+guessing game. Each case now names itself: `-new_dataset_N` and
+`-simultaneous_N`, counting up as the situation repeats.
+
+Parentheses are gone with them. `-(1)` is a syntax error in bash and zsh, so
+every one of these files had to be quoted or escaped before it could be copied,
+moved or passed to another tool — a papercut on exactly the files a user reaches
+for by hand when reconciling two of them.
+
+Files already named `-(N)` are still found, read and resumed, and forking one
+lands on a named marker rather than stacking (`c-(1).csv` → `c-simultaneous_1.csv`).
+Nothing on disk is renamed; the suffix is simply not written any more.
+
+One helper now covers both cases — `imaging.next_free_csv_path(path, marker)`,
+which scans for the first free name. That retired `find_filename_iteration`,
+which parsed the number out of the name it had just read and added one to it,
+and so could hand back a name that was already taken if the numbering had gaps.
+The `-` introducing the marker is load-bearing, by the way: both viewers glob
+`{base}-*.csv` minus `{base}_*.csv` to find a seedless dataset's files, so a
+marker spelled `_new_dataset_1` would read as a seed and hide the fork from
+relaunch and from the lobby's auto-detect.
+
+## The mosaic's grid shape is no longer part of the CSV filename
+Changing `--ncols`/`--nrows` used to start a *new* classification, leaving the
+grades you had already made behind in the old file. The grid shape is a display
+choice — how many stamps fit comfortably on your screen, changeable at any time,
+and `--minimum_size` exists for exactly that — so it says nothing about *which*
+objects are being classified and has no business forking the file that records
+the grades.
+
+The mosaic's CSV is now named the same way `single_viewer.py`'s always was,
+which never had a grid to encode:
+
+    classification_mosaic_autosave_{name}_{n_images}[_{seed}]
+
+Dataset identity — name, image count, seed — and nothing else. Reshaping the grid
+now keeps the same file, the grades in it, and your place in the deck.
+
+This also removes a long-standing asymmetry that made the old behaviour hard to
+predict: the shape only *partly* made it into the name. The unseeded branch wrote
+`..._{ncols}_99`, dropping `nrows` entirely, because the grid was square back when
+the scheme was written and one number described it. The seeded branch wrote
+`..._{ncols}_{nrows}_{seed}`. So changing `--nrows` alone forked the file when a
+seed was set and silently reused it when one wasn't — the single case where the
+resume-position feature above appeared to work. `lobby.py` carried a copy of the
+same formula, quirk included, to guess which CSV the mosaic had just written;
+it now shares the simpler rule.
+
+**This breaks compatibility with classifications started before it, deliberately.**
+A pre-existing CSV has the grid shape in its name and will not be found; the
+session starts a new file. Continuity is guaranteed from this release forward,
+not backward — no migration code is carried for the old layout. If you have a
+classification in flight under the old naming, finish it on the previous
+revision or rename the file yourself to
+`classification_mosaic_autosave_{name}_{n_images}[_{seed}].csv`.
+
+## Fixed: `page`/`grid_pos` describing two grids at once (mosaic tool)
+The mosaic records which page and cell each stamp was graded in. Both are only
+meaningful for the grid shape in force at the time, but they were computed once,
+when a classification CSV was first created, and afterwards only rewritten for
+the cells actually rendered.
+
+Whenever a CSV is reopened under a different shape, those two columns silently
+end up describing both grids at once. Grading a 12-object deck at 2×3 (6 per
+page) and reopening it at 2×2 (4 per page) left eight objects claiming page 1 on
+a four-cell page, with `grid_pos` values of 4 and 5 that no 4-cell grid can
+produce. Only the pages the user happened to visit were correct.
+
+Under the old naming this was reachable only in the one case where a reshape
+kept the same file (`--nrows` alone, no seed). Taking the grid shape out of the
+filename — see the entry above — makes *every* reshape reuse the file, so fixing
+this was a precondition for that change rather than a nicety.
+
+Both columns are now recomputed from the current grid when an existing CSV is
+read, exactly as they already were when one is created, so the file always
+describes the shape it is being used with.
+
+The grades themselves were never affected, and nothing downstream reads either
+column — `extraction.py` uses only `file_name` and `classification`. This was a
+long-standing bug, not a regression from the session-state work above.
+
+## Background markers are drawn, not loaded (mosaic tool)
+`.background.png`, `.background_interesting.png` and `.backgrounddark.png` —
+a white "L", a white "I", and a solid black square, used to mark a stamp as
+a lens candidate / interesting / deactivated — were loaded from three
+CWD-relative dotfiles, so outside the repo root they silently resolved to
+nothing: no error, just a missing pixmap. They're now drawn at runtime with
+`QPainter` instead, so the three tracked PNGs are gone.
+
+While touching this code, fixed a latent bug in `MiniMosaics.deactivate()`:
+it passed a bare path string into a method expecting a list, which iterated
+over it character-by-character. That happened to produce harmless null
+pixmaps with path strings, so it never showed a symptom, but would have
+raised `TypeError` outright with the new `QPixmap` objects.
+
 See the CLI `--help` on either tool for the full current argument list.

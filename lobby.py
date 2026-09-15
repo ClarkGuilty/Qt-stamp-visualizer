@@ -24,7 +24,7 @@ from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
-from imaging import detect_band_filetype
+from imaging import detect_band_filetype, resolve_classifications_dir
 from widgets import PredefinedConfigBar
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +51,7 @@ DEFAULT_SCHEME_ROWS = [
 DEFAULT_CONFIG = {
     'data_path': '',
     'output_path': '',
+    'classifications_path': '',
     'session_name': '',
     'seed_enabled': False,
     'seed_value': 0,
@@ -99,28 +100,28 @@ def discover_bands(path):
     return sorted(d for d in os.listdir(path) if os.path.isdir(join(path, d)))
 
 
-def predict_mosaic_csv_path(source_path, name, ncols, nrows, seed):
+def predict_mosaic_csv_path(source_path, name, seed, classifications_dir):
     """Best-effort prediction of the CSV the mosaic tool just wrote.
 
-    Replicates mosaic.py's own obtain_df() base_filename
-    formula exactly -- including its no-seed-branch bug where nrows is
-    silently dropped and replaced by a literal '99'. Rather than also
-    replicating obtain_df()'s pre-run file-selection quirks (natural-sort +
-    picking the second-to-last match, its file_iteration suffix logic for
-    mismatched datasets), this just globs for anything matching the base
-    filename pattern and returns the most recently modified match -- mosaic
-    rewrites its CSV to disk on every single click, so "most recently
-    modified" reliably identifies the file that session just wrote.
-    Returns None if nothing matches, so the caller can fall back to asking
-    the user.
+    Replicates mosaic.py's own obtain_df() base_filename formula: dataset
+    identity only -- name, image count, seed. The grid shape is not part of it.
+
+    Rather than also replicating obtain_df()'s file-selection logic, this globs
+    for anything matching the base filename and returns the most recently
+    modified match -- mosaic rewrites its CSV on every click, so "most recently
+    modified" reliably identifies the file that session just wrote. Returns None
+    if nothing matches, so the caller can fall back to asking the user.
     """
     name = name or ''
     n_images = count_vis_images(source_path)
+    base_filename = f'classification_mosaic_autosave_{name}_{n_images}'
     if seed is None:
-        base_filename = f'classification_mosaic_autosave_{name}_{n_images}_{ncols}_99'
+        # `_*` is the seeded layout, which this unseeded session must not claim.
+        matches = ((set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv')))
+                    - set(glob.glob(join(classifications_dir, f'{base_filename}_*.csv'))))
+                   | set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
     else:
-        base_filename = f'classification_mosaic_autosave_{name}_{n_images}_{ncols}_{nrows}_{seed}'
-    matches = glob.glob(join(REPO_ROOT, "Classifications", f"{base_filename}*.csv"))
+        matches = set(glob.glob(join(classifications_dir, f'{base_filename}_{seed}*.csv')))
     if not matches:
         return None
     return max(matches, key=os.path.getmtime)
@@ -149,7 +150,7 @@ def build_band_argv(main_band, color_bands, composites):
     return argv
 
 
-def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False, band_argv=None):
+def build_mosaic_argv(path, name, seed, ncols, nrows, classifications_dir, printname=False, band_argv=None):
     argv = [join(REPO_ROOT, "mosaic.py"),
             "-p", path, "-l", str(ncols), "-m", str(nrows)]
     if name:
@@ -159,17 +160,23 @@ def build_mosaic_argv(path, name, seed, ncols, nrows, printname=False, band_argv
     # Passed explicitly either way: mosaic prints names by default, so leaving the
     # flag out would not turn the printing off.
     argv += ["--printname" if printname else "--no-printname"]
+    # Passed explicitly either way: mosaic launches with cwd=REPO_ROOT, so a
+    # default left up to the viewer would resolve ./Classifications against
+    # the checkout instead of against the lobby's own cwd.
+    argv += ["--classifications-dir", classifications_dir]
     argv += band_argv or []
     return argv
 
 
-def build_single_argv(path, name, seed, classifications_string, band_argv=None):
+def build_single_argv(path, name, seed, classifications_string, classifications_dir, band_argv=None):
     argv = [join(REPO_ROOT, "single_viewer.py"),
             "-p", path, "--classifications", classifications_string]
     if name:
         argv += ["-N", name]
     if seed is not None:
         argv += ["-s", str(seed)]
+    # Passed explicitly either way: see build_mosaic_argv's --classifications-dir comment.
+    argv += ["--classifications-dir", classifications_dir]
     argv += band_argv or []
     return argv
 
@@ -334,6 +341,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         self.name_edit = QtWidgets.QLineEdit()
         form.addRow("Session name:", self.name_edit)
+
+        classifications_row = QtWidgets.QHBoxLayout()
+        self.classifications_edit = QtWidgets.QLineEdit()
+        self.classifications_browse_btn = QtWidgets.QPushButton("Browse...")
+        self.classifications_browse_btn.clicked.connect(self.on_browse_classifications)
+        classifications_row.addWidget(self.classifications_edit)
+        classifications_row.addWidget(self.classifications_browse_btn)
+        form.addRow("Classifications dir:", classifications_row)
 
         seed_row = QtWidgets.QHBoxLayout()
         self.seed_enabled_cb = QCheckBox("Use seed")
@@ -726,8 +741,16 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if path:
             self.output_path_edit.setText(path)
 
+    def on_browse_classifications(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select classifications directory")
+        if path:
+            self.classifications_edit.setText(path)
+
     def _current_seed(self):
         return self.seed_spin.value() if self.seed_enabled_cb.isChecked() else None
+
+    def _classifications_dir(self):
+        return resolve_classifications_dir(self.classifications_edit.text().strip())
 
     def _mosaic_positive_values(self):
         positive_values = set()
@@ -759,16 +782,19 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         self._log_band_warnings()
         band_argv = self._band_argv()
+        classifications_dir = self._classifications_dir()
 
         if mode == MODE_MOSAIC_ONLY:
             argv = build_mosaic_argv(path, name, seed,
                                       self.ncols_spin.value(), self.nrows_spin.value(),
+                                      classifications_dir,
                                       printname=self.printname_cb.isChecked(),
                                       band_argv=band_argv)
             self._launch_fire_and_forget(argv)
         elif mode == MODE_SINGLE_ONLY:
             classifications_string, _ = self.build_classifications_string()
-            argv = build_single_argv(path, name, seed, classifications_string, band_argv=band_argv)
+            argv = build_single_argv(path, name, seed, classifications_string,
+                                      classifications_dir, band_argv=band_argv)
             self._launch_fire_and_forget(argv)
         elif mode == MODE_CHAINED:
             self._launch_stage1_chained(path, name, seed)
@@ -801,7 +827,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _launch_stage1_chained(self, path, name, seed):
         ncols, nrows = self.ncols_spin.value(), self.nrows_spin.value()
+        classifications_dir = self._classifications_dir()
         argv = build_mosaic_argv(path, name, seed, ncols, nrows,
+                                  classifications_dir,
                                   printname=self.printname_cb.isChecked(),
                                   band_argv=self._band_argv())
         self._stage1_extraction_context = {
@@ -810,6 +838,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'seed': seed,
             'ncols': ncols,
             'nrows': nrows,
+            'classifications_dir': classifications_dir,
         }
         self.stage1_proc = QProcess(self)
         self.stage1_proc.setWorkingDirectory(REPO_ROOT)
@@ -829,17 +858,18 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         context = self._stage1_extraction_context or {}
         source_path = context.get('source_path', self.path_edit.text().strip())
+        classifications_dir = context.get('classifications_dir', self._classifications_dir())
 
         csv_path = predict_mosaic_csv_path(
-            source_path, context.get('name'), context.get('ncols'),
-            context.get('nrows'), context.get('seed'))
+            source_path, context.get('name'), context.get('seed'),
+            classifications_dir)
         if csv_path:
             self.log(f"Auto-detected classification CSV: {csv_path}")
         else:
             self.log("Could not auto-detect the classification CSV -- please select it.")
             csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self, "Select the classification CSV produced by the mosaic tool",
-                join(REPO_ROOT, "Classifications"), "CSV files (*.csv)")
+                classifications_dir, "CSV files (*.csv)")
             if not csv_path:
                 self.log("Extraction cancelled -- no CSV selected.")
                 return
@@ -860,13 +890,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         classifications_string, _ = self.build_classifications_string()
         argv = build_single_argv(output_path, context.get('name'), context.get('seed'),
-                                  classifications_string, band_argv=self._band_argv())
+                                  classifications_string, classifications_dir,
+                                  band_argv=self._band_argv())
         self._launch_fire_and_forget(argv)
 
     def on_extract_only_clicked(self):
         csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select classification CSV",
-            join(REPO_ROOT, "Classifications"), "CSV files (*.csv)")
+            self._classifications_dir(), "CSV files (*.csv)")
         if not csv_path:
             return
 
@@ -897,6 +928,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c = self.config_dict
         self.path_edit.setText(c['data_path'])
         self.output_path_edit.setText(c['output_path'])
+        self.classifications_edit.setText(c['classifications_path'])
         self.name_edit.setText(c['session_name'])
         self.seed_enabled_cb.setChecked(c['seed_enabled'])
         self.seed_spin.setValue(c['seed_value'])
@@ -925,6 +957,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c = self.config_dict
         c['data_path'] = self.path_edit.text()
         c['output_path'] = self.output_path_edit.text()
+        c['classifications_path'] = self.classifications_edit.text()
         c['session_name'] = self.name_edit.text()
         c['seed_enabled'] = self.seed_enabled_cb.isChecked()
         c['seed_value'] = self.seed_spin.value()
@@ -1023,6 +1056,8 @@ def config_from_cli(args):
         c['data_path'] = args.path
     if args.output is not None:
         c['output_path'] = args.output
+    if args.classifications_dir is not None:
+        c['classifications_path'] = args.classifications_dir
     if args.name is not None:
         c['session_name'] = args.name
     if args.seed is not None:
@@ -1060,6 +1095,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
     seed = config['seed_value'] if config['seed_enabled'] else None
     band_argv = build_band_argv(config['main_band'], config['color_bands'],
                                 config['rgb_composites'])
+    classifications_dir = resolve_classifications_dir(config['classifications_path'])
 
     if classifications_override is not None:
         classifications_string = classifications_override
@@ -1082,7 +1118,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
 
     if mode == MODE_MOSAIC_ONLY:
         argv = build_mosaic_argv(path, name, seed, config['mosaic_ncols'],
-                                 config['mosaic_nrows'],
+                                 config['mosaic_nrows'], classifications_dir,
                                  printname=config['mosaic_printname'],
                                  band_argv=band_argv)
         if print_command_only:
@@ -1092,7 +1128,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
 
     if mode == MODE_SINGLE_ONLY:
         argv = build_single_argv(path, name, seed, classifications_string,
-                                 band_argv=band_argv)
+                                 classifications_dir, band_argv=band_argv)
         if print_command_only:
             emit(argv)
             return 0
@@ -1100,7 +1136,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
 
     # chained: mosaic -> extract positives -> 1-by-1
     ncols, nrows = config['mosaic_ncols'], config['mosaic_nrows']
-    mosaic_argv = build_mosaic_argv(path, name, seed, ncols, nrows,
+    mosaic_argv = build_mosaic_argv(path, name, seed, ncols, nrows, classifications_dir,
                                     printname=config['mosaic_printname'],
                                     band_argv=band_argv)
     output_path = config['output_path']
@@ -1108,7 +1144,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
     if print_command_only:
         emit(mosaic_argv)
         emit(build_single_argv(output_path or "<output_path>", name, seed,
-                               classifications_string, band_argv=band_argv))
+                               classifications_string, classifications_dir, band_argv=band_argv))
         return 0
 
     if not output_path:
@@ -1120,7 +1156,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
         log(f"Mosaic stage exited with code {code} -- stopping before extraction.")
         return code
 
-    csv_path = predict_mosaic_csv_path(path, name, ncols, nrows, seed)
+    csv_path = predict_mosaic_csv_path(path, name, seed, classifications_dir)
     if not csv_path:
         log("Could not auto-detect the mosaic classification CSV -- run the chained "
             "workflow from the lobby GUI instead, or extract manually.")
@@ -1133,7 +1169,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
     log(f"Extraction complete. {result.summary()}")
 
     return run(build_single_argv(output_path, name, seed, classifications_string,
-                                 band_argv=band_argv))
+                                 classifications_dir, band_argv=band_argv))
 
 
 def _build_arg_parser():
@@ -1156,6 +1192,8 @@ def _build_arg_parser():
                    help="mosaic only, 1-by-1 (single) only, or mosaic->1-by-1 chained.")
     g.add_argument("-p", "--path", help="Path to the images to inspect.")
     g.add_argument("-o", "--output", help="Output path for chained-mode extraction.")
+    g.add_argument("--classifications-dir", metavar="PATH",
+                   help="Directory for the autosaved classification CSVs.")
     g.add_argument("-N", "--name", help="Session name.")
     g.add_argument("-s", "--seed", type=int, help="Shuffle seed.")
     g.add_argument("--no-seed", action="store_true",
@@ -1187,6 +1225,7 @@ def main():
     headless = args.no_gui or args.print_command
     gave_override = any([
         args.mode is not None, args.path is not None, args.output is not None,
+        args.classifications_dir is not None,
         args.name is not None, args.seed is not None, args.no_seed,
         args.main_band is not None, args.color_bands is not None,
         args.rgb_composites is not None, args.classifications is not None,

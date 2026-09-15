@@ -11,7 +11,6 @@ from astropy.wcs import WCS
 import glob
 from functools import partial
 
-import json
 
 import pandas as pd
 import subprocess
@@ -38,8 +37,11 @@ from imaging import (
     identity, log, asinh2,
     get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
     get_contrast_bias_reasonable_assumptions, natural_sort,
-    find_filename_iteration, detect_band_filetype, find_band_file,
+    detect_band_filetype, find_band_file,
+    resolve_classifications_dir, ClassificationWriter,
+    next_free_csv_path, NEW_DATASET_FORK,
 )
+import state
 from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel
 from workers import (
     CacheState, SingleFetchWorker, PanstarrsFetchWorker,
@@ -59,7 +61,13 @@ parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VI
 parser.add_argument('-B',"--color_bands", help='Comma-separated bands to show individually via "Show NISP '
                     'bands". Example: "Y,J,H"',
                     default="Y,J,H")
-parser.add_argument("--reset-config", help="removes the configuration dictionary during startup.",
+parser.add_argument("--reset-config", help="forgets the saved preferences (colormap, scale, "
+                    "panels, toggles) during startup. Resume positions are kept; use "
+                    "--reset-position for those.",
+                    action="store_true", default=False)
+parser.add_argument("--reset-position", help="forgets the saved resume position for this "
+                    "--path/--name/--seed, so the session restarts at the first image. "
+                    "Preferences are kept.",
                     action="store_true", default=False)
 parser.add_argument("--verbose", help="activates loging to terminal",
                     action="store_true", default=False)
@@ -92,6 +100,11 @@ parser.add_argument('--rgb-composites',
                     'All three bands in a composite must have the exact same image dimensions '
                     '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
                     default="H,Y,I;H,J,Y")
+parser.add_argument("--classifications-dir", metavar="PATH",
+                    help="Directory for the autosaved classification CSVs. Absolute, or "
+                    "relative to the directory you launch from; created if it does not "
+                    "exist. Default: ./Classifications",
+                    default=None)
 
 args = parser.parse_args()
 
@@ -160,11 +173,21 @@ EXTERNAL_BAND = 'external_band'
 _LEGACY_SURVEY_KEY = "Legacy Survey"
 _PANSTARRS_KEY = "PanSTARRS"
 
-PATH_TO_CONFIG_FILE = ".config.json"
+SESSION_TOOL = 'single'
+# Pre-split config file. Read once, at the first startup after the split, then
+# kept as a .bak -- see state.migrate_legacy_config.
+LEGACY_CONFIG_FILE = ".config.json"
 
 if args.reset_config:
-    if os.path.exists(PATH_TO_CONFIG_FILE):
-        os.remove(PATH_TO_CONFIG_FILE)
+    if state.reset_preferences(SESSION_TOOL):
+        print("Preferences reset.")
+    if os.path.exists(LEGACY_CONFIG_FILE):
+        # Otherwise the migration below would immediately restore what was just reset.
+        os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
+
+if args.reset_position:
+    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed)):
+        print("Resume position reset.")
 
 if args.clean:
     for f in (glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")) +
@@ -296,9 +319,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.name = ''
         self.setWindowTitle(' - '.join(title_strings))
         
+        # Preferences only: they follow the *user*, so they survive a change of
+        # --path/--name/--seed. The resume position follows the *dataset* and
+        # lives in the session store instead (see state.py).
         self.defaults = {
-                    'name': self.name,
-                    'counter':0,
                     'legacysurvey':False,
                     'legacybigarea':False,
                     'legacyresiduals':False,
@@ -315,13 +339,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     'row_2':'',
                     'row_3':'',
                         }
-        self.config_dict = self.load_dict()
-        if not args.legacysurvey:
-            self.config_dict['legacysurvey'] = False
         self.ds9_comm_backend = "xpa"
         self.is_ds9_open = False
         self.singlefetchthread_active = False
-        self.colormap = self.config_dict['colormap']
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
         self.scale2funct = {'identity':identity,
@@ -330,7 +350,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             'log10':log,
                             'cbrt':np.cbrt,
                             'asinh2':asinh2}
-        self.scale = self.scale2funct[self.config_dict['scale']]
 
 
         self.stampspath = args.path
@@ -354,8 +373,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if len(self.listimage) < 1:
             print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
             sys.exit(1)
-        if self.config_dict['counter'] > len(self.listimage):
-            self.config_dict['counter'] = 0
 
         if self.random_seed is not None:
             print(f"Shuffling with seed {self.random_seed}")
@@ -396,12 +413,36 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                           {band: EXTERNAL_BAND for band in self.external_bands} |
                           {_PANSTARRS_KEY: EXTERNAL_BAND})
 
-        self.df = self.obtain_df()
+        self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
+        os.makedirs(self.classifications_dir, exist_ok=True)
+
+        self.session_id = state.SessionId(SESSION_TOOL, self.stampspath, self.name, self.random_seed)
+        self.df = self.obtain_df()  # sets self.df_name
+        # Every autosave goes through this: atomic, and never clobbers a file
+        # another process has written since we last saved it.
+        self.csv_writer = ClassificationWriter(self.df_name)
+
+        state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
+                                    self.listimage, self.legacy_counter, csv=self.df_name)
+        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults)
+        if self.config_dict['colormap'] == 'gray':  # renamed upstream long ago
+            self.config_dict['colormap'] = 'gist_gray'
+        if not args.legacysurvey:
+            self.config_dict['legacysurvey'] = False
+        self.colormap = self.config_dict['colormap']
+        self.scale = self.scale2funct[self.config_dict['scale']]
+
+        # resolve_position cross-checks the CSV: if obtain_df just resolved to a
+        # different classification file than the one the position was recorded
+        # against, the two disagree about which session is open and the position
+        # is stale by definition.
+        self.counter = state.resolve_position(state.load_session(self.session_id),
+                                              self.listimage, csv=self.df_name)
 
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
-        self.filename = join(self.listimage[self.config_dict['counter']])
+        self.filename = join(self.listimage[self.counter])
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
@@ -423,7 +464,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             row_layout.setSpacing(10)
             row_layout.setContentsMargins(0,0,0,0)
 
-        self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
+        self.counter_widget = QtWidgets.QLabel("{}/{}".format(self.counter+1,self.COUNTER_MAX))
         self.counter_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed) #QLabels have different default size policy. Better to use the policy of buttons.
         self.counter_widget.setStyleSheet("font-size: 14px")
         
@@ -618,12 +659,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
 
-        grade = self.df.at[self.config_dict['counter'],'classification']
+        grade = self.df.at[self.counter,'classification']
         if grade is not None and grade != 'None' and grade != 'Empty':
             self.bactivatedclassification = self.dict_class2button[grade]
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
-        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        subgrade = self.df.at[self.counter,'subclassification']
         if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
             self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
             if self.bactivatedsubclassification is not None:
@@ -720,7 +761,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.stop_prefetch_thread('fetchthread_ps')
             self.config_dict['prefetch_panstarrs'] = False
         else:
-            self.fetchthread_ps = FetchThread(self.df,self.config_dict['counter'],
+            self.fetchthread_ps = FetchThread(self.df,self.counter,
                                         fetch_panstarrs=True, fetch_legacysurvey=False) #Always store in an object.
             self.fetchthread_ps.finished.connect(self.fetchthread_ps.deleteLater)
             # A finished pass leaves the config flag claiming a thread is still
@@ -741,7 +782,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.stop_prefetch_thread('fetchthread_ls')
             self.config_dict['prefetch_legacysurvey'] = False
         else:
-            self.fetchthread_ls = FetchThread(self.df,self.config_dict['counter'],
+            self.fetchthread_ls = FetchThread(self.df,self.counter,
                                         fetch_panstarrs=False, fetch_legacysurvey=True,
                                         fetch_big_fov_residuals=args.ls_big_fov_residuals) #Always store in an object.
             self.fetchthread_ls.finished.connect(self.fetchthread_ls.deleteLater)
@@ -784,32 +825,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 pass
         event.accept()
 
-    def save_dict(self):
-        with open(PATH_TO_CONFIG_FILE, 'w') as f:
-            json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+    def save_preferences(self):
+        state.save_preferences(SESSION_TOOL, self.config_dict)
 
-    def load_dict(self):
-        try:
-            with open(PATH_TO_CONFIG_FILE, ) as f:
-                temp_dict = json.load(f)
-                if temp_dict['colormap'] == 'gray':
-                    temp_dict['colormap'] = "gist_gray"
-                if 'name' in temp_dict.keys():
-                    if temp_dict['name'] != self.name:
-                        temp_dict['name'] = self.name
-                        temp_dict['counter'] = 0
-                for key in self.defaults.keys():
-                    if key not in temp_dict.keys():
-                        temp_dict[key] = self.defaults[key]
-                
-                
-                return temp_dict
-        except FileNotFoundError:
-            return self.defaults
+    def save_position(self):
+        "Persist the resume position as a filename, so it survives a reshuffle-free relist."
+        state.save_session(self.session_id,
+                           position_filename=self.listimage[self.counter],
+                           csv=self.df_name)
 
+    def legacy_counter(self, legacy):
+        """The index the pre-split `.config.json` was pointing at, or None to drop it.
+
+        A `--name` comparison is the only guard the old file ever had, so it is
+        also the most that can honestly be checked when importing it.
+        """
+        if (legacy.get('name') or '') != self.name:
+            return None
+        counter = legacy.get('counter')
+        return counter if isinstance(counter, int) and not isinstance(counter, bool) else None
 
     def update_counter(self):
-        self.counter_widget.setText("{}/{}".format(self.config_dict['counter']+1,self.COUNTER_MAX))
+        self.counter_widget.setText("{}/{}".format(self.counter+1,self.COUNTER_MAX))
 
     @Slot()
     def keyClassify(self, grade, subgrade):
@@ -844,18 +881,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def classify(self, grade, subgrade):
-        cnt = self.config_dict['counter']
-        assert self.df.at[cnt,'file_name'] == self.listimage[self.config_dict['counter']] #TODO handling this possibility better.
+        # The df/listimage disagreement this used to assert on was the saved
+        # counter pointing into a dataset it never belonged to. obtain_df only
+        # returns a df whose file_name column matches listimage exactly, and the
+        # position is now resolved by filename against that same list, so the
+        # two cannot drift apart any more.
+        cnt = self.counter
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
         if self.filetype == 'FITS':
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
-        self.df.at[cnt,'pixel_size'] = self.image_pixel_size
-        self.df.at[cnt,'image_dim'] = self.image_size
+            self.df.at[cnt,'pixel_size'] = self.image_pixel_size #Arcsec/pixel comes from the WCS, so FITS only.
+        #The image itself is loaded for every filetype, so its size is always known.
+        #PNG/JPG arrays carry a trailing channel axis -- only the first two axes are the stamp.
+        self.df.at[cnt,'image_dim'] = np.max(self.images[self.main_band].shape[:2])
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
-        self.df.to_csv(self.df_name)
+        self.df_name = self.csv_writer.save(self.df)
 
         self.update_classification_buttoms()
         self.update_subclassification_buttoms()
@@ -1180,13 +1223,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.scale = self.scale2funct[scale]
         self.config_dict['scale'] = scale
         self.replot()
-        self.save_dict()
+        self.save_preferences()
 
     @Slot()
     def change_colormap(self, display_text):
         self.config_dict['colormap'] = self.colormap_options[display_text]
         self.replot()
-        self.save_dict()
+        self.save_preferences()
 
     def background_rms_image(self, cb, image):
         xg, yg = np.shape(image)
@@ -1311,7 +1354,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         w = WCS(header,fix=False)
         sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
         self.image_pixel_size = np.round(np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600, decimals=4)
-        self.image_size = np.max(w.array_shape)
         return sky[0][0], sky[1][0]#, image_pixel_size
 
     def _band_filepath(self, band):
@@ -1325,7 +1367,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return filepath
 
     def plot(self, scale_min = None, scale_max = None, band = None):
-        self.label_plot[self.main_band].setText(f"{self.listimage[self.config_dict['counter']]}")
+        self.label_plot[self.main_band].setText(f"{self.listimage[self.counter]}")
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.plot_band(band)
@@ -1417,17 +1459,19 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def obtain_df(self):
         if self.random_seed is None:
             base_filename = f'classification_single_{self.name}_{len(self.listimage)}'
-            string_to_glob = f'./Classifications/{base_filename}-*.csv'
-            string_to_glob_for_files_with_seed = f'./Classifications/{base_filename}_*.csv'
+            string_to_glob = join(self.classifications_dir, f'{base_filename}-*.csv')
+            string_to_glob_for_files_with_seed = join(self.classifications_dir,
+                                                      f'{base_filename}_*.csv')
             glob_results = (set(glob.glob(string_to_glob)) -
                             set(glob.glob(string_to_glob_for_files_with_seed)) |
-                            set(glob.glob(f'./Classifications/{base_filename}.csv')))
+                            set(glob.glob(join(self.classifications_dir, f'{base_filename}.csv'))))
         else:
             base_filename = f'classification_single_{self.name}_{len(self.listimage)}_{self.random_seed}'
-            string_to_glob = f'./Classifications/{base_filename}*.csv'
+            string_to_glob = join(self.classifications_dir, f'{base_filename}*.csv')
             glob_results = glob.glob(string_to_glob)
         
-        file_iteration = ""
+        fresh_name = join(self.classifications_dir, f'{base_filename}.csv')
+        new_dataset_name = ''
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
         if len(class_file) >= 1:
             file_index = 0
@@ -1448,17 +1492,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 return df
             else:
                 print("Classification file corresponds to a different dataset.")
-                string_tested = os.path.basename(self.df_name).split(".csv")[0]
-                file_iteration = find_filename_iteration(string_tested) if f'./Classifications/{base_filename}.csv' in class_file else ''
+                if os.path.exists(fresh_name):
+                    new_dataset_name = next_free_csv_path(fresh_name, NEW_DATASET_FORK)
 
-        self.df_name = f'./Classifications/{base_filename}{file_iteration}.csv'
+        self.df_name = new_dataset_name or fresh_name
         print('A new csv will be created', self.df_name)
-        if file_iteration != "":
+        if new_dataset_name:
             print("To avoid this in the future use the argument `-N name` and give different names to different datasets.")
-        self.config_dict['counter'] = 0
         dfc = ['file_name', 'classification',
                 'subclassification',
                 'ra','dec',
+                'pixel_size',
                 'image_dim',
                 'time']
         df = pd.DataFrame(columns=dfc)
@@ -1467,12 +1511,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         df['subclassification'] = ['Empty'] * len(self.listimage)
         df['ra'] = np.full(len(self.listimage),np.nan)
         df['dec'] = np.full(len(self.listimage),np.nan)
+        df['pixel_size'] = np.full(len(self.listimage),np.nan)
         df['image_dim'] = np.full(len(self.listimage),pd.NA)
         df['time'] = np.full(len(self.listimage),0.0)
         return df
 
     def go_to_counter_page(self):
-        self.filename = self.listimage[self.config_dict['counter']]
+        self.filename = self.listimage[self.counter]
         self.bottom_row_bands_already_plotted = False
         self.plot()
         if self.config_dict['legacysurvey']:
@@ -1482,8 +1527,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.update_classification_buttoms()
         self.update_subclassification_buttoms()
         self.update_counter()
-        self.save_dict()
-        cnt = self.config_dict['counter']# - 1
+        self.save_preferences()
+        self.save_position()
+        cnt = self.counter# - 1
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
 
@@ -1492,29 +1538,29 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         i, ok = QtWidgets.QInputDialog.getInt(self,
                                              'Visual inspection',
                                              '',
-                                             self.config_dict['counter']+1,
+                                             self.counter+1,
                                              1,
                                              self.COUNTER_MAX+1)
         if ok:
-            self.config_dict['counter'] = i-1
+            self.counter = i-1
             self.go_to_counter_page()
 
     @Slot()
     def next(self):
-        self.config_dict['counter'] = self.config_dict['counter'] + 1
+        self.counter = self.counter + 1
 
-        if self.config_dict['counter']>self.COUNTER_MAX-1:
-            self.config_dict['counter']=self.COUNTER_MAX-1
+        if self.counter>self.COUNTER_MAX-1:
+            self.counter=self.COUNTER_MAX-1
             self.status.showMessage('Last image')
         else:
             self.go_to_counter_page()
 
     @Slot()
     def prev(self):
-        self.config_dict['counter'] = self.config_dict['counter'] - 1
+        self.counter = self.counter - 1
 
-        if self.config_dict['counter']<self.COUNTER_MIN:
-            self.config_dict['counter']=self.COUNTER_MIN
+        if self.counter<self.COUNTER_MIN:
+            self.counter=self.COUNTER_MIN
             self.status.showMessage('First image')
 
         else:
@@ -1522,7 +1568,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
     def update_classification_buttoms(self):
-        grade = self.df.at[self.config_dict['counter'],'classification']
+        grade = self.df.at[self.counter,'classification']
 
 
         if self.bactivatedclassification is not None:
@@ -1535,7 +1581,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.bactivatedclassification = button
 
     def update_subclassification_buttoms(self):
-        subgrade = self.df.at[self.config_dict['counter'],'subclassification']
+        subgrade = self.df.at[self.counter,'subclassification']
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet(self.original_button_style)
 
