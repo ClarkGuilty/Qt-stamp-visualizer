@@ -4,8 +4,6 @@ import argparse
 
 import numpy as np
 import astropy.units as u
-from astropy.io import fits
-from astropy.wcs import WCS
 
 
 import glob
@@ -33,11 +31,11 @@ import sys
 from time import time
 import webbrowser
 
+import fits_io
 from imaging import (
     identity, log, asinh2,
     get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
     get_contrast_bias_reasonable_assumptions, natural_sort,
-    detect_band_filetype, find_band_file,
     resolve_classifications_dir, ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
 )
@@ -105,6 +103,13 @@ parser.add_argument("--classifications-dir", metavar="PATH",
                     "relative to the directory you launch from; created if it does not "
                     "exist. Default: ./Classifications",
                     default=None)
+parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
+                    "files -- one file per object, with bands as HDU extensions "
+                    "(identified by EXTNAME) inside it, instead of one subdirectory per "
+                    "band. Every object's file must share the same extension layout; "
+                    "band names passed to -b/-B/--rgb-composites must match an EXTNAME "
+                    "found in the first file under --path.",
+                    action="store_true", default=False)
 
 args = parser.parse_args()
 
@@ -126,16 +131,19 @@ for entry in args.rgb_composites.split(';'):
     args.composite_bands.append(key)
     args.composite_band_members[key] = members
 
-_referenced_bands = ({args.main_band} | set(args.color_bands) |
-                      {b for members in args.composite_band_members.values() for b in members})
-_missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
-if _missing_bands:
-    _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
-        if os.path.isdir(args.path) else []
-    print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
-          f"{', '.join(sorted(_missing_bands))}")
-    print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
-    sys.exit(1)
+if not args.mef:
+    # Under --mef there are no per-band subdirectories to check here -- band names are
+    # validated against the first file's extensions instead, once ApplicationWindow opens it.
+    _referenced_bands = ({args.main_band} | set(args.color_bands) |
+                          {b for members in args.composite_band_members.values() for b in members})
+    _missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
+    if _missing_bands:
+        _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
+            if os.path.isdir(args.path) else []
+        print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
+              f"{', '.join(sorted(_missing_bands))}")
+        print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
+        sys.exit(1)
 
 args.major_classes = []  # list of (major, key) tuples, in declared order
 args.subclasses = []  # list of (major, sub, key) tuples, in declared order
@@ -223,7 +231,8 @@ def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECOND
 
 
 class FetchThread(QThread):
-    def __init__(self, df, initial_counter, fetch_panstarrs=True, fetch_legacysurvey=True,
+    def __init__(self, df, initial_counter, main_band_source, listimage,
+                 fetch_panstarrs=True, fetch_legacysurvey=True,
                  fetch_big_fov_residuals=False, parent=None):
             QThread.__init__(self, parent)
 
@@ -233,7 +242,10 @@ class FetchThread(QThread):
             self.panstarrs_path = PANSTARRS_PATH
             self.stampspath = args.path
             self.main_band = args.main_band
-            self.listimage = sorted([os.path.basename(x) for x in glob.glob(join(self.stampspath,self.main_band,'*.fits'))])
+            # Passed in rather than rediscovered here, so this thread's view of "the
+            # main band's file for object N" can never drift from ApplicationWindow's.
+            self.main_band_source = main_band_source
+            self.listimage = listimage
             self.fetch_panstarrs = fetch_panstarrs
             self.fetch_legacysurvey = fetch_legacysurvey
             self.fetch_big_fov_residuals = fetch_big_fov_residuals
@@ -252,16 +264,6 @@ class FetchThread(QThread):
                                 panstarrs_cache_name(ra, dec, size))
         return fetch_panstarrs(savefile, ra, dec, size, verbose=args.verbose)
 
-    def get_ra_dec(self,header):
-        w = WCS(header,fix=False)
-        sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
-        image_pixel_size = np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600
-        return (sky[0][0], sky[1][0],
-                np.round(image_pixel_size,decimals=4),
-                np.max(w.array_shape)
-               )
-
-
     def interrupt(self):
         self._active = False
 
@@ -269,8 +271,9 @@ class FetchThread(QThread):
         "Download every cutout wanted for the object at `index`."
         stamp = self.df.iloc[index]
         if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
-            f = join(self.stampspath,self.main_band,self.listimage[index])
-            ra,dec,image_pixel_size,image_dim = self.get_ra_dec(fits.getheader(f,memmap=False))
+            stem = os.path.splitext(self.listimage[index])[0]
+            locator = fits_io.resolve(self.main_band_source, stem)
+            ra,dec,image_pixel_size,image_dim = fits_io.get_ra_dec(fits_io.read_header(locator))
         else:
             ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
         if self.fetch_panstarrs:
@@ -359,47 +362,71 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.panstarrs_path = PANSTARRS_PATH
         self.random_seed = args.seed
 
-        base_band_path = join(self.stampspath, self.main_band)
-        self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
-        self.filetype='FITS'
-        if len(self.listimage) < 1:
-            self.listimage = sorted(os.path.basename(x)
-                            for x in (glob.glob(join(base_band_path, '*.png')) +
-                                      glob.glob(join(base_band_path, '*.jpg')) +
-                                      glob.glob(join(base_band_path, '*.jpeg'))))
-            self.filetype='COMPRESSED'
-        print(f"Classifying {len(self.listimage)} sources.")
+        if args.mef:
+            self.listimage = fits_io.list_fits_files(self.stampspath)
+            self.filetype = 'FITS'
+            print(f"Classifying {len(self.listimage)} sources.")
+            if len(self.listimage) < 1:
+                print(f"No FITS files found in {self.stampspath}.")
+                sys.exit(1)
+        else:
+            base_band_path = join(self.stampspath, self.main_band)
+            self.listimage, self.filetype = fits_io.list_objects(base_band_path)
+            print(f"Classifying {len(self.listimage)} sources.")
 
-        if len(self.listimage) < 1:
-            print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
-            sys.exit(1)
+            if len(self.listimage) < 1:
+                print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
+                sys.exit(1)
 
         if self.random_seed is not None:
             print(f"Shuffling with seed {self.random_seed}")
             rng = np.random.default_rng(self.random_seed)
             rng.shuffle(self.listimage) #inplace shuffling
 
-        # Each band's format is a property of its own directory (detected independently),
-        # so bands can mix FITS and PNG/JPG within the same session -- only the main band
-        # (self.filetype) governs the object list and RA/Dec-dependent tools.
-        self.band_filetype = {self.main_band: self.filetype}
-        for band in (set(self.color_bands) |
-                     {b for members in args.composite_band_members.values() for b in members}):
-            self.band_filetype.setdefault(band, detect_band_filetype(join(self.stampspath, band)))
+        if args.mef:
+            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                    {b for members in args.composite_band_members.values() for b in members})
+            sample_file = join(self.stampspath, self.listimage[0])
+            mef_bands = fits_io.discover_mef_bands(sample_file)
+            missing = sorted(b for b in self.all_single_bands if b not in mef_bands)
+            if missing:
+                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {sample_file}: "
+                      f"{', '.join(missing)}")
+                print(f"Available extensions: {', '.join(sorted(mef_bands)) if mef_bands else '(none found)'}")
+                sys.exit(1)
+            self.band_filetype = {b: 'FITS' for b in self.all_single_bands}
+            self.band_sources = {b: fits_io.ExtensionBandSource(self.stampspath, mef_bands[b])
+                                  for b in self.all_single_bands}
+            # MEF bands are always FITS, so every declared composite is automatically eligible.
+            self.composite_bands = list(args.composite_bands)
+            self.composite_band_members = dict(args.composite_band_members)
+        else:
+            # Each band's format is a property of its own directory (detected independently),
+            # so bands can mix FITS and PNG/JPG within the same session -- only the main band
+            # (self.filetype) governs the object list and RA/Dec-dependent tools.
+            self.band_filetype = {self.main_band: self.filetype}
+            for band in (set(self.color_bands) |
+                         {b for members in args.composite_band_members.values() for b in members}):
+                self.band_filetype.setdefault(band, fits_io.detect_band_filetype(join(self.stampspath, band)))
 
-        # RGB composites require all three member bands to be FITS -- drop any composite
-        # that isn't, rather than crashing or silently mixing formats into one image.
-        self.composite_bands = []
-        self.composite_band_members = {}
-        for key in args.composite_bands:
-            members = args.composite_band_members[key]
-            non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
-            if non_fits:
-                print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
-                      f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
-                continue
-            self.composite_bands.append(key)
-            self.composite_band_members[key] = members
+            # RGB composites require all three member bands to be FITS -- drop any composite
+            # that isn't, rather than crashing or silently mixing formats into one image.
+            self.composite_bands = []
+            self.composite_band_members = {}
+            for key in args.composite_bands:
+                members = args.composite_band_members[key]
+                non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
+                if non_fits:
+                    print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
+                          f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
+                    continue
+                self.composite_bands.append(key)
+                self.composite_band_members[key] = members
+
+            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                    {b for members in self.composite_band_members.values() for b in members})
+            self.band_sources = {band: fits_io.DirBandSource(join(self.stampspath, band), self.band_filetype[band])
+                                  for band in self.all_single_bands}
 
         self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
         self.all_bands = [self.main_band,
@@ -762,6 +789,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['prefetch_panstarrs'] = False
         else:
             self.fetchthread_ps = FetchThread(self.df,self.counter,
+                                        self.band_sources[self.main_band], self.listimage,
                                         fetch_panstarrs=True, fetch_legacysurvey=False) #Always store in an object.
             self.fetchthread_ps.finished.connect(self.fetchthread_ps.deleteLater)
             # A finished pass leaves the config flag claiming a thread is still
@@ -783,6 +811,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict['prefetch_legacysurvey'] = False
         else:
             self.fetchthread_ls = FetchThread(self.df,self.counter,
+                                        self.band_sources[self.main_band], self.listimage,
                                         fetch_panstarrs=False, fetch_legacysurvey=True,
                                         fetch_big_fov_residuals=args.ls_big_fov_residuals) #Always store in an object.
             self.fetchthread_ls.finished.connect(self.fetchthread_ls.deleteLater)
@@ -1191,10 +1220,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 {b for members in self.composite_band_members.values() for b in members})
         arguments = ["ds9", '-fits']
         for band in sorted(all_referenced_bands):
-            band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
+            band_filetype = self.band_filetype.get(band)
             if band_filetype != 'FITS': #ds9 only understands FITS -- skip any non-FITS band.
                 continue
-            filename = self._band_filepath(band)
+            filename = self._band_filepath(band).filepath
             arguments += [filename, '-zoom', 'to',str(band2zoom.get(band, default_zoom)), '-colorbar', 'no']
         print(" ".join(arguments))
         subprocess.Popen(arguments)
@@ -1344,27 +1373,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
             return image
 
-    def load_fits(self,filepath, get_radec=False):
-        opened_fits = fits.open(filepath)
+    def load_fits(self, locator, get_radec=False):
         if get_radec:
-            self.ra,self.dec = self.get_ra_dec(opened_fits[0].header)
-        return opened_fits[0].data
-
-    def get_ra_dec(self,header):
-        w = WCS(header,fix=False)
-        sky = w.pixel_to_world_values([w.array_shape[0]//2], [w.array_shape[1]//2])
-        self.image_pixel_size = np.round(np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600, decimals=4)
-        return sky[0][0], sky[1][0]#, image_pixel_size
+            image, header = fits_io.read_pixels_and_header(locator)
+            radec = fits_io.get_ra_dec(header)
+            self.ra, self.dec = radec.ra, radec.dec
+            self.image_pixel_size = radec.pixel_size_arcsec
+            return image
+        return fits_io.read_pixels(locator)
 
     def _band_filepath(self, band):
-        "Resolves band's file for the current object -- main band uses self.filename directly, other bands are matched by stem since their format/extension can differ."
-        if band == self.main_band:
-            return join(self.stampspath, band, self.filename)
+        "Resolves band's source location (file + HDU) for the current object."
         stem = os.path.splitext(self.filename)[0]
-        filepath = find_band_file(self.stampspath, band, stem)
-        if filepath is None:
-            raise FileNotFoundError(f"No FITS/PNG/JPG file found for '{stem}' in band '{band}'.")
-        return filepath
+        locator = fits_io.resolve(self.band_sources[band], stem)
+        if locator is None:
+            raise FileNotFoundError(f"No file found for '{stem}' in band '{band}'.")
+        return locator
 
     def plot(self, scale_min = None, scale_max = None, band = None):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.counter]}")
@@ -1387,10 +1411,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def plot_band(self, band, scale_min = None, scale_max = None):
         self.ax[band].cla()
         get_radec = True if band == self.main_band else False
-        band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
-        filepath = self._band_filepath(band)
+        band_filetype = self.band_filetype.get(band)
+        locator = self._band_filepath(band)
         if band_filetype == 'FITS':
-            image = self.load_fits(filepath, get_radec)
+            image = self.load_fits(locator, get_radec)
             self.images[band] = np.copy(image)
             if scale_min is None or scale_max is None:
                 scale_min, scale_max = self.scale_val(image)
@@ -1399,7 +1423,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image = self.rescale_image(image, scale_min, scale_max)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            image = np.asarray(Image.open(filepath))
+            image = np.asarray(Image.open(locator.filepath))
             self.images[band] = np.copy(image)
             self.ax[band].imshow(image, origin='upper') #For pngs this is best.
         self.ax[band].set_axis_off() #Always before .draw()!
@@ -1446,7 +1470,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def replot_band(self, band, scale_min = None, scale_max = None):
         self.ax[band].cla()
         image = np.copy(self.images[band])
-        band_filetype = self.filetype if band == self.main_band else self.band_filetype.get(band)
+        band_filetype = self.band_filetype.get(band)
         if band_filetype == 'FITS':
             image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')

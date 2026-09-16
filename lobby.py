@@ -24,7 +24,8 @@ from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
-from imaging import detect_band_filetype, resolve_classifications_dir
+import fits_io
+from imaging import resolve_classifications_dir
 from widgets import PredefinedConfigBar
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +85,10 @@ def load_config_dict(path=PATH_TO_LOBBY_CONFIG):
 
 
 def count_vis_images(source_path):
+    if fits_io.is_mef_dataset(source_path):
+        # Every band is an extension of the same per-object file, so any band's count
+        # is the dataset's object count -- there's no single "VIS" directory to look in.
+        return len(fits_io.list_fits_files(source_path))
     vis_path = join(source_path, "VIS")
     count = len({os.path.basename(f) for f in glob.glob(join(vis_path, "*.fits"))})
     if count:
@@ -94,9 +99,18 @@ def count_vis_images(source_path):
 
 
 def discover_bands(path):
-    "Subdirectories directly under path -- the same notion of 'band' the viewer tools use."
+    """Available band names under path.
+
+    For an MEF dataset (path holds *.fits files directly, one multi-extension file
+    per object) these are the first file's HDU extension names. Otherwise they're
+    subdirectories directly under path -- the same notion of 'band' the
+    directory-per-band viewer tools use.
+    """
     if not path or not os.path.isdir(path):
         return []
+    if fits_io.is_mef_dataset(path):
+        sample = join(path, fits_io.list_fits_files(path)[0])
+        return sorted(fits_io.discover_mef_bands(sample))
     return sorted(d for d in os.listdir(path) if os.path.isdir(join(path, d)))
 
 
@@ -127,8 +141,8 @@ def predict_mosaic_csv_path(source_path, name, seed, classifications_dir):
     return max(matches, key=os.path.getmtime)
 
 
-def build_band_argv(main_band, color_bands, composites):
-    """Shared -b/-B/--rgb-composites fragment, appended to both tools' argv.
+def build_band_argv(main_band, color_bands, composites, mef=False):
+    """Shared --mef/-b/-B/--rgb-composites fragment, appended to both tools' argv.
 
     Empty -B/--rgb-composites values are passed explicitly rather than omitted:
     "no color bands" and "no composites" are states the lobby can be in
@@ -138,7 +152,7 @@ def build_band_argv(main_band, color_bands, composites):
     opens. Only an unset main band is omitted -- there "unset" means no path has
     been scanned yet, and -b '' would name a band directory that cannot exist.
     """
-    argv = []
+    argv = ['--mef'] if mef else []
     main_band = (main_band or '').strip()
     if main_band:
         argv += ["-b", main_band]
@@ -234,6 +248,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self._stage1_extraction_context = None
         self.available_bands = []
         self.fits_bands = []
+        self.mef = False
 
         self._build_ui()
         self._apply_config_to_widgets()
@@ -485,9 +500,13 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _rescan_bands(self):
         path = self.path_edit.text().strip()
+        self.mef = bool(path) and fits_io.is_mef_dataset(path)
         self.available_bands = discover_bands(path)
-        self.fits_bands = [b for b in self.available_bands
-                            if detect_band_filetype(join(path, b)) == 'FITS']
+        # MEF bands are always FITS (every listed extension holds image data);
+        # directory bands need the per-directory check since formats can mix.
+        self.fits_bands = (list(self.available_bands) if self.mef else
+                            [b for b in self.available_bands
+                             if fits_io.detect_band_filetype(join(path, b)) == 'FITS'])
         self._reconcile_main_band()
         self._refresh_band_widgets()
         self._prune_missing_composite_bands()
@@ -496,7 +515,10 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.bands_status_label.setText(
                 "Set a path above, then Rescan bands -- subdirectories of the path become available bands.")
         elif self.available_bands:
-            self.bands_status_label.setText("Available bands: " + ", ".join(self.available_bands))
+            label = "Available extensions" if self.mef else "Available bands"
+            self.bands_status_label.setText(f"{label}: " + ", ".join(self.available_bands))
+        elif self.mef:
+            self.bands_status_label.setText(f"No image extensions found in the first FITS file under {path}.")
         else:
             self.bands_status_label.setText(f"No subdirectories found under {path}.")
 
@@ -613,7 +635,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
     def _band_argv(self):
         return build_band_argv(self.main_band_combo.currentText(),
                                 self._checked_color_bands(),
-                                self._composite_rows())
+                                self._composite_rows(),
+                                mef=self.mef)
 
     def _log_band_warnings(self):
         if not self.available_bands:
@@ -627,7 +650,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
             referenced.update(b for b in triple if b)
         missing = sorted(b for b in referenced if b not in self.available_bands)
         if missing:
-            self.log(f"Warning: band(s) not found as subdirectories of the data path: {', '.join(missing)}")
+            where = "as extensions of the sample FITS file" if self.mef else "as subdirectories of the data path"
+            self.log(f"Warning: band(s) not found {where}: {', '.join(missing)}")
 
         composite_bands_referenced = {b for triple in self._composite_rows() if all(triple) for b in triple}
         non_fits = sorted(b for b in composite_bands_referenced
@@ -1094,7 +1118,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
     name = config['session_name']
     seed = config['seed_value'] if config['seed_enabled'] else None
     band_argv = build_band_argv(config['main_band'], config['color_bands'],
-                                config['rgb_composites'])
+                                config['rgb_composites'], mef=fits_io.is_mef_dataset(path))
     classifications_dir = resolve_classifications_dir(config['classifications_path'])
 
     if classifications_override is not None:

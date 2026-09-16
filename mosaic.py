@@ -1,8 +1,6 @@
 # This Python file uses the following encoding: utf-8
 import argparse
 
-from astropy.io import fits
-
 import glob
 
 import matplotlib.pyplot as plt
@@ -22,10 +20,11 @@ from os.path import join
 import sys
 from time import time
 
+import fits_io
 from imaging import (
     identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
     contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
-    natural_sort, detect_band_filetype, find_band_file,
+    natural_sort,
     resolve_classifications_dir, ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
 )
@@ -88,6 +87,13 @@ parser.add_argument("--classifications-dir", metavar="PATH",
                     "relative to the directory you launch from; created if it does not "
                     "exist. Default: ./Classifications",
                     default=None)
+parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
+                    "files -- one file per object, with bands as HDU extensions "
+                    "(identified by EXTNAME) inside it, instead of one subdirectory per "
+                    "band. Every object's file must share the same extension layout; "
+                    "band names passed to -b/-B/--rgb-composites must match an EXTNAME "
+                    "found in the first file under --path.",
+                    action="store_true", default=False)
 
 
 args = parser.parse_args()
@@ -109,16 +115,19 @@ for entry in args.rgb_composites.split(';'):
     args.composite_bands.append(key)
     args.composite_band_members[key] = members
 
-_referenced_bands = ({args.main_band} | set(args.color_bands) |
-                      {b for members in args.composite_band_members.values() for b in members})
-_missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
-if _missing_bands:
-    _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
-        if os.path.isdir(args.path) else []
-    print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
-          f"{', '.join(sorted(_missing_bands))}")
-    print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
-    sys.exit(1)
+if not args.mef:
+    # Under --mef there are no per-band subdirectories to check here -- band names are
+    # validated against the first file's extensions instead, once MosaicVisualizer opens it.
+    _referenced_bands = ({args.main_band} | set(args.color_bands) |
+                          {b for members in args.composite_band_members.values() for b in members})
+    _missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
+    if _missing_bands:
+        _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
+            if os.path.isdir(args.path) else []
+        print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
+              f"{', '.join(sorted(_missing_bands))}")
+        print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
+        sys.exit(1)
 
 C_INTERESTING = 2
 C_LENS = 1
@@ -352,45 +361,66 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         os.makedirs(self.classifications_dir, exist_ok=True)
         self.clean_dir(self.scratchpath)
 
-        base_band_path = join(self.stampspath, self.main_band)
-        self.listimage = sorted(os.path.basename(x) for x in glob.glob(join(base_band_path, '*.fits')))
-        self.filetype='FITS'
-        if len(self.listimage) < 1:
-            self.listimage = sorted(os.path.basename(x)
-                            for x in (glob.glob(join(base_band_path, '*.png')) +
-                                      glob.glob(join(base_band_path, '*.jpg')) +
-                                      glob.glob(join(base_band_path, '*.jpeg'))))
-            self.filetype='COMPRESSED'
-        print(f"Classifying {len(self.listimage)} sources.")
+        if args.mef:
+            self.listimage = fits_io.list_fits_files(self.stampspath)
+            self.filetype = 'FITS'
+            print(f"Classifying {len(self.listimage)} sources.")
+            if len(self.listimage) < 1:
+                print(f"No FITS files found in {self.stampspath}.")
+                sys.exit(1)
 
-        if len(self.listimage) < 1:
-            print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
-            sys.exit(1)
+            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                    {b for members in args.composite_band_members.values() for b in members})
+            sample_file = join(self.stampspath, self.listimage[0])
+            mef_bands = fits_io.discover_mef_bands(sample_file)
+            missing = sorted(b for b in self.all_single_bands if b not in mef_bands)
+            if missing:
+                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {sample_file}: "
+                      f"{', '.join(missing)}")
+                print(f"Available extensions: {', '.join(sorted(mef_bands)) if mef_bands else '(none found)'}")
+                sys.exit(1)
+            self.band_filetype = {b: 'FITS' for b in self.all_single_bands}
+            self.band_sources = {b: fits_io.ExtensionBandSource(self.stampspath, mef_bands[b])
+                                  for b in self.all_single_bands}
+            # MEF bands are always FITS, so every declared composite is automatically eligible.
+            self.composite_bands = list(args.composite_bands)
+            self.composite_band_members = dict(args.composite_band_members)
+        else:
+            base_band_path = join(self.stampspath, self.main_band)
+            self.listimage, self.filetype = fits_io.list_objects(base_band_path)
+            print(f"Classifying {len(self.listimage)} sources.")
 
-        # Each band's format is a property of its own directory (detected independently),
-        # so bands can mix FITS and PNG/JPG within the same session -- only the main band
-        # (self.filetype) governs the object list.
-        self.band_filetype = {self.main_band: self.filetype}
-        for band in (set(self.color_bands) |
-                     {b for members in args.composite_band_members.values() for b in members}):
-            self.band_filetype.setdefault(band, detect_band_filetype(join(self.stampspath, band)))
+            if len(self.listimage) < 1:
+                print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
+                sys.exit(1)
 
-        # RGB composites require all three member bands to be FITS -- drop any composite
-        # that isn't, rather than crashing or silently mixing formats into one image.
-        self.composite_bands = []
-        self.composite_band_members = {}
-        for key in args.composite_bands:
-            members = args.composite_band_members[key]
-            non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
-            if non_fits:
-                print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
-                      f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
-                continue
-            self.composite_bands.append(key)
-            self.composite_band_members[key] = members
+            # Each band's format is a property of its own directory (detected independently),
+            # so bands can mix FITS and PNG/JPG within the same session -- only the main band
+            # (self.filetype) governs the object list.
+            self.band_filetype = {self.main_band: self.filetype}
+            for band in (set(self.color_bands) |
+                         {b for members in args.composite_band_members.values() for b in members}):
+                self.band_filetype.setdefault(band, fits_io.detect_band_filetype(join(self.stampspath, band)))
 
-        self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                {b for members in self.composite_band_members.values() for b in members})
+            # RGB composites require all three member bands to be FITS -- drop any composite
+            # that isn't, rather than crashing or silently mixing formats into one image.
+            self.composite_bands = []
+            self.composite_band_members = {}
+            for key in args.composite_bands:
+                members = args.composite_band_members[key]
+                non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
+                if non_fits:
+                    print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
+                          f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
+                    continue
+                self.composite_bands.append(key)
+                self.composite_band_members[key] = members
+
+            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
+                                    {b for members in self.composite_band_members.values() for b in members})
+            self.band_sources = {band: fits_io.DirBandSource(join(self.stampspath, band), self.band_filetype[band])
+                                  for band in self.all_single_bands}
+
         self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
         if self.random_seed is not None:
@@ -862,20 +892,18 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
 
     def _band_filepath(self, i, band):
-        "Resolves band's file for object i -- matched by stem so bands with different formats/extensions for the same object still line up."
-        if band == self.main_band:
-            return join(self.stampspath, band, self.listimage[i])
+        "Resolves band's source location (file + HDU) for object i -- directory-per-band or MEF extension."
         stem = os.path.splitext(self.listimage[i])[0]
-        filepath = find_band_file(self.stampspath, band, stem)
-        if filepath is None:
-            raise FileNotFoundError(f"No FITS/PNG/JPG file found for '{stem}' in band '{band}'.")
-        return filepath
+        locator = fits_io.resolve(self.band_sources[band], stem)
+        if locator is None:
+            raise FileNotFoundError(f"No file found for '{stem}' in band '{band}'.")
+        return locator
 
     def prepare_png(self, i, single_band_only):
         # self.composite_bands only ever contains composites whose 3 members are all FITS
         # bands (filtered at startup), so no per-composite format branching is needed below.
         fits_bands = [band for band in self.all_single_bands if self.band_filetype.get(band) == 'FITS']
-        band_images = {band: self.read_fits(self._band_filepath(i, band)) for band in fits_bands}
+        band_images = {band: fits_io.read_pixels(self._band_filepath(i, band)) for band in fits_bands}
 
         for band in [self.main_band, *self.color_bands]:
             if self.band_filetype.get(band) == 'FITS':
@@ -883,7 +911,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 plt.imsave(self.filepath(i, self.page, band=band),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
             else:
-                src = self._band_filepath(i, band)
+                src = self._band_filepath(i, band).filepath
                 Image.open(src).save(self.filepath(i, self.page, band=band))
 
         if not single_band_only:
@@ -947,12 +975,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         "Removes everything in the scratch folder."
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
-
-    def read_fits(self, filepath):
-        # Note : memmap=False is much faster when opening/closing many small files
-        with fits.open(filepath, memmap=False) as hdu_list:
-            image = hdu_list[0].data
-        return image
 
     def rescale_image(self, image, scale_min, scale_max):
         factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)

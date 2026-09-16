@@ -512,4 +512,37 @@ over it character-by-character. That happened to produce harmless null
 pixmaps with path strings, so it never showed a symptom, but would have
 raised `TypeError` outright with the new `QPixmap` objects.
 
+## Shared FITS reading, plus multi-extension FITS (`--mef`)
+Both viewers used to hand-roll their own `astropy.io.fits` access independently:
+three separate copies of "glob the main band's directory for `*.fits`" (mosaic,
+single_viewer, and a third one inside single_viewer's prefetch `FetchThread`),
+always reading HDU 0, with single_viewer's `load_fits` never closing the
+`HDUList` it opened, and `memmap` handled inconsistently between the two
+(mosaic passed `memmap=False` explicitly; single_viewer's main read path left
+it at astropy's own default, `True`). All of that now lives in one new module,
+`fits_io.py`, that both tools and the prefetch thread call through instead of
+touching `astropy` directly — `memmap=False` and closing the file via `with`
+are now consistent everywhere. `detect_band_filetype`/`find_band_file` moved
+out of `imaging.py` (now astropy-free) into `fits_io.py`, since resolving
+"where does this band's data live" is one job whether the answer is a
+directory or, as of this change, an HDU extension.
+
+New capability that fell out of unifying it: `--mef` (both tools). Point
+`--path` at a directory of multi-extension FITS files — one file per object,
+holding every band as an HDU extension (identified by `EXTNAME`) — instead of
+one subdirectory per band. `-b`/`-B`/`--rgb-composites` work exactly as
+before, except a band name now has to match an extension found in the first
+file under `--path` rather than a subdirectory name; that mapping is
+discovered automatically (open one sample file, read its extensions) and is
+never typed in. Lobby auto-detects an MEF dataset from the path's contents
+(`*.fits` files directly under it, not only subdirectories) and lists its
+extensions in the band picker exactly the way it lists subdirectories today,
+so `--mef` gets appended to the launched viewer's command line without the
+user ever naming it.
+
+Mixing the two schemes in one run — some bands from directories, one band an
+extension of another band's file — is out of scope: `--mef` applies to the
+whole run, and every object's file is assumed to share the same extension
+layout as the first one found. New tests: `tests/test_fits_io.py`.
+
 See the CLI `--help` on either tool for the full current argument list.
