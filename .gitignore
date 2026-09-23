@@ -34,6 +34,8 @@ __pycache__/
 # Internal docs and agent working state, not for the public repo
 PLAN.md
 PLAN-DONE.md
+BUGS.md
+BUGS-DONE.md
 CLAUDE.md
 .claude/
 
