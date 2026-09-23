@@ -193,10 +193,17 @@ runs. The mosaic prints the file name of every stamp you click there — untick
 The toolbar carries a **Preset** dropdown alongside **Save as…** and **Restore previous**.
 Presets are plain JSON files, one per name, created by **Save as…**. The dropdown lists
 three sources at once, most specific first: `.qtstamp/presets/` in your working directory,
-then the per-user config directory, then the per-survey presets shipped with the tool
-(Euclid ERO, Legacy Survey, PanSTARRS) — so the dropdown is useful before you have saved
-anything. Saving always writes to `.qtstamp/presets/`, so saving under a shipped preset's
-name shadows it locally rather than overwriting it. Picking one from the dropdown applies
+then the per-user config directory, then the presets shipped with the tool — so the
+dropdown is useful before you have saved anything. Four ship: three per-survey band
+setups (Euclid ERO, Legacy Survey, PanSTARRS) and `ERO_edition_classic`, which
+reproduces the old `ERO_edition` scripts — VIS main band, Y/J/H colour bands, the
+H,Y,I and H,J,Y composites, a 5x8 mosaic with `Print name on click` off, and the
+`A` / `B` / `C` / `X` / `I` grades on keys 1-5, with `A` the one marked positive
+for extraction. Use it to resume a classification those scripts started: the labels
+match what they wrote into the CSV.
+
+Saving always writes to `.qtstamp/presets/`, so saving under a shipped preset's name
+shadows it locally rather than overwriting it. Picking one from the dropdown applies
 it immediately, and **Restore previous** undoes the swap. If a preset references bands
 that don't exist under your current data path, it still loads and the Log says which
 bands went missing.

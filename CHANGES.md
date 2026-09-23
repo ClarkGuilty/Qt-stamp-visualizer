@@ -8,6 +8,39 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## New: the `ERO_edition_classic` preset
+
+The lobby ships a fourth preset, reproducing what the pre-rename
+`mosaic_viewer_ERO_edition.py` / `single_viewer_multiband_ERO_edition.py` did out
+of the box, so a classification those scripts started can be resumed here without
+rebuilding the scheme by hand:
+
+* `VIS` main band, `Y,J,H` colour bands, the `H,Y,I` and `H,J,Y` composites — the
+  old `args.main_band` / `args.color_bands` / `composite_bands` constants.
+* 5x8 mosaic (the old `--ncols`/`--nrows` defaults) with `Print name on click`
+  off, matching the old `--printname` default of False.
+* Grades `A`, `B`, `C`, `X`, `I` on keys 1-5. The single-letter `I` is
+  deliberate: that is what the old scripts wrote into the `classification`
+  column, so an old CSV resumes without tripping the unknown-label warning.
+* `A` is the only grade marked positive for extraction, and on the mosaic side
+  only code 1 (`Lens`) is — the old `extract_files_from_mosaic.py` took
+  `classification == 1` and needed `--interesting` to add code 2.
+
+Everything else in the lobby's `DEFAULT_CONFIG` already matched the old edition,
+so the preset only exists to get that configuration *back* after it has been
+changed. Like the other three it carries no paths, names or seeds.
+
+Verified headless (`QT_QPA_PLATFORM=offscreen`, `MPLBACKEND=Agg`) from a scratch
+workspace outside the checkout, with the per-user config dir pointed at an empty
+directory so only the shipped presets were reachable: the preset appears in the
+dropdown, applies through the real `PredefinedConfigBar` activation path, and
+produces `--classifications A=1;B=2;C=3;X=4;I=5` with `{A}` as the positive
+majors, `-b VIS -B H,J,Y --rgb-composites 'H,Y,I;H,J,Y'`, and `-l 5 -m 8
+--no-printname`. Both viewers were then launched on that exact argv against
+synthetic multiband FITS and reached their windows; the 1-by-1 viewer's grade
+buttons came up as `A`/`B`/`C`/`X`/`I` bound to `1`-`5`.
+
+
 ## Renamed: the two viewer scripts
 * `mosaic_viewer_ERO_edition.py` is now `mosaic.py`, and
   `single_viewer_multiband_ERO_edition.py` is now `single_viewer.py`. The
@@ -769,7 +802,8 @@ call sites; `--print-command` appends the flag explicitly instead, since a
 printed command line has to stand on its own.
 
 **Defaults shipped with the tool.** New `qtstamp_defaults/` package with
-per-survey lobby presets (Euclid ERO, Legacy Survey, PanSTARRS), so the preset
+per-survey lobby presets (Euclid ERO, Legacy Survey, PanSTARRS) plus
+`ERO_edition_classic` (added 2026-09-22 — see below), so the preset
 dropdown is useful in a workspace that has never saved one. They hold only band
 and scheme keys — never paths or session names — because a preset is merged on
 top of whatever the user already has. `pyproject.toml` gained `packages` and

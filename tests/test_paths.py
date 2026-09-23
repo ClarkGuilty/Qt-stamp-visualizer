@@ -349,6 +349,16 @@ def test_packaged_presets_are_discoverable_and_are_valid_json():
         # carry anything that would stomp their paths or session.
         assert not ({'data_path', 'output_path', 'classifications_path', 'session_name',
                      'dock_state'} & set(preset))
+        # It is also applied straight onto the lobby's widgets, so the shapes the
+        # scheme table and the band pickers expect have to hold.
+        for row in preset.get('scheme_rows', []):
+            assert row['type'] in ('major', 'subclass')
+            assert row['major'] and row['key']
+            assert isinstance(row['positive'], bool)
+            assert (row['type'] == 'subclass') == bool(row['sub'])
+        assert isinstance(preset.get('color_bands', []), list)
+        for triple in preset.get('rgb_composites', []):
+            assert len(triple) == 3, triple
 
 
 def test_ensure_dir_creates_and_reports_true(tmpdir):

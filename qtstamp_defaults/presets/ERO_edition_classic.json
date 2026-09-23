@@ -1,0 +1,33 @@
+{
+    "main_band": "VIS",
+    "color_bands": [
+        "Y",
+        "J",
+        "H"
+    ],
+    "rgb_composites": [
+        [
+            "H",
+            "Y",
+            "I"
+        ],
+        [
+            "H",
+            "J",
+            "Y"
+        ]
+    ],
+    "scheme_rows": [
+        {"type": "major", "major": "A", "sub": "", "key": "1", "positive": true},
+        {"type": "major", "major": "B", "sub": "", "key": "2", "positive": false},
+        {"type": "major", "major": "C", "sub": "", "key": "3", "positive": false},
+        {"type": "major", "major": "X", "sub": "", "key": "4", "positive": false},
+        {"type": "major", "major": "I", "sub": "", "key": "5", "positive": false}
+    ],
+    "mosaic_ncols": 5,
+    "mosaic_nrows": 8,
+    "mosaic_printname": false,
+    "mosaic_lens_positive": true,
+    "mosaic_interesting_positive": false,
+    "mosaic_uninteresting_positive": false
+}
