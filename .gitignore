@@ -2,11 +2,23 @@
 *.miss
 *.fits
 *.csv
-.config*.json
-.predefined_configs/
+# `*.csv` does not cover these -- the 1-by-1 tool copies a classification file
+# aside as `<name>.csv.bak`, then `.bak.1`, `.bak.2`, ... when it finds labels
+# outside the current scheme. The trailing `*` is what catches the numbered
+# ones: `*.csv.bak` alone matches only the first copy.
+*.csv.bak*
 *.ipynb
 *.tar*
 old/
+
+# Workspace-local state (2b-v): settings, presets and caches for whatever
+# directory the tool was launched from. The checkout is a workspace too when you
+# run from it, so this keeps that run out of the diff. The pre-2b-v spellings
+# below are still listed because old checkouts have them lying around.
+.qtstamp/
+.config*.json
+.config*.json.bak
+.predefined_configs/
 .temp/
 
 # Python bytecode/cache
@@ -19,10 +31,16 @@ __pycache__/
 .DS_Store
 *.swp
 
-# Internal docs, not for the public repo
+# Internal docs and agent working state, not for the public repo
 PLAN.md
 PLAN-DONE.md
+CLAUDE.md
+.claude/
 
 # Local dev fixtures and scratch output, not part of the repo
 test_stamps_png_jpg/
 temp_extract/
+
+# Role-workflow working state (dev-workflow skill), not for the public repo
+STATUS.md
+STEP.md

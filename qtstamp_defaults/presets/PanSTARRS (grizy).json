@@ -1,0 +1,33 @@
+{
+    "main_band": "i",
+    "color_bands": [
+        "g",
+        "r",
+        "i",
+        "z",
+        "y"
+    ],
+    "rgb_composites": [
+        [
+            "y",
+            "i",
+            "g"
+        ],
+        [
+            "z",
+            "r",
+            "g"
+        ]
+    ],
+    "scheme_rows": [
+        {"type": "major", "major": "Lens", "sub": "", "key": "1", "positive": true},
+        {"type": "major", "major": "Maybe", "sub": "", "key": "2", "positive": true},
+        {"type": "major", "major": "Non-lens", "sub": "", "key": "3", "positive": false},
+        {"type": "major", "major": "Artefact", "sub": "", "key": "4", "positive": false}
+    ],
+    "mosaic_ncols": 6,
+    "mosaic_nrows": 6,
+    "mosaic_lens_positive": true,
+    "mosaic_interesting_positive": false,
+    "mosaic_uninteresting_positive": false
+}

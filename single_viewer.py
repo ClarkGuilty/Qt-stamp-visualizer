@@ -24,8 +24,10 @@ from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib import image as mpimg
 
+import filecmp
 import os
 from os.path import join
+import shutil
 
 import sys
 from time import time
@@ -36,9 +38,11 @@ from imaging import (
     identity, log, asinh2,
     get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
     get_contrast_bias_reasonable_assumptions, natural_sort,
-    resolve_classifications_dir, ClassificationWriter,
+    ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
 )
+import paths
+from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 import state
 from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel
 from workers import (
@@ -110,8 +114,10 @@ parser.add_argument("--mef", help="Treat --path as a directory of multi-extensio
                     "band names passed to -b/-B/--rgb-composites must match an EXTNAME "
                     "found in the first file under --path.",
                     action="store_true", default=False)
+add_state_dir_args(parser)
 
 args = parser.parse_args()
+STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
 
 # Empty entries dropped: -B '' means "no color bands", not one band named ''
 # (which passes the missing-directory check below -- it resolves to --path itself
@@ -167,10 +173,26 @@ for key, labels in seen_keys.items():
         print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
 
 
-LEGACY_SURVEY_PATH = './Legacy_survey/'
+# Downloaded cutouts live with the workspace (2b-v), under the state dir's
+# cache/. `paths.cache_dir` falls back to the per-user cache dir if the local
+# one is unusable -- unlike settings, a cache has no user intent to respect and
+# no fetch can succeed without somewhere to land. Cutouts already downloaded
+# into the per-user dir by a 2b-iii-era run are not reused here: moving them
+# would strand every other workspace that reads them, so they re-download.
+_CACHE_DIR = paths.cache_dir(override=STATE_DIR_OVERRIDE)
+LEGACY_SURVEY_PATH = os.path.join(_CACHE_DIR, 'Legacy_survey')
+PANSTARRS_PATH = os.path.join(_CACHE_DIR, 'PanSTARRS')
+# ... but not when the workspace *is* the checkout: `Legacy_survey/README` and
+# `PanSTARRS/README` are tracked, and migrating moves the whole directory, which
+# would show up as a deletion in `git status`. Someone running inside the
+# checkout keeps their old cutouts where they are and re-downloads into
+# `.qtstamp/cache/` -- far cheaper than a surprise `git rm` of tracked files.
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+if paths.absolute(os.curdir) != paths.absolute(_REPO_ROOT):
+    paths.migrate_once(os.path.join(os.curdir, 'Legacy_survey'), LEGACY_SURVEY_PATH)
+    paths.migrate_once(os.path.join(os.curdir, 'PanSTARRS'), PANSTARRS_PATH)
 LEGACY_SURVEY_PIXEL_SIZE=0.262
 
-PANSTARRS_PATH = './PanSTARRS/'
 PANSTARRS_PIXEL_SIZE = 0.25
 PS1_CUTOUTS_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1cutouts'
 
@@ -187,14 +209,18 @@ SESSION_TOOL = 'single'
 LEGACY_CONFIG_FILE = ".config.json"
 
 if args.reset_config:
-    if state.reset_preferences(SESSION_TOOL):
+    state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
+    if state.reset_preferences(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE):
         print("Preferences reset.")
     if os.path.exists(LEGACY_CONFIG_FILE):
         # Otherwise the migration below would immediately restore what was just reset.
         os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
 
 if args.reset_position:
-    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed)):
+    _anchor = resolve_classifications_dir(args.classifications_dir)
+    state.migrate_sessions_store(_anchor)
+    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed),
+                            _anchor):
         print("Resume position reset.")
 
 if args.clean:
@@ -442,6 +468,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
         os.makedirs(self.classifications_dir, exist_ok=True)
+        state.migrate_sessions_store(self.classifications_dir)
 
         self.session_id = state.SessionId(SESSION_TOOL, self.stampspath, self.name, self.random_seed)
         self.df = self.obtain_df()  # sets self.df_name
@@ -449,9 +476,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # another process has written since we last saved it.
         self.csv_writer = ClassificationWriter(self.df_name)
 
+        state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
         state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
-                                    self.listimage, self.legacy_counter, csv=self.df_name)
-        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults)
+                                    self.listimage, self.legacy_counter, csv=self.df_name,
+                                    classifications_dir=self.classifications_dir,
+                                    config_dir=STATE_DIR_OVERRIDE)
+        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults,
+                                                  config_dir=STATE_DIR_OVERRIDE)
         if self.config_dict['colormap'] == 'gray':  # renamed upstream long ago
             self.config_dict['colormap'] = 'gist_gray'
         if not args.legacysurvey:
@@ -463,8 +494,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # different classification file than the one the position was recorded
         # against, the two disagree about which session is open and the position
         # is stale by definition.
-        self.counter = state.resolve_position(state.load_session(self.session_id),
-                                              self.listimage, csv=self.df_name)
+        self.counter = state.resolve_position(
+            state.load_session(self.session_id, self.classifications_dir),
+            self.listimage, csv=self.df_name, classifications_dir=self.classifications_dir)
 
         self.number_graded = 0
         self.COUNTER_MIN = 0
@@ -686,16 +718,17 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
 
+        self._report_unknown_classifications()
+
         grade = self.df.at[self.counter,'classification']
-        if grade is not None and grade != 'None' and grade != 'Empty':
-            self.bactivatedclassification = self.dict_class2button[grade]
+        self.bactivatedclassification = self._button_for_grade(grade, self.dict_class2button)
+        if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
         subgrade = self.df.at[self.counter,'subclassification']
-        if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
-            self.bactivatedsubclassification = self.dict_subclass2button[subgrade]
-            if self.bactivatedsubclassification is not None:
-                self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedsubclassification = self._button_for_grade(subgrade, self.dict_subclass2button)
+        if self.bactivatedsubclassification is not None:
+            self.bactivatedsubclassification.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
 
         #Keyboard shortcuts
         self.classification_shortcuts = []
@@ -855,11 +888,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         event.accept()
 
     def save_preferences(self):
-        state.save_preferences(SESSION_TOOL, self.config_dict)
+        state.save_preferences(SESSION_TOOL, self.config_dict,
+                               config_dir=STATE_DIR_OVERRIDE)
 
     def save_position(self):
         "Persist the resume position as a filename, so it survives a reshuffle-free relist."
-        state.save_session(self.session_id,
+        state.save_session(self.session_id, self.classifications_dir,
                            position_filename=self.listimage[self.counter],
                            csv=self.df_name)
 
@@ -1491,8 +1525,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                             set(glob.glob(join(self.classifications_dir, f'{base_filename}.csv'))))
         else:
             base_filename = f'classification_single_{self.name}_{len(self.listimage)}_{self.random_seed}'
-            string_to_glob = join(self.classifications_dir, f'{base_filename}*.csv')
-            glob_results = glob.glob(string_to_glob)
+            # Not `{base}*.csv`: seed 7 would also match seed 70 and 78. Every
+            # suffix this tool writes is introduced by `-` (see
+            # `next_free_csv_path`), so match that and the bare name only.
+            glob_results = (set(glob.glob(join(self.classifications_dir, f'{base_filename}-*.csv'))) |
+                            set(glob.glob(join(self.classifications_dir, f'{base_filename}.csv'))))
         
         fresh_name = join(self.classifications_dir, f'{base_filename}.csv')
         new_dataset_name = ''
@@ -1508,7 +1545,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             for key in df.keys():
                 if "Unnamed:" in key:
                     keys_to_drop.append(key)
-            df.drop(keys_to_drop,axis=1)
+            df = df.drop(keys_to_drop, axis=1)
             if 'subclassification' not in df.columns:
                 df['subclassification'] = 'Empty'
             if (len(self.listimage) == len(df) and
@@ -1559,12 +1596,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def goto(self):
+        # 1-based in the dialog, 0-based in `counter`. COUNTER_MAX is a count,
+        # not a last index, so the inclusive maximum here is COUNTER_MAX itself.
         i, ok = QtWidgets.QInputDialog.getInt(self,
                                              'Visual inspection',
                                              '',
                                              self.counter+1,
                                              1,
-                                             self.COUNTER_MAX+1)
+                                             self.COUNTER_MAX)
         if ok:
             self.counter = i-1
             self.go_to_counter_page()
@@ -1591,29 +1630,157 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.go_to_counter_page()
 
 
+    def _unknown_classification_counts(self):
+        """{label: number of rows} for every classification in the CSV that the
+        current --classifications scheme does not declare. Both columns are
+        counted together -- what matters to the user is the label, not which
+        column it sat in. The button dicts deliberately map some known keys to
+        None (a major with no subclass button, 'None' itself), so membership,
+        not truthiness, is what separates known from unknown."""
+        counts = {}
+        for column, dict_grade2button in (('classification', self.dict_class2button),
+                                          ('subclassification', self.dict_subclass2button)):
+            for label in self.df[column]:
+                if label is None or pd.isna(label) or label in ('None', 'Empty'):
+                    continue
+                if label not in dict_grade2button:
+                    counts[label] = counts.get(label, 0) + 1
+        return counts
+
+    def _backup_paths(self):
+        """(copies already written, next free name), oldest copy first.
+
+        The first copy is `<name>.csv.bak` -- the plain name -- and later ones
+        add `.bak.1`, `.bak.2`, ... Deliberately not `imaging.next_free_csv_path`,
+        whose `-marker_N.csv` names exist *to be* found by the viewers' globs:
+        a backup must be the opposite, invisible to them, or reopening the
+        session could resume one. Nothing here ends in `.csv`, so nothing does.
+        """
+        candidate = self.df_name + '.bak'
+        existing = []
+        n = 0
+        while os.path.exists(candidate):
+            existing.append(candidate)
+            n += 1
+            candidate = f"{self.df_name}.bak.{n}"
+        return existing, candidate
+
+    def _backup_classification_csv(self):
+        """Copy the CSV aside when a scheme mismatch is found, before this
+        session can overwrite any of the labels it has no button for. Every
+        copy is kept, under the next free number: an earlier one may be the
+        only remaining record of a label that has since been graded over, so
+        none of them is ever replaced.
+
+        A copy is skipped when the newest one already matches the file byte for
+        byte -- relaunching without grading anything should not pile up
+        identical files.
+
+        Returns `(path of the copy holding the file as found, line for the
+        warning block)`; the path is None if there is nothing to copy or the
+        copy failed.
+        """
+        if not os.path.exists(self.df_name):
+            return None, None
+
+        existing, backup_path = self._backup_paths()
+        if existing and filecmp.cmp(self.df_name, existing[-1], shallow=False):
+            return existing[-1], f"  Backup: {existing[-1]} (already matches this file)"
+
+        try:
+            shutil.copy2(self.df_name, backup_path)
+        except OSError as e:
+            return None, (f"  Backup FAILED ({e})\n"
+                          f"  Copy {self.df_name} by hand before grading anything.")
+        kept = f" ({len(existing)} earlier cop{'y' if len(existing) == 1 else 'ies'} kept)" if existing else ""
+        return backup_path, f"  Backup: {backup_path}{kept}"
+
+    def _report_unknown_classifications(self):
+        """Say at startup -- in the terminal and at the bottom of the window --
+        that this CSV holds classifications the current scheme cannot render a
+        button for (BUGS.md #15). Reported up front, over the whole CSV, rather
+        than only when the user happens to navigate onto such a row: the label
+        is valid data that this session will not change, but nothing lights up
+        for it, which is otherwise indistinguishable from unclassified and
+        invites overwriting it. Not a reason to refuse to start -- just
+        something the user has to know before grading.
+        """
+        counts = self._unknown_classification_counts()
+        if not counts:
+            return
+
+        summary = ', '.join(f"'{label}' ({n} row{'s' if n != 1 else ''})"
+                            for label, n in sorted(counts.items()))
+        scheme = ', '.join(major for major, _ in args.major_classes) or '(none)'
+        backup_path, backup_line = self._backup_classification_csv()
+        print("=" * 72)
+        print("WARNING: this session's classification file holds labels that the")
+        print("current scheme (--classifications) does not declare:")
+        for label, n in sorted(counts.items()):
+            print(f"    {label}  ({n} row{'s' if n != 1 else ''})")
+        print(f"  Current majors: {scheme}")
+        print(f"  File: {self.df_name}")
+        if backup_line:
+            print(backup_line)
+        print("  They are kept exactly as they are, but no button lights up for them,")
+        print("  and reclassifying such a row overwrites the label it had.")
+        print("=" * 72)
+
+        # A permanent status-bar widget, not showMessage(): it has to outlive
+        # every transient message the session prints over it ("Downloading
+        # ...", "Last image"), because it is the only thing on screen saying
+        # those rows are not simply unclassified.
+        notice = QtWidgets.QLabel(f"Not in scheme: {summary}")
+        notice.setStyleSheet("color : white; background-color : #a04000; padding : 2px 6px;")
+        notice.setToolTip(
+            "These classifications were read from " + self.df_name + " but are not in "
+            "the current --classifications scheme, so they have no button here. They are "
+            "left untouched; classifying such a row replaces the label it had." +
+            (f"\nA copy of the file as it was found is kept at {backup_path}"
+             if backup_path else ""))
+        self.status.addPermanentWidget(notice)
+
+    def _button_for_grade(self, grade, dict_grade2button):
+        """dict_grade2button.get(grade), tolerating a label outside the current
+        --classifications scheme (BUGS.md #15): the CSV may hold a classification
+        written under a different scheme (or a lobby-launched session where the
+        mismatch was ignored rather than added), which is valid data with no
+        button to light up. `dict_grade2button` deliberately maps some known
+        keys to None already (a major with no subclass button, 'None' itself),
+        so only a key genuinely absent from the dict is reported as unknown.
+        """
+        if grade is None or grade in ('None', 'Empty'):
+            return None
+        if grade not in dict_grade2button:
+            # Terminal already has the full list from startup; this one names
+            # the row the user is looking at right now.
+            self.status.showMessage(
+                f"'{grade}' is not in the current classification scheme "
+                "(--classifications) -- kept as it is, but no button is highlighted "
+                "for it.", 8000)
+            return None
+        return dict_grade2button[grade]
+
     def update_classification_buttoms(self):
         grade = self.df.at[self.counter,'classification']
-
 
         if self.bactivatedclassification is not None:
             self.bactivatedclassification.setStyleSheet(self.original_button_style)
 
-        if grade is not None and grade != 'None' and grade != 'Empty':
-            button = self.dict_class2button[grade]
-            if button is not None:
-                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-                self.bactivatedclassification = button
+        button = self._button_for_grade(grade, self.dict_class2button)
+        if button is not None:
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedclassification = button
 
     def update_subclassification_buttoms(self):
         subgrade = self.df.at[self.counter,'subclassification']
         if self.bactivatedsubclassification is not None:
             self.bactivatedsubclassification.setStyleSheet(self.original_button_style)
 
-        if subgrade is not None and subgrade != 'None' and subgrade != 'Empty':
-            button = self.dict_subclass2button[subgrade]
-            if button is not None:
-                button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
-                self.bactivatedsubclassification = button
+        button = self._button_for_grade(subgrade, self.dict_subclass2button)
+        if button is not None:
+            button.setStyleSheet("background-color : {};color : white;".format(self.buttonclasscolor))
+        self.bactivatedsubclassification = button
 
             
 def main():

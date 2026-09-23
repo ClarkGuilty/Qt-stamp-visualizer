@@ -38,6 +38,48 @@ forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band
   `--classifications`, `--ncols`, `--nrows`, `--printname/--no-printname`,
   `--copy/--symlink`, and `--config` to read a different config file.
 
+
+## The lobby remembers each session, not just the last one
+The lobby's scheme editor and band setup used to live in one flat
+`config_lobby.json` alongside `session_name` — so they persisted across a change
+of session instead of travelling with it. Since the 1-by-1 viewer writes the
+scheme's own *names* into its CSV, reopening an earlier session after editing
+the scheme launched it with a `--classifications` string that no longer matched
+its own file: a renamed major left rows labelled with a class that no longer
+existed, and a reused shortcut key silently meant something different from what
+was recorded. (The mosaic was never affected — it stores numeric codes.)
+
+The lobby now keeps a **session record of its own** in the same
+`Classifications/sessions.json` the two viewers already use, under
+`('lobby', path, name, seed)`. What goes in it is split by lifetime:
+
+* **the dataset's**, into the record — the classification scheme, the main band,
+  the colour bands, the RGB composites, and the mosaic grid shape;
+* **the workspace's**, staying in `config_lobby.json` — the run mode, dock
+  layout, output path, extraction options, and the session identity itself.
+
+`config_lobby.json` keeps its copy of the first group as the **template for a
+session that doesn't have a record yet**, so starting a new session still
+inherits the scheme you last used. A record is written when you hit Run, and
+tracks your edits from then on; a session you never ran leaves nothing behind.
+
+**New: a "Recent sessions..." picker** in the Session panel, listing what you've
+run against this classifications directory — name, data path, seed and when you
+last opened it — with Open and Forget. Because the store records the data path
+*relative* to the classifications directory, the list survives the whole tree
+being copied to another machine, the same way resume positions do.
+
+`lobby.py --no-gui` gets the same treatment: an explicit `-b`/`--ncols`/etc.
+still wins, but with none given, the session's own record beats the workspace
+config. See BUGS-DONE.md item 14.
+
+Under the hood, `state.py` entries are now merged rather than rebuilt on write
+(`_update_session`), since a viewer's resume position and the lobby's config
+share one entry and each used to erase the other. That also fixed a
+longer-standing wart: a pre-2b-i absolute-keyed entry was read through the
+legacy fallback but never removed, leaving a stale duplicate of the same
+identity behind on every save.
+
 ## Configurable bands and RGB composites (both tools)
 * Bands are no longer hardcoded to VIS/Y/J/H/I. `--main_band` (default `VIS`)
   and `--color_bands` (default `Y,J,H`) are now real flags in both tools, and
@@ -331,10 +373,12 @@ unclassified stamps on both sides.
   position for the current `--path`/`--name`/`--seed`. Both viewers take both
   flags; the mosaic had neither before.
 
-`lobby.py` has the same class of bug one level up (`scheme_rows`, `main_band`,
-`mosaic_ncols`/`nrows` all live in one global `.config_lobby.json` and persist
-across a change of session name). That's a real change to the lobby's UI rather
-than a correctness fix, so it's sequenced separately — see PLAN.md.
+`lobby.py` had the same class of bug one level up (`scheme_rows`, `main_band`,
+`mosaic_ncols`/`nrows` all living in one global `.config_lobby.json` and
+persisting across a change of session name). That was sequenced separately,
+because fixing it properly meant a real change to the lobby's UI rather than a
+correctness patch — see "The lobby remembers each session, not just the last
+one" below.
 
 ## Classification autosaves are now crash-safe
 The classification CSV is the only irreplaceable thing either tool produces, and
@@ -473,6 +517,10 @@ classification in flight under the old naming, finish it on the previous
 revision or rename the file yourself to
 `classification_mosaic_autosave_{name}_{n_images}[_{seed}].csv`.
 
+`Classifications/README` -- the note that sits beside the CSVs themselves --
+kept the old table for a while after this landed (BUGS.md 2); it was corrected
+2026-09-21, and now also mentions `sessions.json`, which shares the directory.
+
 ## Fixed: `page`/`grid_pos` describing two grids at once (mosaic tool)
 The mosaic records which page and cell each stamp was graded in. Both are only
 meaningful for the grid shape in force at the time, but they were computed once,
@@ -546,3 +594,371 @@ whole run, and every object's file is assumed to share the same extension
 layout as the first one found. New tests: `tests/test_fits_io.py`.
 
 See the CLI `--help` on either tool for the full current argument list.
+
+## Portable resume: the session store follows the classifications, not the CWD
+
+Copy the tool and its data to another machine or another directory and, as long
+as the data keeps the same position relative to the classifications directory,
+the tool resumes where it left off. That did not work before, for two
+independent reasons:
+
+* The session identity hashed `realpath(path)`, so moving the tree changed the
+  key and the position was simply not found.
+* Even with a matching key, `resolve_position` compared the recorded CSV with
+  `os.path.abspath(csv)`, so a moved entry rejected itself and silently reset
+  to the first object.
+
+Both are fixed together, because fixing either alone still fails.
+
+**`sessions.json` now lives inside the classifications directory** rather than
+the current working directory, and the identity records the data path
+*relative to that anchor* (`"path": "../data"`, `"path_form": "relative"`),
+normalised to forward slashes so a store written on Windows matches one written
+on POSIX. The recorded CSV goes relative for the same reason. `..` segments are
+expected and correct — they are exactly what survives a copy.
+
+The narrower key is only safe *because* the store moved inside the anchor: two
+datasets at the same offset from two different `--classifications-dir` values
+land in two different stores, so the relative key cannot collide. That also
+means `--classifications-dir` is now what defines a workspace, rather than just
+naming where the CSVs are dropped.
+
+Anchoring on the classifications directory rather than the repo is what keeps
+this working under `pip install`/`uvx`, where the repo root is site-packages and
+is usually not writable.
+
+**Existing stores are carried forward, not stranded.** On startup each viewer
+imports a pre-existing CWD `sessions.json` into the anchor's store, re-keying
+each entry. It *copies* rather than moves: the CWD store is a single global file
+that may hold entries for several different `--classifications-dir` runs, so
+deleting it during the first anchor's migration would strand every other
+anchor's position. The import is recorded in `legacy_imports`, so a deliberate
+`--reset-position` is not undone by the next launch resurrecting the old entry,
+and `load_session` still falls back to the legacy absolute key for a store that
+has not been migrated yet.
+
+New `paths.py` holds the portable-path arithmetic and takes
+`resolve_classifications_dir()` over from `imaging.py`. Both ends of a relative
+path are normalised through `realpath` before the relationship is computed —
+mixing `abspath` and `realpath` is what breaks the round trip on macOS
+(`/tmp` -> `/private/tmp`) and anywhere either directory is reached through a
+symlink.
+
+Preferences (`.preferences_*.json`) deliberately did **not** move: they follow
+the *user*, not the dataset, and belong in a user config directory rather than
+travelling with a copied tree. Caches (`Legacy_survey/`, `PanSTARRS/`, `.temp/`)
+are still CWD-relative and still break when the CWD is not writable — both are
+the next step.
+
+## Fixed: cutouts were mis-centred on non-square stamps
+
+`fits_io.get_ra_dec` indexed `WCS.array_shape` in numpy order `(ny, nx)` but
+handed the result to `pixel_to_world_values`, which wants WCS-axis order
+`(x, y)`. The two were crossed, so "the centre of the image" was the centre only
+for square images. On a 40x100 TAN header with 0.2" pixels the old expression
+returned `(150.0017, 2.0017)` against a true centre of `(150.0, 2.0)` — about
+6" out in each axis, enough to mis-centre a Legacy Survey or PanSTARRS cutout.
+Pre-existing, inherited from `single_viewer.py` in the `fits_io.py` unification;
+found incidentally. Regression test covers a non-square image.
+
+Also added `fits_io` to `py-modules` in `pyproject.toml`, where it was missed
+when the module was created — an installed (non-editable) package was missing it.
+
+## The lobby, and user/machine state, no longer depend on the CWD (PLAN.md 2b-ii/iii)
+
+Finishes the relocatability work the previous entry started. Removing
+`cwd=REPO_ROOT` from the lobby's children without first moving the caches off
+the CWD would just have scattered `Legacy_survey/`, `PanSTARRS/` and `.temp/`
+across whatever directory each launch happened to use, so the two land together.
+
+**Lobby argv/CWD.** `-p`/`--path` and `-o`/`--output` are now resolved to an
+absolute path in the lobby before being handed to a child process — the same
+rule `--classifications-dir` already followed — in all three places that build
+one: `on_run_clicked`, `on_stage1_finished`, `run_headless` (guarding the empty
+string so `--print-command`'s `<path>`/`<output_path>` placeholders still
+trigger). The three `cwd=REPO_ROOT`/`setWorkingDirectory(REPO_ROOT)` calls are
+gone, so a launched viewer now inherits the lobby's own CWD instead of always
+running from the checkout. This closes BUGS.md item 1.
+
+**User and machine state move off the CWD entirely.** *(Superseded 2026-09-18
+by "Local-first state" below, which makes the per-user directory a fallback
+rather than the default. Kept because the mechanism it introduced —
+`paths.migrate_once`, the `XDG`/`Library`/`APPDATA` resolvers — is still what
+the newer entry builds on.)* Per PLAN.md's three-way
+table: `.preferences_*.json`, the lobby's own `.config_lobby.json` and
+`.predefined_configs/` move to a per-user config directory; `Legacy_survey/`,
+`PanSTARRS/` and `.temp/` move to a per-user cache directory. New
+`paths.user_config_dir()`/`user_cache_dir()` resolve them (`XDG_CONFIG_HOME`/
+`XDG_CACHE_HOME` on Linux, `~/Library/...` on macOS, `%APPDATA%`/`%LOCALAPPDATA%`
+on Windows — no new dependency, no `platformdirs`), overridable via
+`QTSTAMP_CONFIG_DIR`/`QTSTAMP_CACHE_DIR` so tests never touch the real user
+profile. New `paths.migrate_once(legacy, target)` moves a file or directory to
+its new home at most once — a no-op if the legacy path is missing, if the
+target already exists (never clobber newer state), or if the two are the same
+path — and each tool calls it once at startup for its own state: the lobby for
+its config/predefined-configs (legacy location `REPO_ROOT`, since that's what
+the old `join(REPO_ROOT, ...)` constants always resolved to); the mosaic for
+`.temp`; the single viewer for `Legacy_survey`/`PanSTARRS` (legacy location the
+CWD in both cases, matching what the old relative constants always meant).
+`state.migrate_preferences_file(tool)` does the same for each tool's
+preferences file and is called both at normal startup and in the
+`--reset-config` branch, before `reset_preferences` — the same reasoning the
+previous entry already applied to `--reset-position`: resetting must act on
+whichever file is actually in effect, or the reset appears to work and the old
+preferences come back.
+
+**Verified end to end**, from directories outside the checkout: BUGS.md item
+1's exact repro (`lobby.py --no-gui -m mosaic -p data -b VIS` with a relative
+`--path`) now finds the band directory instead of failing before the window
+opens; the mosaic runs from a non-writable CWD without
+`PermissionError: './.temp'`; with `QTSTAMP_CONFIG_DIR`/`QTSTAMP_CACHE_DIR` set
+to scratch directories, a pre-existing CWD-relative `.preferences_*.json` and
+`Legacy_survey`/`PanSTARRS` migrate into them (and out of the CWD) on the next
+launch, and a pre-existing `REPO_ROOT`-relative `.config_lobby.json`/
+`.predefined_configs` do the same for the lobby; the 2b-i copy-the-tree resume
+proof still passes unmodified.
+
+Out of scope, deliberately: the ancient pre-split `.config.json`/
+`.config_mosaic.json` is still read from the CWD and won't auto-migrate from a
+copy stranded at `REPO_ROOT` (that file predates 2b-i and is normally already a
+`.bak`); two mosaics sharing one `.temp` (BUGS.md minor); README/
+`Classifications/README` rewrites (2b-iv); `platformdirs`; the `src/qtstamp/`
+move (2c).
+
+## Local-first state: settings live beside your data, not in a per-user directory
+
+**Reverses the default set by the previous entry.** Making configuration global
+was wrong for how this tool is actually used: people work on several datasets
+from several directories, and a single per-user blob means changing a colormap
+or a band setup for one dataset silently changes it for all of them. The
+per-user directory is still there, but as a *fallback*, not the default.
+
+**One state directory, local by default.** Everything a workspace persists now
+lives in `<CWD>/.qtstamp` — `config_lobby.json`, `preferences_mosaic.json`,
+`preferences_single.json`, `presets/`, and `cache/` holding `Legacy_survey/`,
+`PanSTARRS/` and `temp/`. The anchor is the current working directory,
+deliberately *not* `--classifications-dir`: that flag anchors dataset state
+(`sessions.json` and the CSVs) and 2b-i's copy-the-tree guarantee depends on it
+meaning exactly that. The names lost their leading dot — they are already inside
+a hidden directory, and both `glob` and setuptools skip dotfiles, which the
+packaged defaults need.
+
+**Reads fall back; writes never do.** `paths.config_search_path()` is state dir
+-> `user_config_dir()` -> `qtstamp_defaults/`, and `paths.find_config(name,
+legacy=...)` returns the first hit, trying the pre-2b-v dotted spelling inside
+each directory before moving to the next one. So an existing per-user config
+from the previous entry still seeds a fresh workspace. Saving only ever writes
+to the state dir, and the file it was seeded from is left alone, because other
+workspaces may be reading it too.
+
+**Local or nothing.** If the state dir cannot be created or written, the tools
+run normally and persist nothing — they do not fall back to writing somewhere
+the user never pointed at. New `paths.ensure_dir()` (makedirs plus an
+`os.access` probe, never raises) gates every write site; `state._write_json`,
+`state.save_preferences` and `LobbyWindow.save_dict` return False instead of
+throwing. Caches are the one documented exception: `paths.cache_dir()` falls
+back to `user_cache_dir()`, because a lost preference costs a preference while a
+lost scratch directory costs the whole run.
+
+**Opting out.** `--state-dir PATH` and `--global` (shorthand for the per-user
+config directory) on all three tools, defined once in
+`paths.add_state_dir_args`/`resolve_state_dir_override` so they cannot drift.
+The lobby exports `QTSTAMP_STATE_DIR` for the viewers it launches, which covers
+all four launch paths without threading the value through nine `build_*_argv`
+call sites; `--print-command` appends the flag explicitly instead, since a
+printed command line has to stand on its own.
+
+**Defaults shipped with the tool.** New `qtstamp_defaults/` package with
+per-survey lobby presets (Euclid ERO, Legacy Survey, PanSTARRS), so the preset
+dropdown is useful in a workspace that has never saved one. They hold only band
+and scheme keys — never paths or session names — because a preset is merged on
+top of whatever the user already has. `pyproject.toml` gained `packages` and
+`package-data`; a built wheel was checked to actually contain them, which is the
+hole `fits_io.py` fell into earlier on this branch.
+
+**Migration.** The pre-2b-v *local* spellings (`.preferences_*.json`,
+`.config_lobby.json`, `.predefined_configs/`, `Legacy_survey/`, `PanSTARRS/`,
+`.temp/`, in the CWD or `REPO_ROOT`) move into `.qtstamp/` once, via the
+existing `paths.migrate_once`. Nothing is ever migrated *out of* the per-user
+directory: that copy is what other workspaces read, so moving it would strand
+them. Cutouts already downloaded into the per-user cache are not reused by a
+local cache — they re-download.
+
+**Verified end to end**, headless, from directories outside the checkout: a
+fresh workspace gets `.qtstamp/` and nothing lands in the per-user directory;
+two workspaces keep independent `main_band` values across a save/reload cycle; a
+read-only workspace runs the mosaic and the lobby to completion, writes nothing
+into it, returns False from `save_dict`, and falls its scratch back to the
+per-user cache dir; `--print-command` creates nothing at all; a simulated
+2b-iii-era per-user directory (dotted config, preferences and
+`.predefined_configs/`) is picked up as a seed, the first local save lands in
+`.qtstamp/`, and the per-user copy comes back byte-identical; the packaged
+presets appear in a brand-new workspace's dropdown; the 2b-i copy-the-tree
+resume proof still passes, including its negative case; and a read-only
+workspace *containing* a legacy `./.temp` to migrate no longer crashes at
+import. Suite is 134 tests (`test_state.py` 55, `test_paths.py` 41,
+`test_classification_writer.py` 21, `test_fits_io.py` 17).
+
+One deliberate exception to "writes only ever hit the state dir": the one-time
+rescue of `REPO_ROOT/.config_lobby.json` and `REPO_ROOT/.predefined_configs`
+goes to the *per-user* directory, not the current workspace. There is a single
+`REPO_ROOT` copy but any number of workspaces, so moving it into whichever one
+started the lobby first would take it from all the others; the per-user dir is
+the only destination that stays on every workspace's search path. Relatedly, the
+viewers skip migrating `Legacy_survey/`/`PanSTARRS/` when the workspace *is* the
+checkout, because their `README`s are tracked and moving the directory would
+show up as a deletion in `git status`.
+
+Out of scope, deliberately: reusing per-user cutouts from a local cache; a
+per-process scratch dir (BUGS.md minor); the `src/qtstamp/` move (2c).
+
+## Fixed: the 1-by-1 "Go to" dialog could crash on the last-plus-one image
+`Go to` let you enter one number past the end of the deck. The dialog is
+1-based and `counter` is 0-based, so on a 12-image session it accepted 13,
+set `counter = 12` and raised `IndexError` on `listimage[12]`.
+
+The maximum was `COUNTER_MAX + 1`. `COUNTER_MAX` is `len(listimage)` -- a count,
+not a last index -- so the inclusive 1-based maximum was already `COUNTER_MAX`
+and the `+1` was pure off-by-one. It is the same family as the mosaic's `goto`,
+fixed earlier on this branch, and it had been softened for years by a
+`counter > len(listimage)` startup clamp that went away with
+`config_dict['counter']`.
+
+## Fixed: the mosaic's page box rejected valid-looking input with a wrong message
+The page widget is 1-based -- it reads "Page 3 / 12" and its validator accepts
+1..12 -- but the warning for a too-small page number quoted the *internal*
+0-based range, telling you pages "go from 0 to 11" in a box that will not accept
+0. It now reads `Pages go from 1 to 12`, and both rejection branches share the
+one string so they cannot drift apart again.
+
+Two things turned up while confirming that branch was reachable, which BUGS.md
+had assumed it was not. A `QLineEdit` only refuses input its validator calls
+*Invalid*; *Intermediate* input stays in the box, since you must be able to type
+"1" on the way to "12". For `QIntValidator(1, 12)` that makes `0`, `13` and an
+**empty box** all Intermediate -- so they reach the handler. The empty box was a
+crash: `int('')` raised `ValueError` out of the slot. It is now caught, warned
+about, and the page number is put back rather than leaving the widget reading
+"Page  / 12".
+
+## Fixed: an unrecognised modifier+click on a mosaic stamp crashed the tool
+`MiniMosaics.mousePressEvent` compares `event.modifiers()` for *equality*
+against `Qt.ControlModifier`, `Qt.ShiftModifier` and `Qt.NoModifier`. A
+combination matches none of them, so Ctrl+Shift+click, Alt+click, Meta+click and
+friends fell through every branch on an unclassified stamp and reached
+`update_df_func(event, self.i, new_class)` with `new_class` never assigned:
+`UnboundLocalError`.
+
+An unrecognised modifier is now an explicit no-op -- the handler returns before
+the grade is written, leaving both the stamp's colour and the CSV alone --
+rather than the chain of `elif`s silently having no `else`. Clicks on an
+*already* graded stamp were never affected: that branch clears the grade
+whatever the modifier, and assigns first.
+
+## Fixed: a corrupt session store could resurrect a cleared resume position
+`sessions.json` records which pre-2b-i CWD store it has already imported, in
+`legacy_imports`, so that importing it is a once-only event and a deliberate
+`--reset-position` is not undone by the next startup. That record lived only in
+the store it protects, and `load_store` falls back to an empty store when the
+file is missing *or* unreadable -- so a truncated or hand-edited
+`sessions.json` took the record with it, and the next launch re-imported the old
+position on top of the cleared one.
+
+An unreadable store is now distinguished from an absent one and treated as
+"already imported": the migration is skipped and the mark written back out, so
+the next startup does not ask again. Skipping an import the user never had costs
+nothing they can see; repeating one puts back a position they cleared on
+purpose. The unreadable file is kept as `sessions.json.corrupt` rather than
+silently overwritten. BUGS.md item 8.
+
+Also in this pass: `state.migrate_legacy_config` required a
+`classifications_dir` it declared optional -- the `None` default reached
+`sessions_path(None)` and raised `TypeError`. Session state has no default
+anchor, so there was nothing for the default to mean; it is now a required
+argument. Both call sites already passed it by keyword and are unchanged.
+BUGS.md item 9.
+
+## Fixed: the mosaic crashed on a same-named CSV with a different row count
+The dataset check was `np.all(self.listimage == df['file_name'].values)` with no
+length guard, unlike the 1-by-1 tool's. NumPy used to degrade a ragged
+comparison to a scalar `False`; on NumPy 2.x it raises `ValueError`, so a CSV
+carrying this session's exact name but a different number of rows -- a run
+interrupted mid-write, a hand-edited file, a dataset that gained or lost a stamp
+-- took the mosaic down at startup instead of being recognised as a different
+dataset and forked. The guard the 1-by-1 tool already had is now on both.
+BUGS.md item 10.
+
+## Fixed: a seeded session could open the wrong dataset's CSV
+Both viewers looked for a seeded session's classification file with
+`{base}_{seed}*.csv`, so `--seed 7` also matched seeds 70 and 78. With a few such
+files in one classifications directory the tool could pick a neighbouring seed's
+CSV, correctly reject it as a different dataset, and then start an empty
+`-new_dataset_1` file beside the seed-7 CSV you were actually resuming. Both now
+glob `{base}-*.csv` plus `{base}.csv`, which is the `-` suffix / `_` seed
+separation `next_free_csv_path` already documents, so nothing written by these
+tools is missed. BUGS.md item 11.
+
+## Two mosaics in one directory no longer fight over the scratch dir
+Scratch renders went to one `<state dir>/cache/temp` per workspace, with
+index-based tile names and a wipe at startup and on every page turn -- so a
+second mosaic started in the same directory pulled the first one's tiles out from
+under it. Each process now renders into `cache/temp/<pid>/` and removes it on
+exit. Directories left by a process that is gone are swept on the next startup,
+so a hard kill leaks nothing permanently; on Windows the sweep is skipped,
+because `os.kill(pid, 0)` there terminates the process instead of probing it.
+Nothing about this is user-visible except that running two mosaics side by side
+now works. BUGS.md item 12.
+
+## Fixed: `Unnamed:` columns were never dropped (1-by-1 tool)
+`df.drop(keys_to_drop, axis=1)` was called without `inplace=True` and its result
+discarded, so the columns it collected stayed in the dataframe. BUGS.md item 13.
+
+## Fixed: a classification label outside the current scheme crashed the 1-by-1 viewer
+`dict_class2button`/`dict_subclass2button` were indexed with whatever the CSV's
+`classification`/`subclassification` columns held, with no guard against a label
+the current `--classifications` scheme doesn't declare -- `KeyError` at startup
+if the resume position landed on such a row (dies before the window exists), or
+inside a Qt slot on navigation (swallowed, leaving the wrong button highlighted
+from then on). The 1-by-1 viewer now tolerates an unknown label unconditionally
+-- no button lights up for it -- and, because a row with no button lit is
+otherwise indistinguishable from an unclassified one, it reports the problem
+*at launch*, over the whole CSV, rather than waiting for you to navigate onto
+such a row: a warning block in the terminal listing every undeclared label with
+its row count, plus a permanent notice at the bottom of the window that stays
+put for the session ("Not in scheme: 'B' (2 rows), 'Lens' (1 row)"). Landing on
+one of those rows also says so in the status bar. That same alert copies the
+classification file aside before you can grade over anything it cannot show a
+button for: `<name>.csv.bak` the first time, then `.bak.1`, `.bak.2`, ... No
+copy is ever replaced, so a label overwritten two sessions ago is still in the
+copy from before it -- though a launch that changed nothing doesn't add a
+duplicate. The lobby goes further, since it's the only one of the three
+tools with a scheme editor: launching the 1-by-1 tool (directly, or as the
+second stage of the chained workflow) now predicts the CSV that launch would
+resume, checks it against the current scheme, and for any label the scheme
+doesn't declare, asks whether to add it (with its own keyboard shortcut, and
+for a major, optionally a subclass) or launch without it. The headless CLI
+skips this prompt -- nothing to ask -- and falls through to the viewer's own
+tolerant behavior. BUGS.md item 15; item 14 -- the underlying per-session-state
+gap that let a scheme and a CSV drift apart in the first place -- is fixed too,
+see "The lobby remembers each session, not just the last one" above.
+
+## Supported Python is now 3.11 through 3.14
+
+`requires-python` was `>=3.9,<3.12`, so `pip install` refused on any current
+Python -- the first wall an external tester walks into. It is now
+`>=3.11,<3.15`. Both ends moved.
+
+**The ceiling.** Nothing was changed to make 3.12-3.14 work; the old bound had
+simply outlived whatever set it. On 3.14 the full suite passes, all three tools
+run, and the seven Qt-free modules import clean under
+`-W error::DeprecationWarning`. Verified the way a user meets it -- a wheel
+installed into a 3.14 venv, all three `qtstamp-*` console scripts run from a
+workspace outside the checkout, writing only into `.qtstamp/`, with the packaged
+presets resolved out of `site-packages/qtstamp_defaults`. The bound sits just
+past the newest version actually exercised rather than being removed: 3.15 is
+untested, exactly as 3.12 once was.
+
+**The floor**, from `>=3.9` to `>=3.11`, drops 3.9 and 3.10. This is a narrowing
+of what is claimed, not a change to the code -- neither version was exercised
+here, so the old floor was an assertion nothing backed. Nothing in the source
+currently requires 3.11; if you need 3.9 back, lowering the bound is the whole
+change, and then 3.9 wants a test run to earn it.

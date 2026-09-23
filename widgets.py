@@ -14,6 +14,8 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIntValidator
 
+import paths
+
 
 class AlignDelegate(QtWidgets.QStyledItemDelegate):
     "https://stackoverflow.com/a/54262963/10555034"
@@ -235,17 +237,26 @@ def _sanitize_preset_name(name):
 class PredefinedConfigBar(QtWidgets.QWidget):
     """Row of controls for saving/loading named presets of a tool's config dict.
 
-    Presets are plain JSON files under `directory`, one per name. Picking one
-    from the dropdown immediately applies it via `apply_config`; the config
-    active right before that (fetched via `get_config`) is kept in memory so
-    "Restore previous" can undo the swap without needing its own saved file.
+    Presets are plain JSON files, one per name. `directories` is a search path,
+    most specific first -- the workspace's own state dir, then the per-user one,
+    then the presets shipped with the tool -- so a brand-new workspace is not
+    an empty dropdown. A name found early shadows the same name found later,
+    which is what lets a user override a shipped preset by saving their own
+    under its name. Saving always goes to `write_dir` (the first entry),
+    never back up the path: the later entries are shared by other workspaces,
+    or read-only inside site-packages.
+
+    Picking one from the dropdown immediately applies it via `apply_config`; the
+    config active right before that (fetched via `get_config`) is kept in memory
+    so "Restore previous" can undo the swap without needing its own saved file.
     """
 
     PLACEHOLDER = "(current, unsaved)"
 
-    def __init__(self, directory, get_config, apply_config, parent=None):
+    def __init__(self, directories, write_dir, get_config, apply_config, parent=None):
         super().__init__(parent)
-        self.directory = directory
+        self.directories = list(directories)
+        self.write_dir = write_dir
         self.get_config = get_config
         self.apply_config = apply_config
         self._pre_snapshot = None
@@ -274,9 +285,9 @@ class PredefinedConfigBar(QtWidgets.QWidget):
         self.refresh()
 
     def refresh(self):
-        "Rescans `directory` for *.json presets, preserving the current selection if still valid."
+        "Rescans the search path for *.json presets, preserving the selection if still valid."
         current_name = self.combo.currentText() if self.combo.count() else None
-        names = self._list_names()
+        names = sorted(self._resolved().keys())
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.addItem(self.PLACEHOLDER)
@@ -284,17 +295,29 @@ class PredefinedConfigBar(QtWidgets.QWidget):
         self.combo.setCurrentText(current_name if current_name in names else self.PLACEHOLDER)
         self.combo.blockSignals(False)
 
-    def _list_names(self):
-        if not os.path.isdir(self.directory):
-            return []
-        return sorted(splitext(basename(f))[0]
-                      for f in glob.glob(join(self.directory, "*.json")))
+    def _resolved(self):
+        """{preset name: path}, earlier directories on the search path winning.
+
+        Built fresh on every refresh rather than cached: the state dir can gain
+        presets while the lobby is open (the user saving one, or a sibling
+        process), and a stale map would offer a name whose file is gone.
+        """
+        found = {}
+        for directory in self.directories:
+            if not os.path.isdir(directory):
+                continue
+            for f in glob.glob(join(directory, "*.json")):
+                found.setdefault(splitext(basename(f))[0], f)
+        return found
 
     def _on_activated(self, index):
         if index <= 0:
             return
         name = self.combo.itemText(index)
-        path = join(self.directory, f"{name}.json")
+        path = self._resolved().get(name)
+        if path is None:
+            self.refresh()
+            return
         try:
             with open(path) as f:
                 preset = json.load(f)
@@ -324,17 +347,30 @@ class PredefinedConfigBar(QtWidgets.QWidget):
         if not name:
             QtWidgets.QMessageBox.warning(self, "Save preset failed", "Preset name can't be empty.")
             return
-        path = join(self.directory, f"{name}.json")
-        if os.path.exists(path):
+        path = join(self.write_dir, f"{name}.json")
+        existing = self._resolved().get(name)
+        if existing is not None:
+            # Shadowing a preset from further along the search path is not an
+            # overwrite -- the shipped or per-user file stays where it is -- so
+            # say which of the two is about to happen.
+            question = (f"A preset named '{name}' already exists. Overwrite it?"
+                        if paths.absolute(existing) == paths.absolute(path) else
+                        f"'{name}' is provided by {os.path.dirname(existing)}.\n"
+                        f"Save a local copy that takes precedence over it?")
             reply = QtWidgets.QMessageBox.question(
-                self, "Overwrite preset?",
-                f"A preset named '{name}' already exists. Overwrite it?",
+                self, "Overwrite preset?", question,
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply != QtWidgets.QMessageBox.Yes:
                 return
-        os.makedirs(self.directory, exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(self.get_config(), f, ensure_ascii=False, indent=4)
+        try:
+            if not paths.ensure_dir(self.write_dir):
+                raise OSError(f"{self.write_dir} is not writable")
+            with open(path, 'w') as f:
+                json.dump(self.get_config(), f, ensure_ascii=False, indent=4)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "Save preset failed",
+                                          f"Could not save '{name}':\n{exc}")
+            return
         self.refresh()
         self.combo.blockSignals(True)
         self.combo.setCurrentText(name)

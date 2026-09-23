@@ -45,7 +45,7 @@ Only the `unified_dev_with_lobby` branch matters here.
 
 ### Requirements
 
-* Python >= 3.9, < 3.12
+* Python >= 3.11, < 3.15 (the suite and all three tools are exercised on 3.14)
 * numpy, pandas, matplotlib, pyside6, pillow, pyparsing, astropy
 
 All of these are declared in `pyproject.toml` and installed for you below.
@@ -92,7 +92,7 @@ management, so the uv/pip route above does the same job more simply.
    with the required packages:
 
    ```bash
-   conda create -n qt_classifier -c conda-forge "python<3.12,>=3.9" \
+   conda create -n qt_classifier -c conda-forge "python<3.15,>=3.11" \
        numpy pandas matplotlib pyside6 pillow pyparsing astropy
    ```
 
@@ -153,8 +153,12 @@ python lobby.py       # or: qtstamp-lobby
 ```
 
 Run it with no arguments — everything is set in the window, and it remembers your
-settings (data path, session name, seed, mosaic layout, 1-by-1 classification scheme,
-panel arrangement, …) between runs in `.config_lobby.json`.
+settings between runs. Workspace-wide things (data path, run mode, panel arrangement,
+extraction options, …) live in `.qtstamp/config_lobby.json` in whatever directory you
+launched it from; the **classification scheme, band setup and mosaic grid shape travel
+with the session** instead, so reopening an earlier session brings back the scheme it
+was graded with rather than whatever you used last — see
+[Where the tools keep their settings](#where-the-tools-keep-their-settings).
 
 In the window you can:
 
@@ -187,11 +191,15 @@ runs. The mosaic prints the file name of every stamp you click there — untick
 ### Presets
 
 The toolbar carries a **Preset** dropdown alongside **Save as…** and **Restore previous**.
-Presets are plain JSON files in `.predefined_configs/`, one per name — local to your
-checkout, not tracked by git, and created by **Save as…**. Picking one from the dropdown
-applies it immediately, and **Restore previous** undoes the swap. If a preset references
-bands that don't exist under your current data path, it still loads and the Log says
-which bands went missing.
+Presets are plain JSON files, one per name, created by **Save as…**. The dropdown lists
+three sources at once, most specific first: `.qtstamp/presets/` in your working directory,
+then the per-user config directory, then the per-survey presets shipped with the tool
+(Euclid ERO, Legacy Survey, PanSTARRS) — so the dropdown is useful before you have saved
+anything. Saving always writes to `.qtstamp/presets/`, so saving under a shipped preset's
+name shadows it locally rather than overwriting it. Picking one from the dropdown applies
+it immediately, and **Restore previous** undoes the swap. If a preset references bands
+that don't exist under your current data path, it still loads and the Log says which
+bands went missing.
 
 ### Headless
 
@@ -213,7 +221,7 @@ python lobby.py --print-command -m chained -p PATH_TO_FILES -o OUTPUT_PATH -N NA
 | --- | --- |
 | `--no-gui` | Run the configured workflow without opening the lobby window. |
 | `--print-command` | Print the viewer command line(s) that would run, then exit (implies `--no-gui`). |
-| `--config PATH` | Lobby config JSON to read defaults from (default: `.config_lobby.json`). |
+| `--config PATH` | Lobby config JSON to read defaults from (default: the first `config_lobby.json` found along the state-dir search path). |
 
 Workflow overrides, valid only with `--no-gui` or `--print-command`:
 
@@ -368,17 +376,69 @@ both the classification and the subclassification in one click. For example:
 The grading keys above are just the default `--classifications` scheme; pass your own to
 change the classes, subclasses and keys.
 
-## Files the tools write
+## Where the tools keep their settings
+
+**Everything is local by default.** All three tools keep their settings, presets and
+caches in a single `.qtstamp/` directory inside **whatever directory you launched them
+from** — not in a hidden per-user location. Two datasets worked on from two directories
+get two independent sets of settings, copying a working directory takes its settings
+along, and deleting `.qtstamp/` resets that workspace and nothing else.
+
+```
+<where you launched the tool>/
+├── Classifications/            <- your work product (see below)
+└── .qtstamp/
+    ├── config_lobby.json               preferences_mosaic.json
+    ├── preferences_single.json
+    ├── presets/                        named lobby presets
+    └── cache/
+        ├── Legacy_survey/  PanSTARRS/  downloaded cutouts
+        └── temp/                       mosaic scratch renders
+```
+
+**Reading falls back, writing does not.** A settings file is looked for in `.qtstamp/`
+first, then in the per-user config directory (`$XDG_CONFIG_HOME/qtstamp`,
+`~/Library/Application Support/qtstamp`, `%APPDATA%\qtstamp`), then in the defaults
+shipped with the tool. The first hit wins, so an existing per-user config from an older
+version still seeds a new working directory. But saving *only ever* writes to
+`.qtstamp/`: the copy further down the chain is left alone, because other working
+directories may be reading it too.
+
+If `.qtstamp/` cannot be created — a read-only directory, say — the tools run normally
+and simply do not remember anything between runs. They will not fall back to writing
+somewhere you did not point them at. (Caches are the one exception: they fall back to the
+per-user cache directory, since a mosaic with nowhere to render its scratch tiles cannot
+run at all.)
+
+To opt out of local-first, every tool takes:
+
+| Flag | Effect |
+| --- | --- |
+| `--state-dir PATH` | Use `PATH` instead of `./.qtstamp` — read *and* write. |
+| `--global` | Shorthand for `--state-dir <per-user config directory>`: settings shared by every working directory, the way versions before this one behaved. |
+
+`QTSTAMP_STATE_DIR` does the same through the environment, and is how the lobby tells the
+viewers it launches to agree with it. The `Classifications/` directory is **not** part of
+this — it is your work product, has its own `--classifications-dir` flag, and stays where
+you point it.
+
+### Files the tools write
 
 | Path | Contents |
 | --- | --- |
 | `Classifications/` | Classification CSVs, auto-saved as you work. Named after the session, the number of images and the seed — the same scheme in both viewers, and deliberately not the mosaic's grid shape, so reshaping the grid doesn't fork your classification. Defaults to `./Classifications` relative to wherever you launch the tool, and is created on demand; override with `--classifications-dir` (all three tools, same flag). |
-| `.config_lobby.json` | Saved lobby settings. |
-| `.preferences_mosaic.json`, `.preferences_single.json` | Saved viewer preferences — colormap, scale, panels, toggles. They follow *you*, so they survive a change of `--path`/`--name`/`--seed` (`--reset-config` clears them). |
-| `sessions.json` | Where you are in each dataset, one entry per `(tool, path, name, seed)`. Positions are stored as filenames, so they survive a mosaic reshape or files being added and removed (`--reset-position` clears the current one). Capped at 50 sessions, least-recently-opened dropped first. |
-| `.config_mosaic.json.bak`, `.config.json.bak` | The pre-split config files, kept after they are migrated into the two above. Safe to delete. |
-| `.predefined_configs/` | Named lobby presets. |
-| `Legacy_survey/`, `PanSTARRS/` | Downloaded cutout caches (`--clean` clears the Legacy Survey one). |
+| `Classifications/sessions.json` | One entry per `(tool, path, name, seed)`. For the two viewers: where you are in each dataset — positions are stored as filenames, so they survive a mosaic reshape or files being added and removed (`--reset-position` clears the current one). For the lobby: that session's own classification scheme, band setup and mosaic grid shape, which is what the **Recent sessions...** picker lists. Capped at 50 sessions, least-recently-opened dropped first. Lives beside the CSVs, and records the data path *relative* to them — that is what lets you copy the whole tree elsewhere and resume where you left off. |
+| `.qtstamp/config_lobby.json` | Saved lobby settings that belong to the workspace rather than to one session: data path, run mode, output path, extraction options, panel layout. Also the scheme and band setup you last used, as the starting point for a session that has no record of its own yet. |
+| `.qtstamp/preferences_mosaic.json`, `.qtstamp/preferences_single.json` | Saved viewer preferences — colormap, scale, panels, toggles. They survive a change of `--path`/`--name`/`--seed` (`--reset-config` clears them). |
+| `.qtstamp/presets/` | Named lobby presets. |
+| `.qtstamp/cache/Legacy_survey/`, `.qtstamp/cache/PanSTARRS/` | Downloaded cutout caches (`--clean` clears the Legacy Survey one). |
+| `.qtstamp/cache/temp/` | Mosaic scratch renders. Safe to delete at any time. |
+| `.config_mosaic.json.bak`, `.config.json.bak` | The pre-split config files, kept after they are migrated. Safe to delete. |
+
+Upgrading from an older version: a `.config_lobby.json`, `.predefined_configs/`,
+`.preferences_*.json`, `Legacy_survey/`, `PanSTARRS/` or `.temp/` left in your working
+directory is moved into `.qtstamp/` on first run. Copies in the per-user directory are
+read but never moved, since other working directories may still be using them.
 
 ## License and contributors
 

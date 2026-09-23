@@ -82,21 +82,6 @@ def natural_sort(l):
     return sorted(l, key=alphanum_key)
 
 
-DEFAULT_CLASSIFICATIONS_DIRNAME = 'Classifications'
-
-
-def resolve_classifications_dir(path=None):
-    """Absolute path of the directory the classification CSVs live in.
-
-    `path` may be absolute or relative (resolved against the current working
-    directory) and may start with `~`; None or '' means the default,
-    ./Classifications. Callers that are about to write create it themselves --
-    this stays a pure function so that merely resolving a path (e.g. for
-    lobby's --print-command) never touches the disk.
-    """
-    return os.path.abspath(os.path.expanduser(path or DEFAULT_CLASSIFICATIONS_DIRNAME))
-
-
 # --- fork names -------------------------------------------------------------
 #
 # A classification CSV is named after the dataset, so two runs can legitimately

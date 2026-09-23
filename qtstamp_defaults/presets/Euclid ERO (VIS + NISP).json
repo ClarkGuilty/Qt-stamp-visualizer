@@ -1,0 +1,33 @@
+{
+    "main_band": "VIS",
+    "color_bands": [
+        "Y",
+        "J",
+        "H"
+    ],
+    "rgb_composites": [
+        [
+            "H",
+            "Y",
+            "I"
+        ],
+        [
+            "H",
+            "J",
+            "Y"
+        ]
+    ],
+    "scheme_rows": [
+        {"type": "major", "major": "Lens", "sub": "", "key": "1", "positive": true},
+        {"type": "subclass", "major": "Lens", "sub": "Arc", "key": "q", "positive": true},
+        {"type": "subclass", "major": "Lens", "sub": "Ring", "key": "w", "positive": true},
+        {"type": "major", "major": "Maybe", "sub": "", "key": "2", "positive": true},
+        {"type": "major", "major": "Non-lens", "sub": "", "key": "3", "positive": false},
+        {"type": "major", "major": "Artefact", "sub": "", "key": "4", "positive": false}
+    ],
+    "mosaic_ncols": 5,
+    "mosaic_nrows": 8,
+    "mosaic_lens_positive": true,
+    "mosaic_interesting_positive": false,
+    "mosaic_uninteresting_positive": false
+}

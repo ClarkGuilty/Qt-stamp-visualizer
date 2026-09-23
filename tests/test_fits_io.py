@@ -208,6 +208,15 @@ def test_get_ra_dec(tmpdir):
     assert radec.image_dim == 10
 
 
+def test_get_ra_dec_non_square_image(tmpdir):
+    "Regression: array_shape is (ny, nx), pixel_to_world_values wants (x, y) -- see BUGS.md."
+    header = _synthetic_wcs_header(shape=(40, 100), crval=(150.0, 2.0), cdelt_arcsec=0.2)
+    radec = fits_io.get_ra_dec(header)
+    assert np.isclose(radec.ra, 150.0, atol=1e-3)
+    assert np.isclose(radec.dec, 2.0, atol=1e-3)
+    assert radec.image_dim == 100
+
+
 # --- MEF discovery -------------------------------------------------------------
 
 def test_discover_mef_bands(tmpdir):

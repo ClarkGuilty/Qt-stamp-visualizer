@@ -9,7 +9,7 @@ description = "Qt tool for the visual inspection and classification of astronomi
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Javier Acevedo Barroso" }]
-requires-python = ">=3.9,<3.12"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "numpy",
     "pandas",
@@ -29,13 +29,22 @@ qtstamp-single = "single_viewer:main"
 qtstamp-lobby = "lobby:main"
 
 [tool.setuptools]
+packages = ["qtstamp_defaults"]
 py-modules = [
     "lobby",
     "mosaic",
     "single_viewer",
     "extraction",
+    "fits_io",
     "imaging",
+    "paths",
     "state",
     "widgets",
     "workers",
 ]
+
+# The presets shipped as the last entry on paths.config_search_path(). Without
+# this they are absent from a wheel and a pip-installed lobby shows an empty
+# preset dropdown -- the same packaging hole fits_io.py fell into (PLAN.md 2b).
+[tool.setuptools.package-data]
+qtstamp_defaults = ["presets/*.json"]

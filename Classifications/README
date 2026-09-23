@@ -6,12 +6,24 @@ launch the tool from (created automatically if it doesn't exist yet). Pass
 to use a different directory instead.
 
 Mosaic tool:
-  no seed:   classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_99.csv
-  with seed: classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_{nrows}_{seed}.csv
+  no seed:   classification_mosaic_autosave_{name}_{n_stamps}.csv
+  with seed: classification_mosaic_autosave_{name}_{n_stamps}_{seed}.csv
 
 1-by-1 viewer:
   no seed:   classification_single_{name}_{n_stamps}.csv
   with seed: classification_single_{name}_{n_stamps}_{seed}.csv
+
+The name carries the dataset identity -- name, image count, seed -- and
+deliberately not the mosaic's grid shape, which is a display choice you can
+change mid-session. Reshaping the grid keeps the same CSV and recomputes the
+`page`/`grid_pos` columns.
+
+`sessions.json` also lives here: one entry per (tool, path, name, seed),
+recording the data path relative to this directory so the whole tree can be
+copied elsewhere and resumed. For the two viewers an entry holds where you are
+in the dataset; for the lobby it holds that session's own classification scheme
+and band setup, so editing the scheme for one session cannot change the scheme
+another session's CSV was written with.
 
 When a name is already taken, the file that moves aside says why in its own
 name rather than carrying a bare number. Two cases:

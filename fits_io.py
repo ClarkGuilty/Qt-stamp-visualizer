@@ -197,6 +197,9 @@ def get_ra_dec(header) -> RaDec:
     WCS. Unifies single_viewer's two near-duplicate versions (one a 2-tuple, one a
     4-tuple) into the one superset shape; callers destructure what they need."""
     w = WCS(header, fix=False)
-    sky = w.pixel_to_world_values([w.array_shape[0] // 2], [w.array_shape[1] // 2])
+    # array_shape is numpy-order (ny, nx); pixel_to_world_values wants WCS-axis
+    # order (x, y) = (nx, ny). Swapping these was a longstanding bug that only
+    # showed up for non-square images -- see BUGS.md.
+    sky = w.pixel_to_world_values([w.array_shape[1] // 2], [w.array_shape[0] // 2])
     pixel_size = np.round(np.max(np.diag(np.abs(w.pixel_scale_matrix))) * 3600, decimals=4)
     return RaDec(sky[0][0], sky[1][0], pixel_size, np.max(w.array_shape))

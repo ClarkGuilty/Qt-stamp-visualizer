@@ -19,18 +19,77 @@ import subprocess
 import sys
 from os.path import join
 
+import pandas as pd
 from PySide6 import QtWidgets
 from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
 import fits_io
-from imaging import resolve_classifications_dir
+import paths
+import state
+from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 from widgets import PredefinedConfigBar
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-PATH_TO_LOBBY_CONFIG = join(REPO_ROOT, ".config_lobby.json")
-PATH_TO_PREDEFINED_CONFIGS = join(REPO_ROOT, ".predefined_configs")
+
+LOBBY_CONFIG_NAME = "config_lobby.json"
+# 2b-iii's spelling. Never migrated out of the per-user config dir (other
+# workspaces read it), so it stays findable there forever; inside a state dir it
+# is migrated to the modern name on first run. See paths.find_config.
+LEGACY_LOBBY_CONFIG_NAME = ".config_lobby.json"
+
+# BUGS.md item 14: the lobby's own tool name in the shared sessions.json, and
+# the subset of DEFAULT_CONFIG/config_lobby.json that is dataset-scoped rather
+# than workspace-scoped -- see state.py's module docstring and STEP.md for the
+# split. These six keys stay in DEFAULT_CONFIG too, now meaning "template for
+# a session that has no record of its own yet".
+SESSION_TOOL = 'lobby'
+SESSION_CONFIG_KEYS = ('scheme_rows', 'main_band', 'color_bands', 'rgb_composites',
+                       'mosaic_ncols', 'mosaic_nrows')
+
+
+def lobby_state(state_dir_override=None):
+    """Resolve where the lobby's own config and presets live, and migrate once.
+
+    Local-first (PLAN.md 2b-v): `<CWD>/.qtstamp` unless `--state-dir`/`--global`
+    says otherwise. Returns `(config_path, preset_dirs, preset_write_dir)` --
+    `config_path` is where the config is *written*; reading goes through
+    `paths.find_config`, which also sees the per-user dir and the presets
+    shipped in `qtstamp_defaults/`.
+
+    Called at startup rather than resolved at import, because the override
+    comes from parsed args and because the CWD is only meaningful once the
+    process is actually running (`--print-command` resolves paths without ever
+    touching disk).
+    """
+    state = paths.state_dir(override=state_dir_override)
+    presets = join(state, paths.PRESETS_SUBDIR)
+    # Within the state dir: 2b-iii's dotted spellings, renamed in place.
+    paths.migrate_once(join(state, ".config_lobby.json"), join(state, LOBBY_CONFIG_NAME))
+    paths.migrate_once(join(state, ".predefined_configs"), presets)
+    # From REPO_ROOT (where the old hardcoded constants always pointed): into the
+    # *per-user* dir, not this workspace's. There is only one REPO_ROOT copy but
+    # any number of workspaces, so moving it into whichever one happened to start
+    # the lobby first would take it away from all the others. The per-user dir is
+    # the one destination that stays on every workspace's search path, which
+    # makes this the single case where 2b-v writes outside the state dir -- it is
+    # a one-time rescue of a file that would otherwise become unreachable, not a
+    # settings write. Never migrated *out of* the per-user dir for the same
+    # reason: other workspaces are reading it.
+    user_dir = paths.user_config_dir()
+    paths.migrate_once(join(REPO_ROOT, ".config_lobby.json"),
+                       join(user_dir, LEGACY_LOBBY_CONFIG_NAME))
+    paths.migrate_once(join(REPO_ROOT, ".predefined_configs"),
+                       join(user_dir, ".predefined_configs"))
+    # Both spellings on every entry: the per-user dir still holds a 2b-iii
+    # `.predefined_configs/` that is never migrated out (other workspaces read
+    # it), so it has to stay listed. `presets/` first, so a modern preset
+    # shadows a same-named legacy one rather than the other way round.
+    preset_dirs = []
+    for d in paths.config_search_path(override=state_dir_override):
+        preset_dirs += [join(d, paths.PRESETS_SUBDIR), join(d, ".predefined_configs")]
+    return join(state, LOBBY_CONFIG_NAME), preset_dirs, presets
 
 MODE_MOSAIC_ONLY = 0
 MODE_SINGLE_ONLY = 1
@@ -72,30 +131,44 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config_dict(path=PATH_TO_LOBBY_CONFIG):
+def load_config_dict(path=None, state_dir_override=None):
     """Config file contents layered on top of DEFAULT_CONFIG (missing keys filled
-    from the defaults). Returns a fresh, fully-owned dict -- safe to mutate."""
+    from the defaults). Returns a fresh, fully-owned dict -- safe to mutate.
+
+    `path=None` means "wherever the search path finds one" -- the workspace's
+    state dir, then the per-user dir, then `qtstamp_defaults/`. Finding nothing
+    is normal for a fresh workspace and yields DEFAULT_CONFIG untouched.
+    """
+    if path is None:
+        path = paths.find_config(LOBBY_CONFIG_NAME, override=state_dir_override,
+                                 legacy=LEGACY_LOBBY_CONFIG_NAME)
     merged = copy.deepcopy(DEFAULT_CONFIG)
+    if path is None:
+        return merged
     try:
         with open(path) as f:
             merged.update(json.load(f))
-    except FileNotFoundError:
+    except (OSError, json.JSONDecodeError):
         pass
     return merged
 
 
-def count_vis_images(source_path):
-    if fits_io.is_mef_dataset(source_path):
+def count_band_images(source_path, band, mef=False):
+    if mef:
         # Every band is an extension of the same per-object file, so any band's count
-        # is the dataset's object count -- there's no single "VIS" directory to look in.
+        # is the dataset's object count -- there's no single per-band directory to look in.
         return len(fits_io.list_fits_files(source_path))
-    vis_path = join(source_path, "VIS")
-    count = len({os.path.basename(f) for f in glob.glob(join(vis_path, "*.fits"))})
+    band_path = join(source_path, band)
+    count = len({os.path.basename(f) for f in glob.glob(join(band_path, "*.fits"))})
     if count:
         return count
-    return len({os.path.basename(f) for f in (glob.glob(join(vis_path, "*.png")) +
-                                                glob.glob(join(vis_path, "*.jpg")) +
-                                                glob.glob(join(vis_path, "*.jpeg")))})
+    return len({os.path.basename(f) for f in (glob.glob(join(band_path, "*.png")) +
+                                                glob.glob(join(band_path, "*.jpg")) +
+                                                glob.glob(join(band_path, "*.jpeg")))})
+
+
+def count_vis_images(source_path):
+    return count_band_images(source_path, "VIS", mef=fits_io.is_mef_dataset(source_path))
 
 
 def discover_bands(path):
@@ -141,6 +214,30 @@ def predict_mosaic_csv_path(source_path, name, seed, classifications_dir):
     return max(matches, key=os.path.getmtime)
 
 
+def predict_single_csv_path(source_path, name, seed, main_band, mef, classifications_dir):
+    """Best-effort prediction of the CSV a previous 1-by-1 session for this
+    dataset wrote, so a pre-launch scheme check (BUGS.md #15/#14) can look at
+    it before the viewer does. Replicates single_viewer.py's own obtain_df()
+    base_filename formula and glob patterns; see predict_mosaic_csv_path for
+    why "most recently modified match" stands in for obtain_df()'s own
+    file-selection logic.
+    """
+    name = name or ''
+    n_images = count_band_images(source_path, main_band, mef=mef)
+    base_filename = f'classification_single_{name}_{n_images}'
+    if seed is None:
+        matches = ((set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv')))
+                    - set(glob.glob(join(classifications_dir, f'{base_filename}_*.csv'))))
+                   | set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
+    else:
+        base_filename = f'{base_filename}_{seed}'
+        matches = (set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv'))) |
+                   set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
+    if not matches:
+        return None
+    return max(matches, key=os.path.getmtime)
+
+
 def build_band_argv(main_band, color_bands, composites, mef=False):
     """Shared --mef/-b/-B/--rgb-composites fragment, appended to both tools' argv.
 
@@ -174,9 +271,11 @@ def build_mosaic_argv(path, name, seed, ncols, nrows, classifications_dir, print
     # Passed explicitly either way: mosaic prints names by default, so leaving the
     # flag out would not turn the printing off.
     argv += ["--printname" if printname else "--no-printname"]
-    # Passed explicitly either way: mosaic launches with cwd=REPO_ROOT, so a
-    # default left up to the viewer would resolve ./Classifications against
-    # the checkout instead of against the lobby's own cwd.
+    # Passed explicitly either way, already resolved to an absolute path by the
+    # caller: the child inherits the lobby's own cwd (no cwd override any more),
+    # so leaving this to the viewer's own default would resolve ./Classifications
+    # against whatever directory happens to be current when the child starts,
+    # not necessarily what the lobby resolved it against.
     argv += ["--classifications-dir", classifications_dir]
     argv += band_argv or []
     return argv
@@ -235,10 +334,162 @@ def classifications_string_from_rows(rows, log=None):
     return ";".join(tokens), positive_majors
 
 
+class AddUnknownClassificationDialog(QtWidgets.QDialog):
+    """Details needed to add a classification label found in a resumed CSV --
+    but missing from the current scheme (BUGS.md #15/#14) -- as a new scheme
+    row. `label` and `kind` ('major' or 'subclass') name what was found; the
+    label itself is fixed (it must keep matching the CSV), only the shortcut
+    key, and for a major an optional subclass, are asked for here.
+    """
+
+    def __init__(self, label, kind, known_majors, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.setWindowTitle(f"Add '{label}' to the classification scheme")
+        form = QtWidgets.QFormLayout(self)
+
+        form.addRow("Label:", QtWidgets.QLabel(label))
+
+        self.major_combo = None
+        if kind == 'subclass':
+            self.major_combo = QComboBox()
+            self.major_combo.setEditable(True)
+            self.major_combo.addItems(known_majors)
+            form.addRow("Parent major:", self.major_combo)
+
+        self.key_edit = QtWidgets.QLineEdit()
+        form.addRow("Keyboard shortcut:", self.key_edit)
+
+        self.sub_cb = None
+        self.sub_name_edit = None
+        self.sub_key_edit = None
+        if kind == 'major':
+            self.sub_cb = QCheckBox("Also add a subclass under this major")
+            form.addRow(self.sub_cb)
+            self.sub_name_edit = QtWidgets.QLineEdit()
+            self.sub_name_edit.setEnabled(False)
+            form.addRow("Subclass name:", self.sub_name_edit)
+            self.sub_key_edit = QtWidgets.QLineEdit()
+            self.sub_key_edit.setEnabled(False)
+            form.addRow("Subclass shortcut:", self.sub_key_edit)
+            self.sub_cb.toggled.connect(self.sub_name_edit.setEnabled)
+            self.sub_cb.toggled.connect(self.sub_key_edit.setEnabled)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def key(self):
+        return self.key_edit.text().strip()
+
+    def parent_major(self):
+        return self.major_combo.currentText().strip() if self.major_combo else ''
+
+    def wants_subclass(self):
+        return bool(self.sub_cb and self.sub_cb.isChecked() and self.sub_name_edit.text().strip())
+
+    def subclass_name(self):
+        return self.sub_name_edit.text().strip() if self.sub_name_edit else ''
+
+    def subclass_key(self):
+        return self.sub_key_edit.text().strip() if self.sub_key_edit else ''
+
+
+class RecentSessionsDialog(QtWidgets.QDialog):
+    """Picker over the lobby's own saved sessions (BUGS.md item 14).
+
+    Lists `state.list_sessions(classifications_dir, tool=SESSION_TOOL)`,
+    most-recently-opened first. Read-only, single-row-select: this is a
+    picker, not an editor. `Open` (also double-click) leaves the chosen entry
+    on `self.chosen_entry` for the caller to apply to its own widgets; `Forget`
+    removes a row's saved record via `state.forget_session` and refreshes.
+    """
+
+    COL_NAME, COL_PATH, COL_SEED, COL_LAST_OPENED = range(4)
+
+    def __init__(self, classifications_dir, parent=None):
+        super().__init__(parent)
+        self.classifications_dir = classifications_dir
+        self.chosen_entry = None
+        self._entries = []
+        self.setWindowTitle("Recent sessions")
+        self.resize(720, 420)
+
+        vbox = QtWidgets.QVBoxLayout(self)
+
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Session name", "Data path", "Seed", "Last opened"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.itemDoubleClicked.connect(self._on_open)
+        vbox.addWidget(self.table)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        self.open_btn = QtWidgets.QPushButton("Open")
+        self.open_btn.clicked.connect(self._on_open)
+        self.forget_btn = QtWidgets.QPushButton("Forget")
+        self.forget_btn.clicked.connect(self._on_forget)
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.open_btn)
+        btn_row.addWidget(self.forget_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(close_btn)
+        vbox.addLayout(btn_row)
+
+        self._reload()
+
+    def _reload(self):
+        self._entries = state.list_sessions(self.classifications_dir, tool=SESSION_TOOL)
+        self.table.setRowCount(len(self._entries))
+        for row, entry in enumerate(self._entries):
+            name = entry.get('name') or '(unnamed)'
+            display_path = paths.resolve_against(entry['path'], self.classifications_dir)
+            seed = entry.get('seed')
+            seed_text = '--' if seed is None else str(seed)
+            last_opened = entry.get('last_opened') or ''
+            for col, text in enumerate((name, display_path, seed_text, last_opened)):
+                item = QtWidgets.QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row, col, item)
+
+    def _selected_entry(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._entries):
+            return None
+        return self._entries[row]
+
+    def _on_open(self, *_args):
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self.chosen_entry = entry
+        self.accept()
+
+    def _on_forget(self):
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        session_id = state.session_id_from_entry(entry, self.classifications_dir)
+        if session_id is not None:
+            state.forget_session(session_id, self.classifications_dir)
+        self._reload()
+
+
 class LobbyWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, state_dir_override=None):
         super().__init__()
         self.setWindowTitle("Qt-stamp-visualizer Lobby")
+
+        self.state_dir_override = state_dir_override
+        (self.config_path, self.preset_dirs,
+         self.preset_write_dir) = lobby_state(state_dir_override)
 
         self.defaults = DEFAULT_CONFIG
         self.config_dict = self.load_dict()
@@ -252,6 +503,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         self._build_ui()
         self._apply_config_to_widgets()
+        self._applied_identity = self._identity_tuple()
         self.on_mode_changed()
         self._rescan_bands()
 
@@ -285,7 +537,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         action_bar.addWidget(self.run_btn)
         action_bar.addWidget(self.stage_status_label, stretch=1)
         self.preset_bar = PredefinedConfigBar(
-            PATH_TO_PREDEFINED_CONFIGS, self._preset_snapshot, self._apply_preset)
+            self.preset_dirs, self.preset_write_dir,
+            self._preset_snapshot, self._apply_preset)
         action_bar.addWidget(self.preset_bar)
         toolbar.addWidget(action_bar_widget)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
@@ -347,7 +600,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         path_row = QtWidgets.QHBoxLayout()
         self.path_edit = QtWidgets.QLineEdit()
-        self.path_edit.editingFinished.connect(self._rescan_bands)
+        self.path_edit.editingFinished.connect(self._on_identity_changed)
         self.path_browse_btn = QtWidgets.QPushButton("Browse...")
         self.path_browse_btn.clicked.connect(self.on_browse_path)
         path_row.addWidget(self.path_edit)
@@ -355,10 +608,12 @@ class LobbyWindow(QtWidgets.QMainWindow):
         form.addRow("Path to images:", path_row)
 
         self.name_edit = QtWidgets.QLineEdit()
+        self.name_edit.editingFinished.connect(self._on_identity_changed)
         form.addRow("Session name:", self.name_edit)
 
         classifications_row = QtWidgets.QHBoxLayout()
         self.classifications_edit = QtWidgets.QLineEdit()
+        self.classifications_edit.editingFinished.connect(self._on_identity_changed)
         self.classifications_browse_btn = QtWidgets.QPushButton("Browse...")
         self.classifications_browse_btn.clicked.connect(self.on_browse_classifications)
         classifications_row.addWidget(self.classifications_edit)
@@ -370,9 +625,15 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.seed_spin = QtWidgets.QSpinBox()
         self.seed_spin.setRange(0, 1_000_000)
         self.seed_enabled_cb.toggled.connect(self.seed_spin.setEnabled)
+        self.seed_enabled_cb.toggled.connect(self._on_identity_changed)
+        self.seed_spin.valueChanged.connect(self._on_identity_changed)
         seed_row.addWidget(self.seed_enabled_cb)
         seed_row.addWidget(self.seed_spin)
         form.addRow("Seed:", seed_row)
+
+        self.recent_sessions_btn = QtWidgets.QPushButton("Recent sessions...")
+        self.recent_sessions_btn.clicked.connect(self.on_recent_sessions_clicked)
+        form.addRow(self.recent_sessions_btn)
 
         return group
 
@@ -744,6 +1005,90 @@ class LobbyWindow(QtWidgets.QMainWindow):
         classifications_string, _ = self.build_classifications_string()
         self.classifications_preview_edit.setText(classifications_string)
 
+    # ------------------------------------------------ scheme/CSV reconciliation
+
+    def resolve_single_classifications_string(self, path, name, seed, classifications_dir):
+        """Classifications string for launching the 1-by-1 viewer against
+        `path`/`name`/`seed`, after checking whether a CSV it would resume
+        holds a classification the current scheme no longer declares
+        (BUGS.md #15, caused by #14): the 1-by-1 stores the scheme's own
+        major/sub names, so editing the scheme after that CSV was written
+        leaves a row labelled with something no button renders any more. The
+        mosaic is not affected -- it stores numeric codes, not scheme names.
+
+        Checked here, before launch, because the lobby is the only one of the
+        three tools with a scheme editor to offer adding the label to -- the
+        viewer itself can only report that the label it found isn't in its
+        scheme (see single_viewer.py's ApplicationWindow._button_for_grade).
+        """
+        main_band = (self.main_band_combo.currentText() or '').strip()
+        csv_path = predict_single_csv_path(path, name, seed, main_band, self.mef, classifications_dir)
+        if csv_path:
+            unknown_majors, unknown_subs = self._unknown_classification_labels(csv_path)
+            for label in unknown_majors:
+                self._prompt_unknown_classification(label, 'major')
+            for label in unknown_subs:
+                self._prompt_unknown_classification(label, 'subclass')
+        classifications_string, _ = self.build_classifications_string()
+        return classifications_string
+
+    def _unknown_classification_labels(self, csv_path):
+        """(unknown majors, unknown subs) found in `csv_path` but absent from
+        the scheme table -- sorted, sentinel values ('Empty'/'None'/blank)
+        excluded. Best-effort: an unreadable or malformed CSV yields nothing
+        rather than blocking the launch over it."""
+        try:
+            df = pd.read_csv(csv_path, index_col=0)
+        except (OSError, pd.errors.ParserError, UnicodeDecodeError):
+            return [], []
+
+        rows = self._scheme_table_to_rows()
+        known_majors = {r['major'] for r in rows if r['type'] == 'major'}
+        known_subs = {r['sub'] for r in rows if r['type'] == 'subclass'}
+        sentinels = {'Empty', 'None', ''}
+
+        def unknown_values(column, known):
+            if column not in df.columns:
+                return []
+            values = {str(v).strip() for v in df[column].dropna()}
+            return sorted(values - known - sentinels)
+
+        return unknown_values('classification', known_majors), unknown_values('subclassification', known_subs)
+
+    def _prompt_unknown_classification(self, label, kind):
+        "Asks whether to add `label` (a 'major' or 'subclass') to the scheme, or launch without it."
+        noun = "major" if kind == 'major' else "subclass"
+        choice = QtWidgets.QMessageBox.question(
+            self, "Classification not in scheme",
+            f"The saved classifications for this session include '{label}', a {noun} that "
+            "isn't in the current scheme. Add it to the scheme now, or ignore it? (The row "
+            f"keeps '{label}' either way, until it's reclassified -- which overwrites it.)",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Ignore,
+            QtWidgets.QMessageBox.Yes)
+        if choice != QtWidgets.QMessageBox.Yes:
+            self.log(f"Ignored unknown {noun} '{label}' -- launching without a button for it.")
+            return
+
+        known_majors = sorted({r['major'] for r in self._scheme_table_to_rows() if r['type'] == 'major'})
+        dialog = AddUnknownClassificationDialog(label, kind, known_majors, parent=self)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            self.log(f"Ignored unknown {noun} '{label}' -- launching without a button for it.")
+            return
+
+        if kind == 'major':
+            self.add_scheme_row(TYPE_MAJOR, major=label, sub='', key=dialog.key())
+            if dialog.wants_subclass():
+                self.add_scheme_row(TYPE_SUBCLASS, major=label,
+                                     sub=dialog.subclass_name(), key=dialog.subclass_key())
+        else:
+            parent = dialog.parent_major()
+            if not parent:
+                self.log(f"No parent major given for subclass '{label}' -- skipped, "
+                         "launching without a button for it.")
+                return
+            self.add_scheme_row(TYPE_SUBCLASS, major=parent, sub=label, key=dialog.key())
+        self.log(f"Added {noun} '{label}' to the scheme.")
+
     # ---------------------------------------------------------- misc UI glue
 
     def log(self, message):
@@ -758,7 +1103,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select data path")
         if path:
             self.path_edit.setText(path)
-            self._rescan_bands()
+            self._on_identity_changed()
 
     def on_browse_output(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select output path")
@@ -787,10 +1132,21 @@ class LobbyWindow(QtWidgets.QMainWindow):
         return positive_values
 
     def _set_controls_enabled(self, enabled):
+        # The identity widgets are in here since BUGS.md item 14: the scheme and
+        # band setup now follow the session name/seed, so letting those change
+        # while stage 1 is running would swap the scheme out from under the
+        # stage 2 launch that `on_stage1_finished` builds from the *captured*
+        # context -- the two would then disagree about which session is open.
         for widget in (self.run_btn, self.mode_combo, self.path_edit,
                        self.path_browse_btn, self.bands_group,
-                       self.mosaic_group, self.single_group):
+                       self.mosaic_group, self.single_group,
+                       self.name_edit, self.seed_enabled_cb, self.seed_spin,
+                       self.classifications_edit, self.classifications_browse_btn,
+                       self.recent_sessions_btn):
             widget.setEnabled(enabled)
+        # The seed spin box follows its checkbox, not the blanket re-enable.
+        if enabled:
+            self.seed_spin.setEnabled(self.seed_enabled_cb.isChecked())
 
     # ---------------------------------------------------------- launching
 
@@ -803,7 +1159,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if not path:
             self.log("Please select a data path first.")
             return
+        path = os.path.abspath(os.path.expanduser(path))
 
+        self._save_session_record()
         self._log_band_warnings()
         band_argv = self._band_argv()
         classifications_dir = self._classifications_dir()
@@ -816,7 +1174,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
                                       band_argv=band_argv)
             self._launch_fire_and_forget(argv)
         elif mode == MODE_SINGLE_ONLY:
-            classifications_string, _ = self.build_classifications_string()
+            classifications_string = self.resolve_single_classifications_string(
+                path, name, seed, classifications_dir)
             argv = build_single_argv(path, name, seed, classifications_string,
                                       classifications_dir, band_argv=band_argv)
             self._launch_fire_and_forget(argv)
@@ -840,7 +1199,6 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _launch_fire_and_forget(self, argv):
         proc = QProcess(self)
-        proc.setWorkingDirectory(REPO_ROOT)
         proc.setProgram(sys.executable)
         proc.setArguments(argv)
         self._wire_process_output_logging(proc)
@@ -865,7 +1223,6 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'classifications_dir': classifications_dir,
         }
         self.stage1_proc = QProcess(self)
-        self.stage1_proc.setWorkingDirectory(REPO_ROOT)
         self.stage1_proc.setProgram(sys.executable)
         self.stage1_proc.setArguments(argv)
         self._wire_process_output_logging(self.stage1_proc)
@@ -902,6 +1259,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if not output_path:
             self.log("Please set an output path before running the chained workflow.")
             return
+        output_path = os.path.abspath(os.path.expanduser(output_path))
 
         positive_values = self._mosaic_positive_values()
 
@@ -912,7 +1270,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
         )
         self.log(f"Extraction complete. {result.summary()}")
 
-        classifications_string, _ = self.build_classifications_string()
+        classifications_string = self.resolve_single_classifications_string(
+            output_path, context.get('name'), context.get('seed'), classifications_dir)
+        self._save_session_record()
         argv = build_single_argv(output_path, context.get('name'), context.get('seed'),
                                   classifications_string, classifications_dir,
                                   band_argv=self._band_argv())
@@ -958,24 +1318,36 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.seed_spin.setValue(c['seed_value'])
         self.seed_spin.setEnabled(c['seed_enabled'])
         self.mode_combo.setCurrentIndex(c['run_mode_index'])
-        self.ncols_spin.setValue(c['mosaic_ncols'])
-        self.nrows_spin.setValue(c['mosaic_nrows'])
         self.printname_cb.setChecked(c['mosaic_printname'])
         self.mosaic_uninteresting_positive_cb.setChecked(c['mosaic_uninteresting_positive'])
         self.mosaic_lens_positive_cb.setChecked(c['mosaic_lens_positive'])
         self.mosaic_interesting_positive_cb.setChecked(c['mosaic_interesting_positive'])
         self.copy_instead_cb.setChecked(c['copy_instead_of_symlink'])
-        self._populate_scheme_table(c['scheme_rows'])
+        self._apply_session_config_to_widgets()
 
+        if c.get('dock_state'):
+            self.restoreState(QByteArray.fromBase64(c['dock_state'].encode('ascii')))
+
+    def _apply_session_config_to_widgets(self):
+        """Applies exactly the SESSION_CONFIG_KEYS to their widgets: the
+        scheme table, band setup, and mosaic grid shape (BUGS.md item 14).
+
+        Deliberately narrower than `_apply_config_to_widgets`, which calls
+        this rather than duplicating these lines so the two cannot drift.
+        Never touches path/name/seed/mode/output/extraction widgets, and never
+        calls `restoreState` -- a session-record restore must not jolt the
+        dock layout.
+        """
+        c = self.config_dict
+        self._populate_scheme_table(c['scheme_rows'])
         self.main_band_combo.setCurrentText(c['main_band'])
         self._populate_color_bands_list(self.available_bands, set(c['color_bands']))
         self.composites_table.setRowCount(0)
         for triple in c['rgb_composites']:
             r, g, b = (list(triple) + ['', '', ''])[:3]
             self._add_composite_row(r, g, b)
-
-        if c.get('dock_state'):
-            self.restoreState(QByteArray.fromBase64(c['dock_state'].encode('ascii')))
+        self.ncols_spin.setValue(c['mosaic_ncols'])
+        self.nrows_spin.setValue(c['mosaic_nrows'])
 
     def _sync_widgets_to_config(self):
         c = self.config_dict
@@ -1035,16 +1407,143 @@ class LobbyWindow(QtWidgets.QMainWindow):
                       f"not offered in the band configuration: {', '.join(missing)}")
 
     def save_dict(self):
+        """Persist the lobby's config to the state dir. True if it was written.
+
+        Best-effort on purpose (2b-v): the state dir is now whatever directory
+        the user launched the lobby from, which may be read-only. Losing the
+        remembered paths and band setup is an acceptable cost of local-first;
+        refusing to close the window over it is not.
+        """
         self._sync_widgets_to_config()
-        with open(PATH_TO_LOBBY_CONFIG, 'w') as f:
-            json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+        try:
+            if not paths.ensure_dir(os.path.dirname(self.config_path)):
+                print(f"Warning: {os.path.dirname(self.config_path)} is not writable; "
+                      "lobby settings will not be remembered.", file=sys.stderr)
+                return False
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+        except OSError as exc:
+            print(f"Warning: could not save the lobby config to {self.config_path}: {exc}",
+                  file=sys.stderr)
+            return False
+        return True
 
     def load_dict(self):
-        return load_config_dict(PATH_TO_LOBBY_CONFIG)
+        return load_config_dict(state_dir_override=self.state_dir_override)
 
     def closeEvent(self, event):
+        sid = self._session_id()
+        if sid is not None and state.load_session_config(sid, self._classifications_dir()) is not None:
+            self._save_session_record()
         self.save_dict()
         event.accept()
+
+    # ------------------------------------------------- per-session record (BUGS.md 14)
+    #
+    # The lobby's own record in the shared sessions.json, keyed on
+    # SessionId('lobby', data_path, session_name, seed) and anchored on the
+    # classifications dir like everything else in state.py. It carries only
+    # SESSION_CONFIG_KEYS -- the scheme and band setup describe the dataset,
+    # not the user, so they travel with the session rather than living in the
+    # one workspace-wide config_lobby.json every session shares. See
+    # state.py's module docstring and STEP.md for the full design.
+
+    def _identity_tuple(self):
+        "The (path, name, seed, classifications_dir) the widgets currently show."
+        return (self.path_edit.text().strip(), self.name_edit.text().strip(),
+                self._current_seed(), self._classifications_dir())
+
+    def _session_id(self):
+        "This session's identity, or None when there is no data path to key on."
+        path = self.path_edit.text().strip()
+        if not path:
+            return None
+        path = os.path.abspath(os.path.expanduser(path))
+        return state.SessionId(SESSION_TOOL, path, self.name_edit.text().strip(),
+                               self._current_seed())
+
+    def _save_session_record_for(self, session_id, classifications_dir):
+        self._sync_widgets_to_config()
+        state.save_session_config(session_id, classifications_dir,
+                                  {k: self.config_dict[k] for k in SESSION_CONFIG_KEYS})
+
+    def _save_session_record(self):
+        "No-op without an identity -- see the module-level docstring."
+        session_id = self._session_id()
+        if session_id is None:
+            return
+        self._save_session_record_for(session_id, self._classifications_dir())
+
+    def _restore_session_record(self):
+        "Applies this identity's saved record, if any, to the six session widgets."
+        session_id = self._session_id()
+        if session_id is None:
+            return
+        classifications_dir = self._classifications_dir()
+        config = state.load_session_config(session_id, classifications_dir)
+        if config is None:
+            return
+        self.config_dict.update({k: config[k] for k in SESSION_CONFIG_KEYS if k in config})
+        self._apply_session_config_to_widgets()
+        self.log(f"Restored saved session config for "
+                 f"'{session_id.name or '(unnamed)'}' at {session_id.path}.")
+
+    def _on_identity_changed(self):
+        """Wired to every widget that is part of the session identity.
+
+        `editingFinished` fires on mere focus-out even with no change, and
+        restoring here on every such event would silently throw away scheme
+        edits the user just made -- so this does nothing at all unless the
+        identity actually differs from the one currently applied. When it
+        does: the outgoing identity's record is saved first (if it has one),
+        then bands are rescanned for the (possibly new) path, and only then is
+        the incoming identity's record restored.
+
+        That order is load-bearing. `_rescan_bands` rebuilds the colour-band
+        checklist from the boxes currently ticked in it, and
+        `_apply_session_config_to_widgets` can only tick a band that the list
+        already offers -- i.e. one belonging to the *scanned* path. Restoring
+        before the rescan therefore ticks the incoming session's bands against
+        the outgoing path's band list, which drops every band the two datasets
+        do not share, and the rescan then reads that emptied list back as the
+        answer. Two datasets with different bands is exactly the case this
+        record exists for, so it is also exactly the case that broke.
+        """
+        identity = self._identity_tuple()
+        if identity == self._applied_identity:
+            return
+        old_path, old_name, old_seed, old_classifications_dir = self._applied_identity
+        if old_path:
+            outgoing_id = state.SessionId(SESSION_TOOL, old_path, old_name, old_seed)
+            if state.load_session_config(outgoing_id, old_classifications_dir) is not None:
+                self._save_session_record_for(outgoing_id, old_classifications_dir)
+        self._rescan_bands()
+        self._restore_session_record()
+        self._applied_identity = identity
+
+    def on_recent_sessions_clicked(self):
+        classifications_dir = self._classifications_dir()
+        if not state.list_sessions(classifications_dir, tool=SESSION_TOOL):
+            self.log(f"No saved sessions in {classifications_dir} yet.")
+            return
+        dialog = RecentSessionsDialog(classifications_dir, parent=self)
+        if dialog.exec() != QtWidgets.QDialog.Accepted or dialog.chosen_entry is None:
+            return
+        entry = dialog.chosen_entry
+        seed = entry.get('seed')
+        self.path_edit.setText(paths.resolve_against(entry['path'], classifications_dir))
+        self.name_edit.setText(entry.get('name') or '')
+        # Signals blocked while the seed widgets are updated so
+        # _on_identity_changed runs exactly once, in one place, below --
+        # rather than once per widget with an intermediate (wrong) seed value.
+        self.seed_enabled_cb.blockSignals(True)
+        self.seed_spin.blockSignals(True)
+        self.seed_enabled_cb.setChecked(seed is not None)
+        self.seed_spin.setEnabled(seed is not None)
+        self.seed_spin.setValue(seed if seed is not None else 0)
+        self.seed_enabled_cb.blockSignals(False)
+        self.seed_spin.blockSignals(False)
+        self._on_identity_changed()
 
 
 # ------------------------------------------------------------------ headless CLI
@@ -1071,15 +1570,29 @@ def _parse_rgb_composites(text):
 
 
 def config_from_cli(args):
-    """Lobby config dict: the file named by --config, with whichever CLI
-    overrides were actually passed layered on top."""
-    c = load_config_dict(args.config)
-    if args.mode is not None:
-        c['run_mode_index'] = MODE_NAMES[args.mode]
+    """Lobby config dict for the headless CLI (BUGS.md item 14).
+
+    Precedence, low to high: the config file (`--config`, or the usual
+    search path) -> the identity overrides (`--path`, `--name`,
+    `--seed`/`--no-seed`, `--classifications-dir`) -> this session's saved
+    record, if it has one, for the six SESSION_CONFIG_KEYS it owns -> the
+    remaining overrides (`--main-band`, `--color-bands`, `--rgb-composites`,
+    `--ncols`, `--nrows`, and everything else).
+
+    That ordering is what makes an explicit CLI flag beat the record while the
+    record still beats the config file's own, possibly-stale copy of those six
+    keys: the identity has to be resolved first (from the file, then bumped by
+    `--path`/`--name`/`--seed`/`--classifications-dir`) before a record can
+    even be looked up, and a later override of e.g. `--main-band` must still
+    win over whatever the record says. No data path -> no identity -> the
+    record lookup is skipped entirely, same as the GUI's `_session_id`.
+    """
+    c = load_config_dict(args.config, resolve_state_dir_override(args))
+
+    # Identity overrides: resolved before the record lookup below, since the
+    # record is keyed on the *effective* identity, not the config file's.
     if args.path is not None:
         c['data_path'] = args.path
-    if args.output is not None:
-        c['output_path'] = args.output
     if args.classifications_dir is not None:
         c['classifications_path'] = args.classifications_dir
     if args.name is not None:
@@ -1088,6 +1601,23 @@ def config_from_cli(args):
         c['seed_enabled'], c['seed_value'] = True, args.seed
     if args.no_seed:
         c['seed_enabled'] = False
+
+    path = c['data_path']
+    if path:
+        session_id = state.SessionId(
+            SESSION_TOOL, os.path.abspath(os.path.expanduser(path)), c['session_name'],
+            c['seed_value'] if c['seed_enabled'] else None)
+        classifications_dir = resolve_classifications_dir(c['classifications_path'])
+        record = state.load_session_config(session_id, classifications_dir)
+        if record is not None:
+            c.update({k: record[k] for k in SESSION_CONFIG_KEYS if k in record})
+
+    # Remaining overrides: applied last, so an explicit flag always wins even
+    # over a session record that covers the same key (main band, bands, grid).
+    if args.mode is not None:
+        c['run_mode_index'] = MODE_NAMES[args.mode]
+    if args.output is not None:
+        c['output_path'] = args.output
     if args.main_band is not None:
         c['main_band'] = args.main_band
     if args.color_bands is not None:
@@ -1106,15 +1636,22 @@ def config_from_cli(args):
 
 
 def run_headless(config, classifications_override=None, print_command_only=False,
-                 log=print):
+                 log=print, state_dir_override=None):
     """Run the configured workflow without the lobby window; returns an exit code.
 
     With print_command_only, prints the viewer command line(s) the lobby would
     launch -- chained mode prints both stages -- and returns 0 without running
     anything.
+
+    `state_dir_override` only reaches the printed command lines. A child that is
+    actually launched inherits it through `QTSTAMP_STATE_DIR` in the environment
+    (see `main`), but a printed command line has to stand on its own -- someone
+    pasting it into a different shell would otherwise silently get the local
+    default back.
     """
     mode = config['run_mode_index']
     path = config['data_path']
+    path = os.path.abspath(os.path.expanduser(path)) if path else path
     name = config['session_name']
     seed = config['seed_value'] if config['seed_enabled'] else None
     band_argv = build_band_argv(config['main_band'], config['color_bands'],
@@ -1128,11 +1665,13 @@ def run_headless(config, classifications_override=None, print_command_only=False
             config['scheme_rows'], log=log)
 
     def emit(argv):
+        if state_dir_override:
+            argv = [*argv, "--state-dir", state_dir_override]
         log(shlex.join([sys.executable, *argv]))
 
     def run(argv):
         log("Launching: " + shlex.join([sys.executable, *argv]))
-        return subprocess.run([sys.executable, *argv], cwd=REPO_ROOT).returncode
+        return subprocess.run([sys.executable, *argv]).returncode
 
     if print_command_only:
         path = path or "<path>"
@@ -1164,6 +1703,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
                                     printname=config['mosaic_printname'],
                                     band_argv=band_argv)
     output_path = config['output_path']
+    output_path = os.path.abspath(os.path.expanduser(output_path)) if output_path else output_path
 
     if print_command_only:
         emit(mosaic_argv)
@@ -1208,8 +1748,11 @@ def _build_arg_parser():
     p.add_argument("--print-command", action="store_true",
                    help="Print the viewer command line(s) that would run, then exit "
                         "(implies --no-gui; chained mode prints both stages).")
-    p.add_argument("--config", default=PATH_TO_LOBBY_CONFIG, metavar="PATH",
-                   help="Lobby config JSON to read defaults from (default: %(default)s).")
+    p.add_argument("--config", default=None, metavar="PATH",
+                   help="Lobby config JSON to read defaults from (default: the first "
+                        f"{LOBBY_CONFIG_NAME} found in the state dir, then the per-user "
+                        "config dir, then the defaults shipped with the tool).")
+    add_state_dir_args(p)
 
     g = p.add_argument_group("workflow overrides (with --no-gui / --print-command)")
     g.add_argument("-m", "--mode", choices=sorted(MODE_NAMES),
@@ -1259,15 +1802,26 @@ def main():
     if gave_override and not headless:
         parser.error("workflow overrides only apply with --no-gui or --print-command")
 
+    state_dir_override = resolve_state_dir_override(args)
+    if state_dir_override:
+        # Every viewer the lobby launches has to agree with it about where state
+        # lives. Exporting it here covers all four launch paths at once (QProcess
+        # copies this process's environment; subprocess inherits it) without
+        # threading the value through nine build_*_argv call sites. The default
+        # -- no override -- needs nothing: since 2b-ii the child inherits the
+        # lobby's CWD, so it resolves `./.qtstamp` to the same directory.
+        os.environ[paths.STATE_DIR_ENV] = state_dir_override
+
     if not headless:
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-        win = LobbyWindow()
+        win = LobbyWindow(state_dir_override)
         win.show()
         sys.exit(app.exec())
 
     sys.exit(run_headless(config_from_cli(args),
                           classifications_override=args.classifications,
-                          print_command_only=args.print_command))
+                          print_command_only=args.print_command,
+                          state_dir_override=state_dir_override))
 
 
 if __name__ == "__main__":

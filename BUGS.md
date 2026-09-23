@@ -1,148 +1,136 @@
 # Known bugs
 
-Found reviewing the working-tree changes against `715261a` (session-state split,
-atomic autosaves, `--classifications-dir`, drawn background markers) on
-2026-09-14. Verified by running both viewers headless (`QT_QPA_PLATFORM=offscreen`,
-`MPLBACKEND=Agg`) against synthetic FITS and PNG datasets, from a directory
-outside the checkout.
+Open items only. Fixed ones move to [BUGS-DONE.md](BUGS-DONE.md) with their fix
+writeup, keeping their original number -- numbering is continuous across the two
+files and never reused, because `CHANGES.md`, `PLAN.md`, `STATUS.md` and two
+source comments cite items by number. Next number is 16.
 
 "New" = introduced by the changes on this branch since `715261a`. "Pre-existing"
-= older, but adjacent to them, or newly reachable. Two items found in this pass
-(the permissions narrowing and the foreign-write guard's hole) were fixed
-before commit; see CHANGES.md for how. What's left below is still open.
+= older, but adjacent to them, or newly reachable. Anything GUI-affecting is
+verified by running the affected tool headless (`QT_QPA_PLATFORM=offscreen`,
+`MPLBACKEND=Agg`) from a directory outside the checkout before it is called
+fixed.
 
-Not bugs, verified working: both viewers run standalone from any CWD; PNG/JPG
-classification; a change of `--name` or `--seed` restarting at the first
-image/page in both tools; a mosaic reshape keeping the CSV and re-deriving the
-page; legacy `.config*.json` migration; `--reset-config` / `--reset-position`;
-fork-on-foreign-write; `tests/` (48 tests).
+Items 14 and 15 arrived 2026-09-21 from PLAN.md's "1b. Known bugs -- remaining"
+section, which no longer exists: 14 was the entry that was sitting there, re-checked
+against the current tree, and 15 the concrete failure found while re-checking it.
+Both are fixed; see [BUGS-DONE.md](BUGS-DONE.md).
 
----
-
-## 1. The lobby launches its children with `cwd=REPO_ROOT` — PRE-EXISTING, now inconsistent
-
-[`lobby.py:819`](lobby.py#L819), [`lobby.py:844`](lobby.py#L844),
-[`lobby.py:1111`](lobby.py#L1111).
-
-`--classifications-dir` is now resolved to an absolute path against the lobby's
-own CWD and passed down, but `-p`/`-o` are passed through verbatim, and the
-child runs in `REPO_ROOT`. Three consequences:
-
-* **A relative `--path` breaks.** Reproduced from a directory containing
-  `data/`:
-
-  ```
-  $ lobby.py --no-gui -m mosaic -p data -b VIS
-  Launching: .../mosaic.py -p data ... --classifications-dir /abs/path/Classifications
-  Band directories not found under data: ...
-  ```
-
-  The GUI usually escapes this because Browse... returns absolute paths, but a
-  relative `data_path` in `.config_lobby.json` or on the CLI hits it.
-
-* **Resume positions do not carry between launch paths.** `sessions.json` and
-  `.preferences_*.json` are CWD-relative (`state.DEFAULT_CONFIG_DIR = os.curdir`),
-  so a lobby-launched viewer writes them to `REPO_ROOT` and a directly-launched
-  one writes them to the user's CWD. The CSV is shared (absolute path); the
-  position is not. CHANGES.md claims otherwise: "launching the lobby and
-  launching a viewer directly, from the same directory, land on the same
-  `Classifications/` and can resume each other's CSVs."
-
-* **Under `pip install` / `uvx`, `REPO_ROOT` is site-packages.** The child then
-  tries to write `sessions.json`, `.preferences_*.json`, `./.temp/` and
-  `./Legacy_survey/` there. Unhandled exception on the first save if it is not
-  writable.
-
-Fix: resolve `path` and `output` to absolute in the lobby before building argv
-(the same rule `--classifications-dir` already follows), and either stop setting
-`cwd=REPO_ROOT` on the children or pass the state directory down explicitly.
-PLAN.md item 2b (`paths.py`) subsumes the second half.
-
-## 2. `Classifications/README` still documents the old mosaic filenames — NEW
-
-[`Classifications/README`](Classifications/README).
-
-The paragraph about `--classifications-dir` was added, but the filename table
-immediately below it still says:
-
-```
-  no seed:   classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_99.csv
-  with seed: classification_mosaic_autosave_{name}_{n_stamps}_{ncols}_{nrows}_{seed}.csv
-```
-
-The grid shape is exactly what this change removed from the name. Should read
-`classification_mosaic_autosave_{name}_{n_stamps}[_{seed}].csv`. README.md was
-updated correctly; this file was missed.
-
-## 3. The new state files are not gitignored — NEW
-
-[`.gitignore`](.gitignore).
-
-`sessions.json`, `.preferences_single.json`, `.preferences_mosaic.json`,
-`.config.json.bak`, `.config_mosaic.json.bak`. The existing `.config*.json`
-pattern does not match the `.bak` names, and nothing matches the other three.
-First run from the repo root produces five untracked files.
-
-`sessions.json` is also the only one of the set that is not a dotfile, so it is
-visible clutter in whatever directory the user launches from.
-
-## 4. The 1-by-1 "Go to" dialog can crash the tool — PRE-EXISTING
-
-[`single_viewer.py:1542`](single_viewer.py#L1542).
-
-```python
-i, ok = QtWidgets.QInputDialog.getInt(self, 'Visual inspection', '',
-                                      self.counter + 1, 1, self.COUNTER_MAX + 1)
-```
-
-The dialog's maximum is one past the end. Entering 13 of 12 sets `counter = 12`
-and `go_to_counter_page` raises `IndexError` on `self.listimage[12]`
-(reproduced). Should be `self.COUNTER_MAX`.
-
-Same off-by-one family as the mosaic's `goto`, which this change did fix — and
-the old `counter > len(listimage)` startup clamp that used to soften the related
-case was removed along with `config_dict['counter']`.
-
-## 5. The mosaic's page warning is 0-based, the widget is 1-based — NEW
-
-[`mosaic.py:643`](mosaic.py#L643) says `'Pages go from 0 to {PAGE_MAX-1}'` while
-`LabelledIntField` displays and accepts 1-based page numbers ("Page 1 / 3").
-Should be `1 to {PAGE_MAX}`. Cosmetic, and currently unreachable behind
-`QIntValidator(1, PAGE_MAX)`; the `>= PAGE_MAX` bound fixed just above it is
-correct.
-
-## 6. `new_class` can be unbound on a modified click — PRE-EXISTING
-
-[`mosaic.py:318`](mosaic.py#L318), `MiniMosaics.mousePressEvent`.
-
-On an unclassified stamp, the branch assigns `new_class` only for
-`Qt.ControlModifier`, `Qt.ShiftModifier` or `Qt.NoModifier`. Ctrl+Shift+click,
-Alt+click or a Meta-modified click falls through all of them and reaches
-`self.update_df_func(event, self.i, new_class)` with `new_class` unbound →
-`UnboundLocalError`. Grades already on disk are unaffected.
-
-Fix: default `new_class = self.is_a_candidate` (treat an unrecognised modifier
-as a no-op) and return early rather than calling `update_df_func`.
+Items 16-29 arrived 2026-09-22 from a full-source audit (all ten modules, six
+parallel reviewers, every finding re-verified against the source before being
+filed here). Nothing in that pass was found by running the tools -- these are
+read-and-verify findings, so each one needs its own repro before it is called
+fixed, per the headless rule above. Dead code and the duplication the same audit
+turned up are not bugs and live in PLAN.md items 2d and 2e.
 
 ---
+
+## Major
+
+**16. `_apply_preset` restores bands before rescanning -- item 14's bug, at a
+second call site.** `lobby.py:1385-1387` calls `_apply_config_to_widgets()` and
+only then `_rescan_bands()`. Item 14 fixed exactly this ordering in
+`_on_identity_changed`, whose docstring calls the order "load-bearing", but the
+preset path kept the old one. The mechanism is the one item 14 documents:
+`_refresh_band_widgets` (`lobby.py:838-840`) reads the checklist back only when
+it is non-empty (`self.color_bands_list.count()`), otherwise falling back to
+`config_dict['color_bands']`. Applying a preset first ticks the preset's bands
+against the *outgoing* path's band list, leaving it non-empty, so the rescan
+reads that already-filtered list as the answer and every band the two datasets
+do not share is dropped. Reachable because `_preset_snapshot`
+(`lobby.py:1374-1377`) strips only `dock_state` and so a user-saved preset does
+carry `data_path`; packaged presets are forbidden from carrying it, but only by
+a test convention (`tests/test_paths.py`), not by the snapshot code.
+`__init__`'s same-looking order (`lobby.py:505-508`) is safe -- the checklist is
+still empty there, so the fallback branch runs.
+
+**17. Nothing serialises the read-modify-write on the shared `sessions.json`.**
+`state._update_session` (`state.py:270-282`) does load -> mutate -> write with no
+cross-process exclusion, and so do `forget_session` and
+`migrate_sessions_store`. `imaging.atomic_write` makes each individual write
+atomic, which is not the same guarantee. There is no lock of any kind in the
+repo (`fcntl`/`flock`/`filelock`: zero hits). The window is real rather than
+theoretical: the lobby launches viewers with `QProcess` parented to itself
+(`lobby.py:1201-1207`, `1225-1233`), so it stays alive and keeps writing
+(`save_session_config`, `lobby.py:1467`) while a viewer writes its position
+(`save_session`, `mosaic.py:803`, `single_viewer.py:896`). A stale read written
+back drops the other process's entry. Blast radius is resume position, scheme
+and band setup -- classification CSVs are written by a different path and are
+not at risk. No test covers concurrent writers.
+
+**18. `background_rms_image` throws away the box size its caller computed.**
+`mosaic.py:1067-1069` and `single_viewer.py:1297-1299` both open with
+`cb=10`, overwriting the parameter. `scale_val` computes a size-dependent
+`box_size_vmin` for large stamps (`mosaic.py:1049-1055`,
+`single_viewer.py:1320-1322`) precisely to pass it here, so that whole branch is
+dead and every stamp gets a fixed 10x10 corner box for its noise estimate.
+Display scaling only -- no effect on classifications -- but the two copies have
+also drifted (threshold `>173` in the mosaic, `>170` in the 1-by-1 viewer),
+which is why the fix belongs with PLAN.md 2e rather than being applied twice.
 
 ## Minor
 
-* **`obtain_df` length check.** [`mosaic.py`](mosaic.py) compares
-  `np.all(self.listimage == df['file_name'].values)` without the
-  `len(self.listimage) == len(df)` guard [`single_viewer.py`](single_viewer.py)
-  has. NumPy degrades a length mismatch to a scalar `False`, so it happens to
-  work, but it relies on deprecated behaviour.
-* **Seeded globs collide on prefixes.** Both viewers glob
-  `..._{n}_{seed}*.csv`, so seed 7 also matches `..._70.csv` and `..._78.csv`.
-  Usually harmless (the dataset check rejects them), but with three such files
-  present the `class_file[-2]` pick can land on the wrong one and then start an
-  empty `-new_dataset_1` file beside a perfectly good seed-7 CSV. Pre-existing.
-* **Two mosaics in one directory share `./.temp`.** Each wipes the scratch
-  directory at startup (`clean_dir`) and the tile filenames are index-based, so
-  a second mosaic pulls the first one's tiles out from under it. Pre-existing;
-  PLAN.md item 2b.
-* **`df.drop(keys_to_drop, axis=1)` result is discarded** in
-  `single_viewer.obtain_df` (no `inplace=True`, return value unused), so
-  `Unnamed:` columns are never actually dropped. Harmless today because the
-  1-by-1 tool round-trips its index. Pre-existing.
+**19. The lobby's workspace config is only persisted on a clean close.**
+`save_dict()` has exactly one caller, `closeEvent` (`lobby.py:1438`), while
+`_save_session_record()` also runs on every Run (`lobby.py:1164`, `1275`). A
+kill or crash after several successful runs therefore keeps the session record
+but loses `data_path`, `session_name`, `seed`, `run_mode_index` and
+`output_path`. Asymmetry introduced by item 14's split, not covered by its
+verification.
+
+**20. `save_session(csv=None)` erases a recorded CSV.** `state.py:286-292`
+passes `'csv': None` unconditionally into `_update_session`'s `entry.update`,
+so a caller that omits `csv` clears a previously stored value instead of
+leaving it alone. Latent: both call sites always pass it today.
+
+**21. `NamedLabel.getValue` reads a nonexistent attribute.** `widgets.py:95-96`
+returns `int(self.lineEdit.text())-1`, but the class stores its field as
+`self.label` (`widgets.py:83`); `lineEdit` belongs to the sibling
+`LabelledIntField`. Latent -- the only `.getValue()` call (`mosaic.py:714`) is
+on a `LabelledIntField` -- but it is an `AttributeError` waiting for the next
+caller.
+
+**22. `get_value_range_asymmetric`'s box scales with band count.**
+`imaging.py:46` takes `np.sqrt(np.prod(x.shape) * 0.01)` over the whole array,
+and `xl, yl, _ = np.shape(x)` on the next line proves it is the 3-D composite,
+so the "1% of area" box is about `sqrt(nbands)` times larger than it reads and
+silently changes size with how many bands a dataset has.
+
+**23. `get_value_range_asymmetric` can build a negative slice start.**
+`imaging.py:50-53`: for a stamp smaller than the 8-pixel default box,
+`int(xl/2 - box/2)` goes negative (xl=5 gives -1) and the negative index wraps
+instead of clamping, so the high percentile is taken over the wrong region.
+
+**24. `get_contrast_bias_reasonable_assumptions` divides without a guard.**
+`imaging.py:70-75` divides by `(bkg_level - 1)`, with only a trailing comment
+saying it must not be 1. `bkg_level` comes from real image data via
+`clip_normalize` + `scale`, so 1.0 is reachable and yields a silent inf/NaN
+that propagates into the rendered image.
+
+**25. ds9 children are never reaped.** `single_viewer.py:1263` discards the
+`subprocess.Popen` handle, so repeated "Open ds9" clicks accumulate zombies for
+the life of the session.
+
+**26. `obtain_df` hardcodes `file_index = -2`.** `single_viewer.py:1518-1541`
+picks the second-to-last glob match whenever more than one CSV matches. That is
+correct for the two-match case item 11 was about (live file plus one
+`-new_dataset_N` fork); with three or more it selects by sort position rather
+than by which file is live.
+
+**27. `record_miss` is not atomic.** `workers.py:106-114` writes the `.miss`
+marker directly, unlike `_download_to`, which goes through `mkstemp` +
+`os.replace`. Two workers racing on one marker can leave invalid JSON. Benign
+in practice -- `read_miss` already treats an unparseable marker as absent, so
+the cost is one extra retry.
+
+**28. An explicit empty `--state-dir` is silently ignored.** `paths.py:134-139`
+and `293-305` test the override for truthiness, so `--state-dir ''` falls
+through to the env/anchor default instead of being honoured or rejected.
+
+**29. The lobby's unknown-label check compares bare subclass names.**
+`_unknown_classification_labels` (`lobby.py:1035-1056`) matches a CSV's
+`subclassification` values against a flat set of known sub-names rather than
+(major, subclass) pairs, so a subclass valid under one major reads as known
+under any other. Needs a cross-check against how `single_viewer.py` keys its
+subclass buttons before it is called a bug or closed as a non-issue -- it is
+filed here so the check is not forgotten.

@@ -25,9 +25,11 @@ from imaging import (
     identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
     contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
     natural_sort,
-    resolve_classifications_dir, ClassificationWriter,
+    ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
 )
+import paths
+from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 import state
 from widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, NamedLabel,
@@ -94,9 +96,11 @@ parser.add_argument("--mef", help="Treat --path as a directory of multi-extensio
                     "band names passed to -b/-B/--rgb-composites must match an EXTNAME "
                     "found in the first file under --path.",
                     action="store_true", default=False)
+add_state_dir_args(parser)
 
 
 args = parser.parse_args()
+STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
 # Empty entries dropped: -B '' means "no color bands", not one band named ''
 # (which passes the missing-directory check below -- it resolves to --path itself
 # -- and then fails at image load).
@@ -139,14 +143,18 @@ SESSION_TOOL = 'mosaic'
 LEGACY_CONFIG_FILE = '.config_mosaic.json'
 
 if args.reset_config:
-    if state.reset_preferences(SESSION_TOOL):
+    state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
+    if state.reset_preferences(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE):
         print("Preferences reset.")
     if os.path.exists(LEGACY_CONFIG_FILE):
         # Otherwise the migration below would immediately restore what was just reset.
         os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
 
 if args.reset_position:
-    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed)):
+    _anchor = resolve_classifications_dir(args.classifications_dir)
+    state.migrate_sessions_store(_anchor)
+    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed),
+                            _anchor):
         print("Resume position reset.")
 
 def _solid_pixmap(color, size=128):
@@ -317,6 +325,8 @@ class MiniMosaics(QtWidgets.QLabel):
         if self.is_activate:
             modifiers = event.modifiers()
             if self.is_a_candidate != C_UNINTERESTING:
+                # A click on an already-graded stamp clears it, whatever the
+                # modifier: there is only one way back to unclassified.
                 self.change_and_paint_pixmap(self.filepaths)
                 new_class = C_UNINTERESTING
             else:
@@ -326,6 +336,13 @@ class MiniMosaics(QtWidgets.QLabel):
                 elif modifiers == Qt.NoModifier:
                     self.paint_background_pixmap(self.lens_background_pixmap)
                     new_class = C_LENS
+                else:
+                    # Any other modifier (Ctrl+Shift, Alt, Meta, and the
+                    # combinations) is not a grade. `modifiers` is compared for
+                    # equality, not tested bitwise, so these reach here rather
+                    # than any branch above -- leave the stamp untouched instead
+                    # of falling through with `new_class` unbound.
+                    return
 
             self.update_df_func(event, self.i, new_class)
             self.is_a_candidate = new_class
@@ -355,10 +372,22 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.main_band = args.main_band
         self.color_bands = args.color_bands
 
-        self.scratchpath = './.temp'
-        os.makedirs(self.scratchpath, exist_ok=True)
+        # Scratch renders live with the workspace (2b-v), under the state dir's
+        # cache/. `paths.cache_dir` has already made it and confirmed it is
+        # writable -- falling back to the per-user cache dir if not, since a
+        # mosaic with nowhere to render cannot run at all. `scratch_dir` then
+        # carves out a per-process subdirectory, so two mosaics sharing one
+        # workspace no longer wipe each other's tiles.
+        cache_root = paths.cache_dir(override=STATE_DIR_OVERRIDE)
+        # Before `scratch_dir`, which sweeps the root: the legacy dir lands there
+        # as loose tiles and is swept on this same run, which is what used to
+        # happen to it anyway (`clean_dir` wiped it immediately). The point of the
+        # migration is only to get `.temp` out of the CWD.
+        paths.migrate_once(os.path.join(os.curdir, '.temp'), os.path.join(cache_root, 'temp'))
+        self.scratchpath = paths.scratch_dir(cache_root)
         self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
         os.makedirs(self.classifications_dir, exist_ok=True)
+        state.migrate_sessions_store(self.classifications_dir)
         self.clean_dir(self.scratchpath)
 
         if args.mef:
@@ -491,9 +520,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # another process has written since we last saved it.
         self.csv_writer = ClassificationWriter(self.df_name, index=False)
 
+        state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
         state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
-                                    self.listimage, self.legacy_page_index, csv=self.df_name)
-        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults)
+                                    self.listimage, self.legacy_page_index, csv=self.df_name,
+                                    classifications_dir=self.classifications_dir,
+                                    config_dir=STATE_DIR_OVERRIDE)
+        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults,
+                                                  config_dir=STATE_DIR_OVERRIDE)
         if self.config_dict['scale'] == 'log10':  # renamed upstream long ago
             self.config_dict['scale'] = 'log'
         if self.config_dict['colormap'] == 'gray':
@@ -503,8 +536,9 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # different classification file than the one the position was recorded
         # against, the two disagree about which session is open and the position
         # is stale by definition.
-        position = state.resolve_position(state.load_session(self.session_id),
-                                          self.listimage, csv=self.df_name)
+        position = state.resolve_position(
+            state.load_session(self.session_id, self.classifications_dir),
+            self.listimage, csv=self.df_name, classifications_dir=self.classifications_dir)
         self.page = min(position // self.gridarea, max(self.PAGE_MAX - 1, 0))
         if args.page is not None:
             self.page = max(min(args.page - 1, self.PAGE_MAX - 1), 0)
@@ -663,18 +697,32 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     @Slot()
     def goto(self):
-        # Pages are 0..PAGE_MAX-1: PAGE_MAX itself used to be accepted here and
-        # then fell off the end of listimage, which update_grid's try/except
-        # quietly turned into a gridful of blank buttons.
-        if self.bcounter.getValue()>=self.PAGE_MAX:
-            print("page: ",self.PAGE_MAX)
+        # Two numbering schemes meet here. `self.page` is 0-based, 0..PAGE_MAX-1:
+        # PAGE_MAX itself used to be accepted and then fell off the end of
+        # listimage, which update_grid's try/except quietly turned into a gridful
+        # of blank buttons. The widget is 1-based -- it reads "Page 3 / 12" --
+        # and getValue() subtracts the 1, so every bound *shown* to the user is
+        # 1..PAGE_MAX while every bound tested here is 0..PAGE_MAX-1.
+        #
+        # QIntValidator(1, PAGE_MAX) does not make this check redundant: a
+        # QLineEdit only refuses input the validator calls Invalid, and "0", an
+        # out-of-range "4" and an empty field are all Intermediate, so they stay
+        # in the field and arrive here. An empty field is why getValue() is
+        # guarded -- int('') raises.
+        out_of_range = 'WARNING: Pages go from 1 to {}.'.format(self.PAGE_MAX)
+        try:
+            page = self.bcounter.getValue()
+        except ValueError:
+            self.status.showMessage(out_of_range,10000)
+            self.bcounter.setInputText(self.page)  # field is blank; put the number back
+            return
+        if page>=self.PAGE_MAX:
             self.status.showMessage('WARNING: There are only {} pages.'.format(
                 self.PAGE_MAX),10000)
-        elif self.bcounter.getValue()<0:
-            self.status.showMessage('WARNING: Pages go from 0 to {}.'.format(
-                self.PAGE_MAX-1),10000)
+        elif page<0:
+            self.status.showMessage(out_of_range,10000)
         else:
-            self.go_to_page(self.bcounter.getValue())
+            self.go_to_page(page)
             self.bcounter.lineEdit.clearFocus()
     @Slot()
     def next(self):
@@ -741,7 +789,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     for band in self.bands_to_plot[:nvisiblebands]]
 
     def save_preferences(self):
-        state.save_preferences(SESSION_TOOL, self.config_dict)
+        state.save_preferences(SESSION_TOOL, self.config_dict,
+                               config_dir=STATE_DIR_OVERRIDE)
 
     def save_position(self):
         """Persist the page as the filename of the object in its top-left cell.
@@ -751,7 +800,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         page from wherever that object now falls.
         """
         index = min(self.page * self.gridarea, len(self.listimage) - 1)
-        state.save_session(self.session_id,
+        state.save_session(self.session_id, self.classifications_dir,
                            position_filename=self.listimage[index],
                            csv=self.df_name)
 
@@ -799,8 +848,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                                  '{}.csv'.format(base_filename)))))
         else:
             base_filename = '{}_{}'.format(base_prefix, self.random_seed)
-            string_to_glob = join(self.classifications_dir, '{}*.csv'.format(base_filename))
-            glob_results = set(glob.glob(string_to_glob))
+            # Not `{base}*.csv`: seed 7 would also match seed 70 and 78. Every
+            # suffix this tool writes is introduced by `-` (see
+            # `next_free_csv_path`), so match that and the bare name only.
+            glob_results = (set(glob.glob(join(self.classifications_dir,
+                                               '{}-*.csv'.format(base_filename))))
+                            | set(glob.glob(join(self.classifications_dir,
+                                                 '{}.csv'.format(base_filename)))))
 
         class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
         fresh_name = join(self.classifications_dir, '{}.csv'.format(base_filename))
@@ -812,7 +866,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.df_name = class_file[file_index]
             print('Reading '+ self.df_name)
             df = pd.read_csv(self.df_name)
-            if np.all(self.listimage == df['file_name'].values):
+            if (len(self.listimage) == len(df) and
+                np.all(self.listimage == df['file_name'].values)):
                 if 'time' not in df.keys():
                     df['time'] = 0
                 # `page`/`grid_pos` record where a stamp sat in the grid, so they are
