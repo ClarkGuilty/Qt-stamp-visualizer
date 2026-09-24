@@ -94,7 +94,8 @@ parser.add_argument('--classifications',
                     'A bare MAJOR=KEY (or empty SUB) makes a major-class button; MAJOR:SUB=KEY makes a '
                     'subclass button under that major, setting both fields when clicked. A subclass '
                     'shared by several majors lists them comma-separated, MAJOR1,MAJOR2:SUB=KEY: '
-                    'clicking it highlights those majors, and the major clicked next sets both fields. '
+                    'clicking it highlights those majors and dims every other button, and the major '
+                    'clicked next sets both fields; clicking the subclass again cancels. '
                     'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"',
                     default="A=1;B=2;C=3;X=4;I=5")
 parser.add_argument('--rgb-composites',
@@ -168,7 +169,7 @@ for entry in args.classifications.split(';'):
     label = f"{major}:{sub}" if sub else major
     seen_keys.setdefault(key, []).append(label)
     if sub:
-        majors = tuple(m.strip() for m in major.split(',') if m.strip()) or ('',)
+        majors = tuple(dict.fromkeys(m.strip() for m in major.split(',') if m.strip())) or ('',)
         args.subclasses.append((majors, sub, key))
         seen_subs[sub] = seen_subs.get(sub, 0) + 1
     else:
@@ -991,40 +992,54 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def classify_major(self, major):
         """Major button: that is the class -- unless a shared subclass is waiting
-        for one of its majors, in which case this one completes it."""
+        for one of its majors, in which case this one completes it, keeping the
+        subclass. Other majors are dimmed while one waits; their shortcuts, which
+        a disabled button does not stop, are ignored the same way."""
         pending = self.pending_subclass
-        if pending is not None and major in pending[0]:
-            self.classify(major, pending[1])
-        else:
+        if pending is None:
             self.classify(major, major)
+        elif major in pending[0]:
+            self.classify(major, pending[1])
 
     @Slot()
     def classify_subclass(self, majors, subgrade):
         """Subclass button. With one major it sets both fields at once. Shared by
-        several, nothing is written yet: its majors are highlighted and the next
-        major clicked (classify_major) supplies the class."""
+        several, nothing is written yet: its majors are highlighted, every other
+        classification button is dimmed, and the next major clicked
+        (classify_major) supplies the class. Clicking it again cancels."""
+        pending = self.pending_subclass
+        if pending is not None:
+            if pending[1] == subgrade:
+                self._clear_pending_subclass()
+            return  # another subclass is dimmed while one waits
         if len(majors) == 1:
             self.classify(majors[0], subgrade)
             return
-        self._clear_pending_subclass()
         self.pending_subclass = (majors, subgrade)
         option_style = "background-color : {};color : white;".format(self.buttonoptioncolor)
-        for button in [self.dict_subclass2button.get(subgrade)] + \
-                [self.dict_class2button.get(m) for m in majors]:
-            if button is not None:
+        lit = {self.dict_subclass2button.get(subgrade)} | \
+              {self.dict_class2button.get(m) for m in majors}
+        for button in self._classification_buttons():
+            if button in lit:
                 button.setStyleSheet(option_style)
-        self.status.showMessage(f"'{subgrade}': pick its class -- {' or '.join(majors)}.")
+            else:
+                button.setEnabled(False)
+        self.status.showMessage(f"'{subgrade}': pick its class -- {' or '.join(majors)} "
+                                f"(click '{subgrade}' again to cancel).")
+
+    def _classification_buttons(self):
+        "Every major and subclass button, once each."
+        buttons = list(self.dict_class2button.values()) + list(self.dict_subclass2button.values())
+        return [b for b in dict.fromkeys(buttons) if b is not None]
 
     def _clear_pending_subclass(self):
         "Drops a shared subclass still waiting for its major, and its highlights."
         if self.pending_subclass is None:
             return
-        majors, subgrade = self.pending_subclass
         self.pending_subclass = None
-        for button in [self.dict_subclass2button.get(subgrade)] + \
-                [self.dict_class2button.get(m) for m in majors]:
-            if button is not None:
-                button.setStyleSheet(self.original_button_style)
+        for button in self._classification_buttons():
+            button.setEnabled(True)
+            button.setStyleSheet(self.original_button_style)
         self.status.clearMessage()
         # The highlights above may have covered the row's own classification.
         self.update_classification_buttoms()

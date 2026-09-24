@@ -348,8 +348,8 @@ def classifications_string_from_rows(rows, log=None):
 
 
 def split_majors(text):
-    "A subclass row's Major cell ('A' or 'A,B') as a list of major names."
-    return [m.strip() for m in (text or '').split(',') if m.strip()]
+    "A subclass row's Major cell ('A' or 'A,B') as a list of major names, no repeats."
+    return list(dict.fromkeys(m.strip() for m in (text or '').split(',') if m.strip()))
 
 
 class MultiMajorCombo(QComboBox):
@@ -385,19 +385,21 @@ class MultiMajorCombo(QComboBox):
         model.clear()
         for name in offered:
             item = QStandardItem(name)
-            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            # Not ItemIsUserCheckable: the view would toggle it back on release,
+            # after _toggle already did on press. _toggle is the only toggle.
+            item.setFlags(Qt.ItemIsEnabled)
             item.setCheckState(Qt.Checked if name in checked else Qt.Unchecked)
             model.appendRow(item)
         self.update()
 
     def _toggle(self, index):
         item = self.model().itemFromIndex(index)
-        if item.checkState() == Qt.Checked:
-            item.setCheckState(Qt.Unchecked)
+        if item.text() in self._checked:
             self._checked.remove(item.text())
+            item.setCheckState(Qt.Unchecked)
         else:
-            item.setCheckState(Qt.Checked)
             self._checked.append(item.text())
+            item.setCheckState(Qt.Checked)
         self._keep_popup = True
         self.update()
         self.majorsChanged.emit(','.join(self.majors()))

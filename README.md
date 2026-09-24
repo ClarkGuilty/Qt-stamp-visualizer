@@ -349,9 +349,9 @@ python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 major-class button; `MAJOR:SUB=KEY` makes a subclass button under that major, setting
 both the classification and the subclassification in one click. A subclass shared by
 several majors lists them comma-separated, `MAJOR1,MAJOR2:SUB=KEY`. Clicking it writes
-nothing yet: it highlights those majors, and the one you click next sets both fields (and
-auto-advances as usual). Clicking a major that isn't offered drops the pending subclass
-and records just that major. For example:
+nothing yet: it highlights those majors and dims every other classification button, and
+the major you click next sets both fields, keeping the subclass (and auto-advances as
+usual). Clicking the subclass again cancels. For example:
 
 ```
 --classifications "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"

@@ -187,6 +187,16 @@ def test_classifications_string_from_rows_shared_subclass():
     assert warnings == []
 
 
+def test_classifications_string_from_rows_shared_subclass_keeps_order_drops_repeats():
+    rows = [
+        {'type': 'major', 'major': 'A', 'sub': '', 'key': '1', 'positive': False},
+        {'type': 'major', 'major': 'B', 'sub': '', 'key': '2', 'positive': False},
+        {'type': 'subclass', 'major': 'B,A,B', 'sub': 'Merger', 'key': 'm', 'positive': False},
+    ]
+    classifications_string, _ = lobby.classifications_string_from_rows(rows)
+    assert classifications_string == 'A=1;B=2;B,A:Merger=m'
+
+
 def test_classifications_string_from_rows_shared_subclass_warnings():
     rows = [
         {'type': 'major', 'major': 'A', 'sub': '', 'key': '1', 'positive': False},

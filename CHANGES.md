@@ -16,10 +16,11 @@ A subclass can now sit under more than one major, e.g. `Merger` under both `A` a
 * **Spec:** `--classifications` accepts `A,B:Merger=m` in both the 1-by-1 viewer and
   the headless lobby. Single-major entries (`A:Merger=m`) mean what they always did.
 * **Viewer:** clicking a shared subclass writes nothing yet. It highlights the
-  subclass's majors in orange, and the major you click next records both fields,
-  then auto-advances as usual. Clicking a major that isn't offered records just that
-  major, and moving to another object drops the pending subclass. Majors and
-  single-major subclasses work exactly as before: one click, then auto-advance.
+  subclass's majors in orange and dims every other classification button (their
+  keyboard shortcuts are ignored too). The major you click next records both
+  fields, keeping the subclass, then auto-advances as usual. Clicking the subclass
+  again, or moving to another object, cancels. Majors and single-major subclasses
+  work exactly as before: one click, then auto-advance.
 * **Lobby:** the Major cell of a subclass row, and "Parent major(s)" in the dialog for
   adding an unknown classification, are now a multi-select dropdown of the scheme's
   majors, kept in the order you tick them. A ticked major that is later renamed or
