@@ -25,6 +25,8 @@ A subclass can now sit under more than one major, e.g. `Merger` under both `A` a
   adding an unknown classification, are now a multi-select dropdown of the scheme's
   majors, kept in the order you tick them. A ticked major that is later renamed or
   removed stays ticked, and the lobby warns that it is unknown.
+  On macOS the dropdown's text no longer shows doubled ("AA"): the table cell under
+  it held the same text, and the native dropdown is not opaque.
 * The same subclass name on two rows (the old way to get this) now gets a warning in
   both tools. The CSV stores only the subclass name, so only one of the two buttons
   can light up on a resumed object.

@@ -1047,16 +1047,23 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _set_major_cell_editor(self, row, row_type):
         """A subclass row picks its major(s) from a checkable dropdown of the
-        scheme's majors; a major row types its own name. The cell's item keeps
-        the comma-joined text either way -- it is what the rows are read from."""
+        scheme's majors; a major row types its own name. While the dropdown is
+        up it holds the value and the item under it stays blank: native macOS
+        combos are not opaque, and the item's text showed through, doubled."""
         item = self.scheme_table.item(row, COL_MAJOR)
+        combo = self.scheme_table.cellWidget(row, COL_MAJOR)
         if row_type != TYPE_SUBCLASS:
-            self.scheme_table.removeCellWidget(row, COL_MAJOR)
+            if isinstance(combo, MultiMajorCombo):
+                item.setText(','.join(combo.majors()))
+                self.scheme_table.removeCellWidget(row, COL_MAJOR)
+            return
+        if isinstance(combo, MultiMajorCombo):
             return
         combo = MultiMajorCombo(majors_source=self._scheme_major_names,
                                 checked=split_majors(item.text()))
-        combo.majorsChanged.connect(item.setText)
+        combo.majorsChanged.connect(lambda _: self.update_classifications_preview())
         self.scheme_table.setCellWidget(row, COL_MAJOR, combo)
+        item.setText('')
 
     def _scheme_major_names(self):
         names = []
@@ -1091,12 +1098,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
             type_combo = self.scheme_table.cellWidget(row, COL_TYPE)
             row_type = type_combo.currentText() if type_combo else TYPE_MAJOR
             major_item = self.scheme_table.item(row, COL_MAJOR)
+            major_combo = self.scheme_table.cellWidget(row, COL_MAJOR)
             sub_item = self.scheme_table.item(row, COL_SUB)
             key_item = self.scheme_table.item(row, COL_KEY)
             positive_cb = self._row_positive_checkbox(row)
             rows.append({
                 'type': 'major' if row_type == TYPE_MAJOR else 'subclass',
-                'major': major_item.text().strip() if major_item else '',
+                'major': (','.join(major_combo.majors()) if isinstance(major_combo, MultiMajorCombo)
+                          else major_item.text().strip() if major_item else ''),
                 'sub': sub_item.text().strip() if sub_item else '',
                 'key': key_item.text().strip() if key_item else '',
                 'positive': positive_cb.isChecked() if positive_cb else False,
