@@ -8,6 +8,29 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## New: subclasses shared by several majors
+
+A subclass can now sit under more than one major, e.g. `Merger` under both `A` and
+`B`, as a single button rather than one duplicate per major.
+
+* **Spec:** `--classifications` accepts `A,B:Merger=m` in both the 1-by-1 viewer and
+  the headless lobby. Single-major entries (`A:Merger=m`) mean what they always did.
+* **Viewer:** clicking a shared subclass writes nothing yet. It highlights the
+  subclass's majors in orange, and the major you click next records both fields,
+  then auto-advances as usual. Clicking a major that isn't offered records just that
+  major, and moving to another object drops the pending subclass. Majors and
+  single-major subclasses work exactly as before: one click, then auto-advance.
+* **Lobby:** the Major cell of a subclass row, and "Parent major(s)" in the dialog for
+  adding an unknown classification, are now a multi-select dropdown of the scheme's
+  majors, kept in the order you tick them. A ticked major that is later renamed or
+  removed stays ticked, and the lobby warns that it is unknown.
+* The same subclass name on two rows (the old way to get this) now gets a warning in
+  both tools. The CSV stores only the subclass name, so only one of the two buttons
+  can light up on a resumed object.
+
+The CSV format is unchanged: `classification` holds the major and `subclassification`
+holds the subclass name.
+
 ## New: the `ERO_edition_classic` preset
 
 The lobby ships a fourth preset, reproducing what the pre-rename

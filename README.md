@@ -174,7 +174,9 @@ In the window you can:
 * Configure **bands and RGB composites** for both tools.
 * Build the 1-by-1 tool's **classification scheme** — major and subclass buttons and their
   keyboard shortcuts — in a table instead of writing the `--classifications` string by
-  hand, and mark which major classes count as positive for extraction.
+  hand, and mark which major classes count as positive for extraction. A subclass row
+  picks its major(s) from a multi-select dropdown, so one subclass can be shared by
+  several majors. They are offered in the order you tick them.
 * Pick an **output path** and whether extraction copies or symlinks files.
 * Use **Extract only…** to run just the CSV-to-extracted-subset step on its own, without
   launching either tool afterward.
@@ -345,10 +347,14 @@ python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 **Classification scheme.** `--classifications` takes one semicolon-separated string of
 `MAJOR=KEY` or `MAJOR:SUB=KEY` entries. A bare `MAJOR=KEY` (or an empty `SUB`) makes a
 major-class button; `MAJOR:SUB=KEY` makes a subclass button under that major, setting
-both the classification and the subclassification in one click. For example:
+both the classification and the subclassification in one click. A subclass shared by
+several majors lists them comma-separated, `MAJOR1,MAJOR2:SUB=KEY`. Clicking it writes
+nothing yet: it highlights those majors, and the one you click next sets both fields (and
+auto-advances as usual). Clicking a major that isn't offered drops the pending subclass
+and records just that major. For example:
 
 ```
---classifications "A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"
+--classifications "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"
 ```
 
 **Panels and settings**

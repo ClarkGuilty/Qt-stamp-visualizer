@@ -21,7 +21,8 @@ from os.path import join
 
 import pandas as pd
 from PySide6 import QtWidgets
-from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt
+from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt, Signal
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
 import extraction
@@ -309,10 +310,15 @@ def classifications_string_from_rows(rows, log=None):
     tokens = []
     positive_majors = set()
     seen_keys = {}
+    seen_subs = {}
     known_majors = {r['major'] for r in rows if r.get('type') == 'major'}
 
     for row_dict in rows:
         major, sub, key = row_dict.get('major', ''), row_dict.get('sub', ''), row_dict.get('key', '')
+        if row_dict.get('type') != 'major':
+            # A subclass may be shared by several majors: "A,B".
+            majors = split_majors(major)
+            major = ','.join(majors)
         if not major or not key:
             continue
         if row_dict.get('type') == 'major':
@@ -320,9 +326,11 @@ def classifications_string_from_rows(rows, log=None):
             if row_dict.get('positive'):
                 positive_majors.add(major)
         else:
-            if major not in known_majors:
-                warn(f"Warning: subclass '{sub}' refers to unknown major '{major}'")
+            for m in majors:
+                if m not in known_majors:
+                    warn(f"Warning: subclass '{sub}' refers to unknown major '{m}'")
             tokens.append(f"{major}:{sub}={key}")
+            seen_subs[sub] = seen_subs.get(sub, 0) + 1
         label = f"{major}:{sub}" if row_dict.get('type') == 'subclass' and sub else major
         seen_keys.setdefault(key, []).append(label)
 
@@ -330,8 +338,89 @@ def classifications_string_from_rows(rows, log=None):
         if len(labels) > 1:
             warn(f"Warning: keyboard shortcut '{key}' is assigned to more than "
                  f"one button: {', '.join(labels)}")
+    for sub, count in seen_subs.items():
+        if count > 1:
+            warn(f"Warning: subclass '{sub}' is in {count} rows -- use one row and "
+                 "tick all its majors instead, or only one of its buttons lights up "
+                 "on a resumed object.")
 
     return ";".join(tokens), positive_majors
+
+
+def split_majors(text):
+    "A subclass row's Major cell ('A' or 'A,B') as a list of major names."
+    return [m.strip() for m in (text or '').split(',') if m.strip()]
+
+
+class MultiMajorCombo(QComboBox):
+    """Dropdown of checkable major names -- a subclass can sit under several.
+
+    `majors_source`, if given, is called each time the popup opens so the list
+    follows majors added or renamed since. A ticked name that is no longer
+    offered stays in the list, ticked, so reopening never silently drops it.
+    `majors()` is the ticked names in the order they were ticked -- the order the
+    viewer offers them in; `majorsChanged` fires with them joined by commas, the
+    form the scheme rows store.
+    """
+
+    majorsChanged = Signal(str)
+
+    def __init__(self, majors_source=None, checked=(), parent=None):
+        super().__init__(parent)
+        self._majors_source = majors_source
+        self._keep_popup = False
+        self._checked = []  # ticked names, in tick order
+        self.setModel(QStandardItemModel(self))
+        self.view().pressed.connect(self._toggle)
+        self._rebuild(list(checked))
+
+    def majors(self):
+        return list(self._checked)
+
+    def _rebuild(self, checked):
+        self._checked = list(dict.fromkeys(checked))
+        offered = list(self._majors_source()) if self._majors_source else []
+        offered += [m for m in checked if m not in offered]
+        model = self.model()
+        model.clear()
+        for name in offered:
+            item = QStandardItem(name)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if name in checked else Qt.Unchecked)
+            model.appendRow(item)
+        self.update()
+
+    def _toggle(self, index):
+        item = self.model().itemFromIndex(index)
+        if item.checkState() == Qt.Checked:
+            item.setCheckState(Qt.Unchecked)
+            self._checked.remove(item.text())
+        else:
+            item.setCheckState(Qt.Checked)
+            self._checked.append(item.text())
+        self._keep_popup = True
+        self.update()
+        self.majorsChanged.emit(','.join(self.majors()))
+
+    def showPopup(self):
+        if self._majors_source:
+            self._rebuild(self.majors())
+        super().showPopup()
+
+    def hidePopup(self):
+        # A click on an item toggles it and would otherwise close the popup.
+        if self._keep_popup:
+            self._keep_popup = False
+            return
+        super().hidePopup()
+
+    def paintEvent(self, _event):
+        painter = QtWidgets.QStylePainter(self)
+        opt = QtWidgets.QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = ', '.join(self.majors()) or '(pick majors)'
+        painter.drawComplexControl(QtWidgets.QStyle.CC_ComboBox, opt)
+        painter.drawControl(QtWidgets.QStyle.CE_ComboBoxLabel, opt)
 
 
 class AddUnknownClassificationDialog(QtWidgets.QDialog):
@@ -352,10 +441,8 @@ class AddUnknownClassificationDialog(QtWidgets.QDialog):
 
         self.major_combo = None
         if kind == 'subclass':
-            self.major_combo = QComboBox()
-            self.major_combo.setEditable(True)
-            self.major_combo.addItems(known_majors)
-            form.addRow("Parent major:", self.major_combo)
+            self.major_combo = MultiMajorCombo(majors_source=lambda: known_majors)
+            form.addRow("Parent major(s):", self.major_combo)
 
         self.key_edit = QtWidgets.QLineEdit()
         form.addRow("Keyboard shortcut:", self.key_edit)
@@ -385,7 +472,8 @@ class AddUnknownClassificationDialog(QtWidgets.QDialog):
         return self.key_edit.text().strip()
 
     def parent_major(self):
-        return self.major_combo.currentText().strip() if self.major_combo else ''
+        "The ticked parent majors, comma-joined as a scheme row stores them."
+        return ','.join(self.major_combo.majors()) if self.major_combo else ''
 
     def wants_subclass(self):
         return bool(self.sub_cb and self.sub_cb.isChecked() and self.sub_name_edit.text().strip())
@@ -951,10 +1039,38 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.scheme_table.setItem(row, COL_MAJOR, QtWidgets.QTableWidgetItem(major))
         self.scheme_table.setItem(row, COL_SUB, QtWidgets.QTableWidgetItem(sub))
         self.scheme_table.setItem(row, COL_KEY, QtWidgets.QTableWidgetItem(key))
+        self._set_major_cell_editor(row, row_type)
 
         self.update_classifications_preview()
 
-    def _on_row_type_changed(self, _text):
+    def _set_major_cell_editor(self, row, row_type):
+        """A subclass row picks its major(s) from a checkable dropdown of the
+        scheme's majors; a major row types its own name. The cell's item keeps
+        the comma-joined text either way -- it is what the rows are read from."""
+        item = self.scheme_table.item(row, COL_MAJOR)
+        if row_type != TYPE_SUBCLASS:
+            self.scheme_table.removeCellWidget(row, COL_MAJOR)
+            return
+        combo = MultiMajorCombo(majors_source=self._scheme_major_names,
+                                checked=split_majors(item.text()))
+        combo.majorsChanged.connect(item.setText)
+        self.scheme_table.setCellWidget(row, COL_MAJOR, combo)
+
+    def _scheme_major_names(self):
+        names = []
+        for row_dict in self._scheme_table_to_rows():
+            if row_dict['type'] == 'major' and row_dict['major'] and row_dict['major'] not in names:
+                names.append(row_dict['major'])
+        return names
+
+    def _on_row_type_changed(self, text):
+        # Rows shift when one is removed, so find the sender's row rather than
+        # trusting the "row" property it was created with.
+        sender = self.sender()
+        for row in range(self.scheme_table.rowCount()):
+            if self.scheme_table.cellWidget(row, COL_TYPE) is sender:
+                self._set_major_cell_editor(row, text)
+                break
         self.update_classifications_preview()
 
     def remove_selected_scheme_row(self):
@@ -1771,7 +1887,8 @@ def _build_arg_parser():
     g.add_argument("--rgb-composites", metavar="R,G,B;R,G,B",
                    help="Semicolon-separated R,G,B band-name triples.")
     g.add_argument("--classifications", metavar="SPEC",
-                   help='1-by-1 scheme string (e.g. "A=1;B=2;C=3;X=4;I=5"); '
+                   help='1-by-1 scheme string (e.g. "A=1;B=2;C=3;X=4;I=5;A,B:Merger=m" -- '
+                        "a subclass shared by several majors lists them comma-separated); "
                         "overrides the scheme rows from the config.")
     g.add_argument("--ncols", type=int, help="Mosaic columns per page.")
     g.add_argument("--nrows", type=int, help="Mosaic rows per page.")

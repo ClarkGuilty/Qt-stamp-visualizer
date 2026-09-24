@@ -92,8 +92,10 @@ parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=
 parser.add_argument('--classifications',
                     help='Classification buttons: semicolon-separated MAJOR=KEY or MAJOR:SUB=KEY entries. '
                     'A bare MAJOR=KEY (or empty SUB) makes a major-class button; MAJOR:SUB=KEY makes a '
-                    'subclass button under that major, setting both fields when clicked. '
-                    'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;X:Spiral=s"',
+                    'subclass button under that major, setting both fields when clicked. A subclass '
+                    'shared by several majors lists them comma-separated, MAJOR1,MAJOR2:SUB=KEY: '
+                    'clicking it highlights those majors, and the major clicked next sets both fields. '
+                    'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"',
                     default="A=1;B=2;C=3;X=4;I=5")
 parser.add_argument('--rgb-composites',
                     help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
@@ -152,8 +154,9 @@ if not args.mef:
         sys.exit(1)
 
 args.major_classes = []  # list of (major, key) tuples, in declared order
-args.subclasses = []  # list of (major, sub, key) tuples, in declared order
+args.subclasses = []  # list of (majors, sub, key) tuples, in declared order; majors is a tuple
 seen_keys = {}  # key -> list of labels, for the duplicate-key warning
+seen_subs = {}  # sub -> number of entries declaring it, for the duplicate-subclass warning
 for entry in args.classifications.split(';'):
     entry = entry.strip()
     if not entry:
@@ -165,12 +168,20 @@ for entry in args.classifications.split(';'):
     label = f"{major}:{sub}" if sub else major
     seen_keys.setdefault(key, []).append(label)
     if sub:
-        args.subclasses.append((major, sub, key))
+        majors = tuple(m.strip() for m in major.split(',') if m.strip()) or ('',)
+        args.subclasses.append((majors, sub, key))
+        seen_subs[sub] = seen_subs.get(sub, 0) + 1
     else:
         args.major_classes.append((major, key))
 for key, labels in seen_keys.items():
     if len(labels) > 1:
         print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
+for sub, count in seen_subs.items():
+    if count > 1:
+        # One button per subclass name is what lights up on a resumed row -- the
+        # CSV stores only the name -- so a second entry would take its place.
+        print(f"Warning: subclass '{sub}' is declared {count} times -- declare it once "
+              f"with its majors comma-separated (e.g. \"A,B:{sub}=KEY\") instead.")
 
 
 # Downloaded cutouts live with the workspace (2b-v), under the state dir's
@@ -373,6 +384,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.singlefetchthread_active = False
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
+        self.buttonoptioncolor = "darkOrange"  # majors offered by a pending shared subclass
         self.scale2funct = {'identity':identity,
                             'sqrt':np.sqrt,
                             'log':log,
@@ -680,7 +692,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.original_button_style = None
         for major, key in args.major_classes:
             button = QtWidgets.QPushButton(major)
-            button.clicked.connect(partial(self.classify, major, major))
+            button.clicked.connect(partial(self.classify_major, major))
             list_classifications.append(button)
             self.dict_class2button[major] = button
             if self.original_button_style is None:
@@ -688,9 +700,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         list_subclassifications = []
         self.dict_subclass2button = {'None': None}
-        for major, sub, key in args.subclasses:
+        for majors, sub, key in args.subclasses:
             button = QtWidgets.QPushButton(sub)
-            button.clicked.connect(partial(self.classify, major, sub))
+            button.clicked.connect(partial(self.classify_subclass, majors, sub))
             list_subclassifications.append(button)
             self.dict_subclass2button[sub] = button
             if self.original_button_style is None:
@@ -717,6 +729,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.bactivatedclassification = None
         self.bactivatedsubclassification = None
+        self.pending_subclass = None  # (majors, sub) of a shared subclass awaiting its major
 
         self._report_unknown_classifications()
 
@@ -734,12 +747,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.classification_shortcuts = []
         for major, key in args.major_classes:
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(partial(self.keyClassify, major, major))
+            shortcut.activated.connect(partial(self.keyClassify, major))
             self.classification_shortcuts.append(shortcut)
 
-        for major, sub, key in args.subclasses:
+        for majors, sub, key in args.subclasses:
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(partial(self.keyClassify, major, sub))
+            shortcut.activated.connect(partial(self.keyClassifySubclass, majors, sub))
             self.classification_shortcuts.append(shortcut)
 
 
@@ -912,9 +925,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.counter_widget.setText("{}/{}".format(self.counter+1,self.COUNTER_MAX))
 
     @Slot()
-    def keyClassify(self, grade, subgrade):
+    def keyClassify(self, major):
         if self.config_dict['keyboardshortcuts'] == True:
-            self.classify(grade, subgrade)
+            self.classify_major(major)
+
+    @Slot()
+    def keyClassifySubclass(self, majors, subgrade):
+        if self.config_dict['keyboardshortcuts'] == True:
+            self.classify_subclass(majors, subgrade)
         
     @Slot()
     def keyNext(self):
@@ -949,6 +967,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # returns a df whose file_name column matches listimage exactly, and the
         # position is now resolved by filename against that same list, so the
         # two cannot drift apart any more.
+        self._clear_pending_subclass()
         cnt = self.counter
         self.df.at[cnt,'classification'] = grade
         self.df.at[cnt,'subclassification'] = subgrade
@@ -965,9 +984,51 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         self.update_classification_buttoms()
         self.update_subclassification_buttoms()
-        
+
         if self.config_dict['autonext']:
             self.next()
+
+    @Slot()
+    def classify_major(self, major):
+        """Major button: that is the class -- unless a shared subclass is waiting
+        for one of its majors, in which case this one completes it."""
+        pending = self.pending_subclass
+        if pending is not None and major in pending[0]:
+            self.classify(major, pending[1])
+        else:
+            self.classify(major, major)
+
+    @Slot()
+    def classify_subclass(self, majors, subgrade):
+        """Subclass button. With one major it sets both fields at once. Shared by
+        several, nothing is written yet: its majors are highlighted and the next
+        major clicked (classify_major) supplies the class."""
+        if len(majors) == 1:
+            self.classify(majors[0], subgrade)
+            return
+        self._clear_pending_subclass()
+        self.pending_subclass = (majors, subgrade)
+        option_style = "background-color : {};color : white;".format(self.buttonoptioncolor)
+        for button in [self.dict_subclass2button.get(subgrade)] + \
+                [self.dict_class2button.get(m) for m in majors]:
+            if button is not None:
+                button.setStyleSheet(option_style)
+        self.status.showMessage(f"'{subgrade}': pick its class -- {' or '.join(majors)}.")
+
+    def _clear_pending_subclass(self):
+        "Drops a shared subclass still waiting for its major, and its highlights."
+        if self.pending_subclass is None:
+            return
+        majors, subgrade = self.pending_subclass
+        self.pending_subclass = None
+        for button in [self.dict_subclass2button.get(subgrade)] + \
+                [self.dict_class2button.get(m) for m in majors]:
+            if button is not None:
+                button.setStyleSheet(self.original_button_style)
+        self.status.clearMessage()
+        # The highlights above may have covered the row's own classification.
+        self.update_classification_buttoms()
+        self.update_subclassification_buttoms()
         
 
     def legacy_survey_cache_lookup(self,ra,dec,residual=False,size=47):
@@ -1578,6 +1639,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         return df
 
     def go_to_counter_page(self):
+        self._clear_pending_subclass()
         self.filename = self.listimage[self.counter]
         self.bottom_row_bands_already_plotted = False
         self.plot()

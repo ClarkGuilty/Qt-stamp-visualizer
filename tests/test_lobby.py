@@ -175,6 +175,32 @@ def test_classifications_string_from_rows_skips_rows_missing_major_or_key():
     assert classifications_string == 'B=2'
 
 
+def test_classifications_string_from_rows_shared_subclass():
+    rows = [
+        {'type': 'major', 'major': 'A', 'sub': '', 'key': '1', 'positive': False},
+        {'type': 'major', 'major': 'B', 'sub': '', 'key': '2', 'positive': False},
+        {'type': 'subclass', 'major': ' A , B ,', 'sub': 'Merger', 'key': 'm', 'positive': False},
+    ]
+    warnings = []
+    classifications_string, _ = lobby.classifications_string_from_rows(rows, log=warnings.append)
+    assert classifications_string == 'A=1;B=2;A,B:Merger=m'
+    assert warnings == []
+
+
+def test_classifications_string_from_rows_shared_subclass_warnings():
+    rows = [
+        {'type': 'major', 'major': 'A', 'sub': '', 'key': '1', 'positive': False},
+        {'type': 'subclass', 'major': 'A,Z', 'sub': 'Merger', 'key': 'm', 'positive': False},
+        {'type': 'subclass', 'major': 'A', 'sub': 'Merger', 'key': 'n', 'positive': False},
+    ]
+    warnings = []
+    lobby.classifications_string_from_rows(rows, log=warnings.append)
+    joined = ' '.join(warnings)
+    assert "unknown major 'Z'" in joined
+    assert "unknown major 'A'" not in joined
+    assert "'Merger' is in 2 rows" in joined
+
+
 if __name__ == '__main__':
     import inspect
     import tempfile
