@@ -84,6 +84,26 @@ def test_explicit_main_band_beats_session_record(tmpdir):
     assert c['main_band'] == 'H'
 
 
+def test_empty_main_band_on_cli_means_no_main_band(tmpdir):
+    config_path = os.path.join(tmpdir, 'config_lobby.json')
+    _write_config(config_path, main_band='VIS')
+    args = _parse(['--config', config_path, '--main-band', ''])
+    c = lobby.config_from_cli(args)
+    assert c['main_band'] == lobby.NO_MAIN_BAND
+
+
+# --- build_band_argv --------------------------------------------------------
+
+def test_build_band_argv_no_main_band_passes_empty_b():
+    argv = lobby.build_band_argv(lobby.NO_MAIN_BAND, ['I', 'J'], [])
+    assert argv == ['-b', '', '-B', 'I,J', '--rgb-composites', '']
+
+
+def test_build_band_argv_unset_main_band_is_omitted():
+    argv = lobby.build_band_argv('', ['I'], [])
+    assert '-b' not in argv
+
+
 def test_different_name_does_not_pick_up_other_sessions_record(tmpdir):
     config_path = os.path.join(tmpdir, 'config_lobby.json')
     _write_config(config_path, scheme_rows=FILE_SCHEME)

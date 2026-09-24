@@ -43,7 +43,9 @@ parser.add_argument('-p',"--path", help="Path to the images to inspect.",
 parser.add_argument('-N',"--name", help="Name of the classifying session.",
                     default=None)
 parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
-                    "tool's default band: the panel that's always individually shown and pre-selected.",
+                    "tool's default band: the panel that's always individually shown and pre-selected. "
+                    "Pass -b '' for no main band (PNG/JPG sets, which have no WCS): the first -B "
+                    "band then takes its place.",
                     default="VIS")
 parser.add_argument('-B',"--color_bands", help='Comma-separated bands to make individually selectable as '
                     'their own panel (in addition to the RGB composites). Example: "Y,J,H"',
@@ -105,6 +107,15 @@ STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
 # (which passes the missing-directory check below -- it resolves to --path itself
 # -- and then fails at image load).
 args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
+
+# -b '' means "no main band": PNG/JPG stamps carry no WCS, which is most of what a
+# main band is for. The first color band takes its other job -- the object list and
+# the default panel -- so the rest of the tool never sees an empty main band.
+args.main_band = (args.main_band or '').strip()
+if not args.main_band:
+    if not args.color_bands:
+        parser.error('-b "" (no main band) needs at least one -B color band to take its place.')
+    args.main_band = args.color_bands.pop(0)
 
 args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
 args.composite_band_members = {}  # key -> (r, g, b) tuple
@@ -543,6 +554,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         if args.page is not None:
             self.page = max(min(args.page - 1, self.PAGE_MAX - 1), 0)
 
+        # The panel order is saved per tool, not per dataset: one naming only bands this
+        # dataset lacks (VIS;H,Y,I in a PNG session) would hide every tile, so it counts as unset.
+        saved_panel_order = [b for b in self.config_dict['panel_order'].split(';') if b in self.bands_to_plot]
+        self.config_dict['panel_order'] = ';'.join(saved_panel_order)
         if not self.config_dict['panel_order']:
             # Default-checked panels match today's exact view (main band + composites) -- the
             # individual color bands are available in the picker (self.bands_to_plot) but start

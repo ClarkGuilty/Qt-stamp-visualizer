@@ -58,7 +58,9 @@ parser.add_argument('-p',"--path", help="path to the images to inspect",
 parser.add_argument('-N',"--name", help="name of the classifying session.",
                     default=None)
 parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
-                    "tool's default band: the panel that's always individually shown and pre-selected.",
+                    "tool's default band: the panel that's always individually shown and pre-selected. "
+                    "Pass -b '' for no main band (PNG/JPG sets, which have no WCS): the first -B "
+                    "band then takes its place.",
                     default="VIS")
 parser.add_argument('-B',"--color_bands", help='Comma-separated bands to show individually via "Show NISP '
                     'bands". Example: "Y,J,H"',
@@ -126,6 +128,15 @@ STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
 # (which passes the missing-directory check below -- it resolves to --path itself
 # -- and then fails at image load).
 args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
+
+# -b '' means "no main band": PNG/JPG stamps carry no WCS, which is most of what a
+# main band is for. The first color band takes its other job -- the object list and
+# the default panel -- so the rest of the tool never sees an empty main band.
+args.main_band = (args.main_band or '').strip()
+if not args.main_band:
+    if not args.color_bands:
+        parser.error('-b "" (no main band) needs at least one -B color band to take its place.')
+    args.main_band = args.color_bands.pop(0)
 
 args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
 args.composite_band_members = {}  # key -> (r, g, b) tuple
@@ -570,12 +581,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for band in self.panel_keys:
             self.canvas[band].setStyleSheet('background-color: black')
 
-        no_row_config_saved = not any(self.config_dict[row_key] for row_key in self.panel_row_layout)
-        default_row_panels = {'row_1': [self.main_band] + self.composite_bands[:1], 'row_2': [], 'row_3': []}
+        default_row_1 = [self.main_band] + self.composite_bands[:1]
+        row_panels_by_key = {row_key: [b for b in self.config_dict[row_key].split(';') if b in self.panel_keys]
+                             for row_key in self.panel_row_layout}
+        # The layout is saved per tool, not per dataset: one naming only bands this dataset
+        # lacks (VIS;H,Y,I in a PNG session), or only the survey panels, would open with no
+        # stamp in view. The default row is put back in front whenever no band is shown.
+        image_panels = {self.main_band, *self.composite_bands, *self.color_bands}
+        if not any(b in image_panels for row in row_panels_by_key.values() for b in row):
+            row_panels_by_key['row_1'] = default_row_1 + row_panels_by_key['row_1']
         visible_panels = set()
         for row_key, row_layout in self.panel_row_layout.items():
-            saved = self.config_dict[row_key]
-            row_panels = default_row_panels[row_key] if no_row_config_saved else [b for b in saved.split(';') if b in self.panel_keys]
+            row_panels = row_panels_by_key[row_key]
             for band in row_panels:
                 row_layout.addWidget(self.canvas[band],1)
             self.config_dict[row_key] = ';'.join(row_panels)
@@ -1095,6 +1112,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def set_legacy_survey(self):
         if self.filetype != 'FITS':
             self.status.showMessage("Legacy Survey requires FITS input (RA/Dec from WCS).",5000)
+            # Drawn anyway: an axes nothing was drawn on shows up as a white box.
+            self.plot_no_legacy_survey(title='Needs FITS input\n(RA/Dec from WCS)')
             return
         pixscale = str(LEGACY_SURVEY_PIXEL_SIZE)
         n_pixels_in_ls, pixels_big_fov_ls = legacy_survey_number_of_pixels(self.image_pixel_size, 
@@ -1190,6 +1209,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def set_panstarrs(self):
         if self.filetype != 'FITS':
             self.status.showMessage("PanSTARRS requires FITS input (RA/Dec from WCS).",5000)
+            # Drawn anyway: an axes nothing was drawn on shows up as a white box.
+            self.plot_no_panstarrs(title='Needs FITS input\n(RA/Dec from WCS)')
             return
         n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
                                     np.max(self.images[self.main_band].shape))
@@ -1535,9 +1556,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             image = np.asarray(Image.open(locator.filepath))
             self.images[band] = np.copy(image)
-            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
+            self._imshow_rendered(band, image)
         self.ax[band].set_axis_off() #Always before .draw()!
         self.canvas[band].draw()
+
+    def _imshow_rendered(self, band, image):
+        "PNG/JPG stamps are already rendered: shown as-is, and a greyscale one (2-D) in grey, not viridis."
+        cmap = 'gray' if image.ndim == 2 else None
+        self.ax[band].imshow(image, cmap=cmap, origin='upper') #For pngs this is best.
 
     def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
         # self.composite_bands only ever contains composites whose 3 members are all
@@ -1585,7 +1611,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            self.ax[band].imshow(image, origin='upper') #For pngs this is best.
+            self._imshow_rendered(band, image)
         self.ax[band].set_axis_off()
         self.canvas[band].draw()
 

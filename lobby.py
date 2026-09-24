@@ -132,6 +132,12 @@ DEFAULT_CONFIG = {
 }
 
 
+# Main-band entry meaning "no main band", sent to the viewers as -b ''. Offered only
+# when no band under the path is FITS: PNG/JPG stamps have no WCS for a main band to
+# supply, and the viewers hand its other job (listing the objects) to the first color band.
+NO_MAIN_BAND = '(none)'
+
+
 def load_config_dict(path=None, state_dir_override=None):
     """Config file contents layered on top of DEFAULT_CONFIG (missing keys filled
     from the defaults). Returns a fresh, fully-owned dict -- safe to mutate.
@@ -248,11 +254,13 @@ def build_band_argv(main_band, color_bands, composites, mef=False):
     bands), so falling back to the tool's Y,J,H / H,Y,I;H,J,Y defaults would
     launch a viewer that exits with "band directory not found" before its window
     opens. Only an unset main band is omitted -- there "unset" means no path has
-    been scanned yet, and -b '' would name a band directory that cannot exist.
+    been scanned yet. A deliberate NO_MAIN_BAND is the one case passed as -b ''.
     """
     argv = ['--mef'] if mef else []
     main_band = (main_band or '').strip()
-    if main_band:
+    if main_band == NO_MAIN_BAND:
+        argv += ["-b", ""]
+    elif main_band:
         argv += ["-b", main_band]
     color_bands = [b.strip() for b in color_bands if b.strip()]
     argv += ["-B", ",".join(color_bands)]
@@ -880,9 +888,14 @@ class LobbyWindow(QtWidgets.QMainWindow):
         current = self.main_band_combo.currentText().strip()
         if not self.available_bands or current in self.available_bands:
             return
+        if current == NO_MAIN_BAND and self._no_main_band_allowed():
+            return
         fallback = self.available_bands[0]
         self.main_band_combo.setCurrentText(fallback)
-        self.log(f"Main band '{current}' not found under the new path -- switched to '{fallback}'.")
+        if current == NO_MAIN_BAND:
+            self.log(f"Main band {NO_MAIN_BAND} is only for PNG/JPG-only datasets -- switched to '{fallback}'.")
+        else:
+            self.log(f"Main band '{current}' not found under the new path -- switched to '{fallback}'.")
 
     def _prune_missing_composite_bands(self):
         """Clears any composite-table cell referencing a band no longer found under the path --
@@ -922,6 +935,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         current_main = self.main_band_combo.currentText().strip()
         self.main_band_combo.blockSignals(True)
         self.main_band_combo.clear()
+        if self._no_main_band_allowed():
+            self.main_band_combo.addItem(NO_MAIN_BAND)
         self.main_band_combo.addItems(bands)
         self.main_band_combo.setCurrentText(current_main)
         self.main_band_combo.blockSignals(False)
@@ -941,6 +956,25 @@ class LobbyWindow(QtWidgets.QMainWindow):
                 combo.addItems(self.fits_bands)
                 combo.setCurrentText(current)
                 combo.blockSignals(False)
+
+    def _no_main_band_allowed(self):
+        "Only a PNG/JPG-only dataset may go without a main band -- see NO_MAIN_BAND."
+        return bool(self.available_bands) and not self.mef and not self.fits_bands
+
+    def _main_band_choice(self):
+        """The Main band field, a blank one read as NO_MAIN_BAND once a path has been
+        scanned: the viewer then shows the first ticked color band, rather than looking
+        for its VIS default and exiting before its window opens."""
+        main_band = self.main_band_combo.currentText().strip()
+        return main_band or (NO_MAIN_BAND if self.available_bands else '')
+
+    def _effective_main_band(self):
+        "The band the viewer will treat as main: with NO_MAIN_BAND, the first ticked color band."
+        main_band = self._main_band_choice()
+        if main_band == NO_MAIN_BAND:
+            color_bands = self._checked_color_bands()
+            return color_bands[0] if color_bands else ''
+        return main_band
 
     def _populate_color_bands_list(self, bands, checked):
         self.color_bands_list.clear()
@@ -984,7 +1018,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         return rows
 
     def _band_argv(self):
-        return build_band_argv(self.main_band_combo.currentText(),
+        return build_band_argv(self._main_band_choice(),
                                 self._checked_color_bands(),
                                 self._composite_rows(),
                                 mef=self.mef)
@@ -994,7 +1028,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             return
         referenced = set()
         main_band = self.main_band_combo.currentText().strip()
-        if main_band:
+        if main_band and main_band != NO_MAIN_BAND:
             referenced.add(main_band)
         referenced.update(self._checked_color_bands())
         for triple in self._composite_rows():
@@ -1148,7 +1182,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         viewer itself can only report that the label it found isn't in its
         scheme (see single_viewer.py's ApplicationWindow._button_for_grade).
         """
-        main_band = (self.main_band_combo.currentText() or '').strip()
+        main_band = self._effective_main_band()
         csv_path = predict_single_csv_path(path, name, seed, main_band, self.mef, classifications_dir)
         if csv_path:
             unknown_majors, unknown_subs = self._unknown_classification_labels(csv_path)
@@ -1287,6 +1321,10 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.log("Please select a data path first.")
             return
         path = os.path.abspath(os.path.expanduser(path))
+
+        if self._main_band_choice() == NO_MAIN_BAND and not self._checked_color_bands():
+            self.log("No main band: tick at least one color band to show.")
+            return
 
         self._save_session_record()
         self._log_band_warnings()
@@ -1523,7 +1561,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             return
         referenced = set()
         main_band = (preset.get('main_band') or '').strip()
-        if main_band:
+        if main_band and main_band != NO_MAIN_BAND:
             referenced.add(main_band)
         referenced.update(b.strip() for b in preset.get('color_bands', []) if b.strip())
         for triple in preset.get('rgb_composites', []):
@@ -1746,7 +1784,8 @@ def config_from_cli(args):
     if args.output is not None:
         c['output_path'] = args.output
     if args.main_band is not None:
-        c['main_band'] = args.main_band
+        # -b '' means no main band here too, as it does for the viewers.
+        c['main_band'] = args.main_band.strip() or NO_MAIN_BAND
     if args.color_bands is not None:
         c['color_bands'] = [b.strip() for b in args.color_bands.split(',') if b.strip()]
     if args.rgb_composites is not None:
@@ -1892,7 +1931,8 @@ def _build_arg_parser():
     g.add_argument("-s", "--seed", type=int, help="Shuffle seed.")
     g.add_argument("--no-seed", action="store_true",
                    help="Ignore any seed set in the config.")
-    g.add_argument("-b", "--main-band", help='Main / high-resolution band (e.g. "VIS").')
+    g.add_argument("-b", "--main-band", help='Main / high-resolution band (e.g. "VIS"). '
+                   "-b '' for none (PNG/JPG sets): the first -B band takes its place.")
     g.add_argument("-B", "--color-bands", metavar="A,B,C",
                    help="Comma-separated individually-selectable bands.")
     g.add_argument("--rgb-composites", metavar="R,G,B;R,G,B",

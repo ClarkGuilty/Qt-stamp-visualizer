@@ -123,7 +123,8 @@ my_stamps/
   composite's members) has a matching directory, and lists what's actually there if
   one is missing.
 * The **main band's** directory decides the object list: FITS if it has any, otherwise
-  PNG/JPG. Format is detected per band directory, so `source_001.fits` in one band and
+  PNG/JPG. A PNG/JPG-only dataset can go without one (`-b ''`, or `(none)` in the
+  lobby): the first `-B` band then lists the objects. Format is detected per band directory, so `source_001.fits` in one band and
   `source_001.png` in another is fine.
 * **RGB composites need all three member bands in FITS** — they're computed from pixel
   values, which a display-ready PNG no longer carries. A composite naming a non-FITS
@@ -274,7 +275,7 @@ python mosaic.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 | `-h`, `--help` | | Show the help message and exit. |
 | `-p`, `--path` | `Color_stamps_to_inspect` | Path to the images to inspect. |
 | `-N`, `--name` | none | Name of the classifying session. |
-| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. |
+| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. `-b ''` for none (PNG/JPG data): the first `-B` band takes its place. |
 | `-B`, `--color_bands` | `Y,J,H` | Comma-separated bands made individually selectable as their own panel, in addition to the RGB composites. |
 | `--rgb-composites` | `H,Y,I;H,J,Y` | Semicolon-separated `R,G,B` band-name triples. A composite's label is its comma-joined band list. |
 | `-l`, `--ncols`, `--gridsize` | `5` | Columns per page. Find the right value **before** starting a classification. |
@@ -331,7 +332,7 @@ python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 | `-h`, `--help` | | Show the help message and exit. |
 | `-p`, `--path` | `Color_stamps_to_inspect` | Path to the images to inspect. |
 | `-N`, `--name` | none | Name of the classifying session. |
-| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. |
+| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. `-b ''` for none (PNG/JPG data): the first `-B` band takes its place. |
 | `-B`, `--color_bands` | `Y,J,H` | Comma-separated bands to make individually selectable in the **Panels** dropdown. |
 | `--rgb-composites` | `H,Y,I;H,J,Y` | Semicolon-separated `R,G,B` band-name triples. A composite's label is its comma-joined band list. |
 | `--classifications` | `A=1;B=2;C=3;X=4;I=5` | Classification buttons — see below. |

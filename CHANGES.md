@@ -178,6 +178,22 @@ identity behind on every save.
   — is disabled up front for non-FITS input, rather than failing at the moment
   you use it. Scale/colormap controls likewise switch off in the mosaic when no
   FITS band is loaded.
+* A Legacy Survey or PanSTARRS panel shown in a PNG/JPG session now says it needs
+  FITS input, on black. It used to be a blank white box: the panel layout is saved
+  across sessions, so one placed in a FITS session came back here with nothing drawn
+  on it.
+* Greyscale PNG/JPG stamps show in grey in the 1-by-1 tool; they came out in viridis.
+* **No main band** for PNG/JPG-only data. Most of a main band's job is WCS, which
+  PNG/JPG stamps don't have. Both viewers take `-b ''`, and the first `-B` band takes
+  over the rest: it lists the objects and is the default panel. The lobby's Main band
+  list offers `(none)` only when no band under the path is FITS. It switches back to
+  a real band if you rescan onto FITS data, and won't launch `(none)` with no colour
+  band ticked. `-b ''` on the headless lobby means the same, and so does a Main band
+  field left blank.
+* Neither viewer opens with nothing in view any more. Panel layouts are saved per tool,
+  so one saved on another dataset (`VIS;H,Y,I` opened on PNG bands) used to hide every
+  panel. If none of the saved panels shows a band, the default is put back: the main
+  band (or the first ticked band) first.
 
 ## Configurable classes/subclasses (1-by-1 tool)
 * Classification buttons are no longer hardcoded to A/B/C/X/Interesting. The new
