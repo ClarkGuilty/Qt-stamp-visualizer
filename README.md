@@ -1,4 +1,14 @@
 # Qt-stamp-visualizer
+
+> [!NOTE]
+> **This is the legacy ("classic") version of the tool.**
+> It preserves the state of the project before the diverging per-survey versions
+> (`ERO_edition_2026`, `DESI_spectra_edition`, `Euclid_jpg_edition_for_lensed_QSO_dev`)
+> were rejoined into a single final version, which then gained a lobby (launcher) program.
+> That unified version lives on the
+> [`main`](https://github.com/ClarkGuilty/Qt-stamp-visualizer/tree/main)
+> branch. This branch is kept for reference and is not actively developed.
+
 Qt tool for the visual inspection and classification of astronomical stamps.
 This is a fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool) using the Qt framework.
 
