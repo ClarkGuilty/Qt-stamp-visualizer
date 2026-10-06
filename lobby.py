@@ -49,6 +49,15 @@ SESSION_TOOL = 'lobby'
 SESSION_CONFIG_KEYS = ('scheme_rows', 'main_band', 'color_bands', 'rgb_composites',
                        'mosaic_ncols', 'mosaic_nrows')
 
+# Keys a preset never saves or applies (BUGS.md item 16). A preset is the
+# scheme, band setup, mosaic layout and run options -- portable between
+# datasets. Where data is read from and written to, and which session this is,
+# stay local: a preset that moved the data path left the band checklist and the
+# session identity describing the old dataset. `dock_state` is window layout.
+PRESET_LOCAL_KEYS = frozenset({'data_path', 'output_path', 'classifications_path',
+                               'session_name', 'seed_enabled', 'seed_value', 'dock_state'})
+PRESET_BAND_KEYS = ('main_band', 'color_bands', 'rgb_composites')
+
 
 def lobby_state(state_dir_override=None):
     """Resolve where the lobby's own config and presets live, and migrate once.
@@ -136,6 +145,21 @@ DEFAULT_CONFIG = {
 # when no band under the path is FITS: PNG/JPG stamps have no WCS for a main band to
 # supply, and the viewers hand its other job (listing the objects) to the first color band.
 NO_MAIN_BAND = '(none)'
+
+
+def band_setup_mismatch(config, available_bands):
+    """`(missing, unused)`: bands `config` names -- main band, colour bands,
+    composite members -- that are not in `available_bands`, and available bands
+    it names nowhere. Both sorted."""
+    named = set()
+    main_band = (config.get('main_band') or '').strip()
+    if main_band and main_band != NO_MAIN_BAND:
+        named.add(main_band)
+    named.update(b.strip() for b in config.get('color_bands', []) if b and b.strip())
+    for triple in config.get('rgb_composites', []):
+        named.update(b.strip() for b in triple if b and b.strip())
+    available = set(available_bands)
+    return sorted(named - available), sorted(available - named)
 
 
 def load_config_dict(path=None, state_dir_override=None):
@@ -636,7 +660,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         action_bar.addWidget(self.stage_status_label, stretch=1)
         self.preset_bar = PredefinedConfigBar(
             self.preset_dirs, self.preset_write_dir,
-            self._preset_snapshot, self._apply_preset)
+            self._preset_snapshot, self._apply_preset,
+            restore_config=lambda c: self._apply_preset(c, warn=False))
         action_bar.addWidget(self.preset_bar)
         toolbar.addWidget(action_bar_widget)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
@@ -895,7 +920,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if current == NO_MAIN_BAND:
             self.log(f"Main band {NO_MAIN_BAND} is only for PNG/JPG-only datasets -- switched to '{fallback}'.")
         else:
-            self.log(f"Main band '{current}' not found under the new path -- switched to '{fallback}'.")
+            self.log(f"Main band '{current}' not found under the data path -- switched to '{fallback}'.")
 
     def _prune_missing_composite_bands(self):
         """Clears any composite-table cell referencing a band no longer found under the path --
@@ -912,7 +937,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
                     pruned.add(value)
                     combo.setCurrentText('')
         if pruned:
-            self.log(f"Composite band(s) not found under the new path -- cleared: {', '.join(sorted(pruned))}")
+            self.log(f"Composite band(s) not found under the data path -- cleared: {', '.join(sorted(pruned))}")
 
     def _update_composites_availability(self):
         "RGB composites need >=3 FITS bands -- PNG/JPG bands can never be composite members."
@@ -1205,7 +1230,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         rows = self._scheme_table_to_rows()
         known_majors = {r['major'] for r in rows if r['type'] == 'major'}
-        known_subs = {r['sub'] for r in rows if r['type'] == 'subclass'}
+        # A major button writes its own name into subclassification too.
+        known_subs = {r['sub'] for r in rows if r['type'] == 'subclass'} | known_majors
         sentinels = {'Empty', 'None', ''}
 
         def unknown_values(column, known):
@@ -1537,39 +1563,59 @@ class LobbyWindow(QtWidgets.QMainWindow):
         c['dock_state'] = bytes(self.saveState().toBase64()).decode('ascii')
 
     def _preset_snapshot(self):
-        "Current widget state as a plain dict, suitable for saving/comparing as a preset."
+        "Current widget state minus PRESET_LOCAL_KEYS, suitable for saving/comparing as a preset."
         self._sync_widgets_to_config()
-        return {k: v for k, v in self.config_dict.items() if k != 'dock_state'}
+        return {k: v for k, v in self.config_dict.items() if k not in PRESET_LOCAL_KEYS}
 
-    def _apply_preset(self, preset):
-        "Applies a preset (or a snapshot from _preset_snapshot) on top of the current config."
+    def _apply_preset(self, preset, warn=True):
+        """Applies a preset (or a snapshot from _preset_snapshot) on top of the current config.
+
+        PRESET_LOCAL_KEYS are ignored even when an older saved preset carries
+        them, so the data path and session identity never move and nothing
+        here needs `_on_identity_changed`'s save-then-rescan-then-restore.
+        The current path is always rescanned and only the bands found there
+        are shown; with `warn`, a mismatch between the preset's band setup and
+        those bands is raised as an alert. "Restore previous" passes
+        warn=False -- it puts back what the user already had.
+        """
+        self._sync_widgets_to_config()  # the local keys below are kept from the widgets
+        ignored = sorted(k for k in PRESET_LOCAL_KEYS - {'dock_state'} if k in preset)
         merged = dict(self.defaults)
         merged.update(self.config_dict)
-        merged.update({k: v for k, v in preset.items() if k != 'dock_state'})
+        merged.update({k: v for k, v in preset.items() if k not in PRESET_LOCAL_KEYS})
         self.config_dict = merged
         self._apply_config_to_widgets()
         self.on_mode_changed()
+        # Emptied so the rescan ticks the preset's colour bands against the
+        # fresh scan (`_refresh_band_widgets`' fallback branch), rather than
+        # reading back ticks that were placed against the previous one.
+        self.color_bands_list.clear()
         self._rescan_bands()
-        self._log_missing_preset_bands(preset)
+        if ignored:
+            self.log(f"Preset keys ignored -- a preset never changes paths or the session: "
+                     f"{', '.join(ignored)}")
+        if warn and any(k in preset for k in PRESET_BAND_KEYS):
+            self._warn_preset_band_mismatch(merged)
 
-    def _log_missing_preset_bands(self, preset):
-        """Warns about bands a preset asks for that aren't subdirectories of the current data
-        path. The preset still loads in full -- rescanning has already dropped those bands from
-        the color-bands checklist (and the composite/main-band combos won't offer them either)
-        since only real subdirectories are listed there, so this is purely a heads-up."""
+    def _warn_preset_band_mismatch(self, config):
+        """Alerts when the preset's band setup and the bands under the current path
+        differ. By now the rescan shows only the bands that exist, so the missing
+        ones are already gone from every band widget; this says which, and which
+        existing bands the preset leaves unused."""
         if not self.available_bands:
             return
-        referenced = set()
-        main_band = (preset.get('main_band') or '').strip()
-        if main_band and main_band != NO_MAIN_BAND:
-            referenced.add(main_band)
-        referenced.update(b.strip() for b in preset.get('color_bands', []) if b.strip())
-        for triple in preset.get('rgb_composites', []):
-            referenced.update(b.strip() for b in triple if b and b.strip())
-        missing = sorted(b for b in referenced if b not in self.available_bands)
+        missing, unused = band_setup_mismatch(config, self.available_bands)
+        lines = []
         if missing:
-            self.log(f"Preset references band(s) not found under the current data path -- "
-                      f"not offered in the band configuration: {', '.join(missing)}")
+            lines.append(f"Not found under the data path, so not shown: {', '.join(missing)}")
+        if unused:
+            lines.append(f"Found under the data path but not used by the preset: {', '.join(unused)}")
+        if not lines:
+            return
+        for line in lines:
+            self.log(f"Preset bands -- {line}")
+        QtWidgets.QMessageBox.warning(self, "Preset bands don't match this dataset",
+                                      "\n\n".join(lines))
 
     def save_dict(self):
         """Persist the lobby's config to the state dir. True if it was written.

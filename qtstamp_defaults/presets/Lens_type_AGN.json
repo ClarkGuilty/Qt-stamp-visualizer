@@ -1,0 +1,13 @@
+{
+    "scheme_rows": [
+        {"type": "major", "major": "A", "sub": "", "key": "1", "positive": true},
+        {"type": "major", "major": "B", "sub": "", "key": "2", "positive": true},
+        {"type": "major", "major": "C", "sub": "", "key": "3", "positive": false},
+        {"type": "major", "major": "Not a lens", "sub": "", "key": "4", "positive": false},
+        {"type": "major", "major": "Lens, but wrong AGN", "sub": "", "key": "5", "positive": false},
+        {"type": "subclass", "major": "A,B,C", "sub": "Lensing AGN", "key": "q", "positive": false},
+        {"type": "subclass", "major": "A,B,C", "sub": "Lensed type 1", "key": "w", "positive": false},
+        {"type": "subclass", "major": "A,B", "sub": "Lensed type 2", "key": "e", "positive": false},
+        {"type": "subclass", "major": "A,B", "sub": "Group/cluster", "key": "r", "positive": false}
+    ]
+}

@@ -207,9 +207,15 @@ match what they wrote into the CSV.
 
 Saving always writes to `.qtstamp/presets/`, so saving under a shipped preset's name
 shadows it locally rather than overwriting it. Picking one from the dropdown applies
-it immediately, and **Restore previous** undoes the swap. If a preset references bands
-that don't exist under your current data path, it still loads and the Log says which
-bands went missing.
+it immediately, and **Restore previous** undoes the swap.
+
+A preset holds the classification scheme, the band setup, the mosaic layout and the
+run options. It never holds the data path, the output or classifications paths, the
+session name or the seed, so loading one never changes which dataset or session you
+are on. An older preset that still has those keys loads, and the Log lists them as
+ignored. Loading a preset always rescans the current data path and shows only the
+bands found there. If the preset uses bands that aren't there, or there are bands the
+preset doesn't use, a warning lists both.
 
 ### Headless
 

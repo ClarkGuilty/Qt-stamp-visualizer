@@ -8,11 +8,9 @@ import numpy as np
 
 import pandas as pd
 
-from PIL import Image
-
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Slot, Signal
-from PySide6.QtGui import QPixmap, QPainter, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QFontMetrics, QKeySequence, QShortcut
 
 import os
 from os.path import join
@@ -24,7 +22,7 @@ import fits_io
 from imaging import (
     identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
     contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
-    natural_sort,
+    natural_sort, open_rendered_image, corner_box_size, background_rms_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
 )
@@ -32,7 +30,7 @@ import paths
 from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 import state
 from widgets import (
-    AlignDelegate, ClickableComboBox, LabelledIntField, NamedLabel,
+    AlignDelegate, ClickableComboBox, LabelledIntField, MissingBandsNote, NamedLabel,
     PanelOrderPicker,
 )
 
@@ -94,9 +92,9 @@ parser.add_argument("--classifications-dir", metavar="PATH",
 parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
                     "files -- one file per object, with bands as HDU extensions "
                     "(identified by EXTNAME) inside it, instead of one subdirectory per "
-                    "band. Every object's file must share the same extension layout; "
-                    "band names passed to -b/-B/--rgb-composites must match an EXTNAME "
-                    "found in the first file under --path.",
+                    "band. Bands are looked up by EXTNAME in each object's own file, so "
+                    "files may differ; a band a file lacks shows as a placeholder. Names "
+                    "passed to -b/-B/--rgb-composites must match an EXTNAME some file has.",
                     action="store_true", default=False)
 add_state_dir_args(parser)
 
@@ -184,6 +182,24 @@ def _letter_pixmap(letter, size=128):
     font.setPixelSize(int(size * 0.7))
     painter.setFont(font)
     painter.drawText(pixmap.rect(), Qt.AlignCenter, letter)
+    painter.end()
+    return pixmap
+
+
+def _missing_band_pixmap(bands, size=128):
+    "Dark grey tile naming the band(s) an object has no data for (BUGS 36)."
+    pixmap = _solid_pixmap(QColor(48, 48, 48), size)
+    painter = QPainter(pixmap)
+    painter.setPen(Qt.lightGray)
+    font = painter.font()
+    pixel_size = int(size * 0.2)
+    font.setPixelSize(pixel_size)
+    widest = max(bands, key=len)
+    while pixel_size > 6 and QFontMetrics(font).horizontalAdvance(widest) > size * 0.9:
+        pixel_size -= 1
+        font.setPixelSize(pixel_size)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, '\n'.join(['no', *bands]))
     painter.end()
     return pixmap
 
@@ -411,13 +427,17 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
             self.all_single_bands = ({self.main_band} | set(self.color_bands) |
                                     {b for members in args.composite_band_members.values() for b in members})
-            sample_file = join(self.stampspath, self.listimage[0])
-            mef_bands = fits_io.discover_mef_bands(sample_file)
+            # Only a band no file has stops the run; one some files lack is a placeholder there.
+            mef_bands, seen = fits_io.locate_mef_bands(self.stampspath, self.listimage,
+                                                       self.all_single_bands)
             missing = sorted(b for b in self.all_single_bands if b not in mef_bands)
             if missing:
-                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {sample_file}: "
-                      f"{', '.join(missing)}")
-                print(f"Available extensions: {', '.join(sorted(mef_bands)) if mef_bands else '(none found)'}")
+                searched = min(len(self.listimage), fits_io.MEF_BAND_SEARCH_FILES)
+                where = (f"any of the {searched}" if searched == len(self.listimage)
+                         else f"the first {searched} of the {len(self.listimage)}")
+                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {where} files "
+                      f"in {self.stampspath}: {', '.join(missing)}")
+                print(f"Available extensions: {', '.join(seen) if seen else '(none found)'}")
                 sys.exit(1)
             self.band_filetype = {b: 'FITS' for b in self.all_single_bands}
             self.band_sources = {b: fits_io.ExtensionBandSource(self.stampspath, mef_bands[b])
@@ -576,6 +596,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bcounter.setStyleSheet('background-color: black; color: gray')
         self.bcounter.lineEdit.returnPressed.connect(self.goto)
         self.bcounter.setInputText(self.page)
+
+        # Names this page's objects that lack a band, where the page messages go.
+        self.missing_bands_note = MissingBandsNote()
+        self.status.addWidget(self.missing_bands_note)
 
         self.buttons = []
         self.clean_dir(self.scratchpath)
@@ -953,40 +977,74 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
     def prepare_pngs(self, number, single_band_only = False):
             "Generates the png files from the fits."
             start = self.page*self.gridarea
-            for i in np.arange(start, start + number + 0): 
+            missing_by_object = {}
+            for i in np.arange(start, start + number + 0):
                 if i < len(self.listimage):
-                    self.prepare_png(i, single_band_only)
+                    missing = self.prepare_png(i, single_band_only)
+                    if missing:
+                        missing_by_object[os.path.splitext(self.listimage[i])[0]] = missing
                 else:
                     image = np.zeros((66, 66))
                     plt.imsave(self.filepath(i, self.page),
                         image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
+            self.show_missing_bands(missing_by_object)
+
+    def show_missing_bands(self, missing_by_object):
+        "{stem: {band: MissingBandError}} for this page, into the status-bar note (empty if none)."
+        text = '; '.join(f"{stem}: {fits_io.missing_bands_note(missing)}"
+                         for stem, missing in missing_by_object.items())
+        self.missing_bands_note.set_note(text)
 
     def _band_filepath(self, i, band):
         "Resolves band's source location (file + HDU) for object i -- directory-per-band or MEF extension."
         stem = os.path.splitext(self.listimage[i])[0]
         locator = fits_io.resolve(self.band_sources[band], stem)
         if locator is None:
-            raise FileNotFoundError(f"No file found for '{stem}' in band '{band}'.")
+            raise fits_io.MissingBandError(band)
         return locator
 
+    def _save_missing_band_png(self, bands, path):
+        "Placeholder tile for a panel with no data (BUGS 36), where its PNG would have gone."
+        _missing_band_pixmap(bands).save(path, 'PNG')
+
     def prepare_png(self, i, single_band_only):
+        """Renders object i's panels. Returns {band: MissingBandError} for every band it
+        has no data for -- those panels, and any composite needing one, get a placeholder."""
         # self.composite_bands only ever contains composites whose 3 members are all FITS
         # bands (filtered at startup), so no per-composite format branching is needed below.
         fits_bands = [band for band in self.all_single_bands if self.band_filetype.get(band) == 'FITS']
-        band_images = {band: fits_io.read_pixels(self._band_filepath(i, band)) for band in fits_bands}
+        band_images, headers, missing = {}, {}, {}
+        for band in fits_bands:
+            try:
+                locator = self._band_filepath(i, band)
+                band_images[band], headers[band] = fits_io.read_pixels_and_header(locator)
+            except fits_io.MissingBandError as e:
+                missing[band] = e
 
         for band in [self.main_band, *self.color_bands]:
-            if self.band_filetype.get(band) == 'FITS':
-                image = self.prepare_single_band(band_images[band])
-                plt.imsave(self.filepath(i, self.page, band=band),
-                        image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
+            out = self.filepath(i, self.page, band=band)
+            if band in missing:
+                self._save_missing_band_png([band], out)
+            elif self.band_filetype.get(band) == 'FITS':
+                pixel_scale = fits_io.pixel_scale_arcsec(headers[band])
+                image = self.prepare_single_band(band_images[band], pixel_scale)
+                plt.imsave(out, image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
             else:
-                src = self._band_filepath(i, band).filepath
-                Image.open(src).save(self.filepath(i, self.page, band=band))
+                try:
+                    src = self._band_filepath(i, band).filepath
+                except fits_io.MissingBandError as e:
+                    missing[band] = e
+                    self._save_missing_band_png([band], out)
+                    continue
+                open_rendered_image(src).save(out)
 
         if not single_band_only:
             for composite_band in self.composite_bands:
                 bands = self.composite_band_members[composite_band]
+                absent = [band for band in bands if band in missing]
+                if absent:
+                    self._save_missing_band_png(absent, self.filepath(i, self.page, band=composite_band))
+                    continue
                 try:
                     stacked = np.stack([band_images[band] for band in bands],axis=-1)
                 except ValueError:
@@ -997,9 +1055,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 composite_image = self.prepare_composite_band(stacked)
                 plt.imsave(self.filepath(i, self.page, band=composite_band),
                     composite_image, origin="lower")
+        return missing
 
-    def prepare_single_band(self, image):
-        scale_min, scale_max = self.scale_val(image)
+    def prepare_single_band(self, image, pixel_scale_arcsec=None):
+        scale_min, scale_max = self.scale_val(image, pixel_scale_arcsec)
         image = self.rescale_image(image, scale_min, scale_max)
         image[np.isnan(image)] = np.nanmin(image)
         return image
@@ -1060,14 +1119,13 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0)
         return image
 
-    def scale_val(self, image_array):
+    def scale_val(self, image_array, pixel_scale_arcsec=None):
         if image_array.shape[0] > 173:
-            box_size_vmin = np.round(np.sqrt(np.prod(image_array.shape) * 0.001)).astype(int)
             box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
         else:
-            box_size_vmin = 5
             box_size_vmax = 14
-        vmin = np.nanmin(self.background_rms_image(box_size_vmin, image_array))
+        box_size_vmin = corner_box_size(image_array.shape, pixel_scale_arcsec)
+        vmin = np.nanmin(background_rms_image(box_size_vmin, image_array))
         if vmin == 0:
             vmin += 1e-3              
         
@@ -1078,25 +1136,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         ymax = int((yl) / 2. + (box_size_vmax / 2.))
         vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
         return vmin*1.0, vmax*1.3 #vmin is 1 sigma.
-
-    def background_rms_image(self, cb, image):
-        xg, yg = np.shape(image)
-        cb=10
-        cut0 = image[0:cb, 0:cb]
-        cut1 = image[xg - cb:xg, 0:cb]
-        cut2 = image[0:cb, yg - cb:yg]
-        cut3 = image[xg - cb:xg, yg - cb:yg]
-        l = [cut0, cut1, cut2, cut3]
-        while len(l) > 1:
-            m = np.nanmean(np.nanmean(l, axis=1), axis=1)
-            if max(m) > 5 * min(m):
-                s = np.sort(l, axis=0)
-                l = s[:-1]
-            else:
-                std = np.nanstd(l)
-                return std
-        std = np.nanstd(l)
-        return std
 
 
 def main():

@@ -231,6 +231,19 @@ def test_classifications_string_from_rows_shared_subclass_warnings():
     assert "'Merger' is in 2 rows" in joined
 
 
+# --- band_setup_mismatch (BUGS.md item 16) ----------------------------------
+
+def test_band_setup_mismatch_counts_main_colour_and_composite_bands():
+    config = {'main_band': 'VIS', 'color_bands': ['Y', ' J '],
+              'rgb_composites': [['H', 'Y', '']]}
+    assert lobby.band_setup_mismatch(config, ['I', 'J', 'Y']) == (['H', 'VIS'], ['I'])
+
+
+def test_band_setup_mismatch_no_main_band_is_not_a_band():
+    config = {'main_band': lobby.NO_MAIN_BAND, 'color_bands': ['J'], 'rgb_composites': []}
+    assert lobby.band_setup_mismatch(config, ['J']) == ([], [])
+
+
 if __name__ == '__main__':
     import inspect
     import tempfile

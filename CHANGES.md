@@ -8,6 +8,74 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## Fixed: `--mef` showed the wrong band when one file's extensions differed
+
+With `--mef`, each band was read from the same extension *position* in every file,
+taken from the first file. A file that lacks a band, or stores its bands in another
+order, shifted everything after it. One of the shipped test files has no `NIR_J_*`,
+so its "J" panel quietly showed H, and asking for H crashed both viewers. Bands are
+now looked up by name (`EXTNAME`) in each object's own file.
+
+When an object has no data for a band (its file lacks the extension, or, with one
+directory per band, there is no file for it), both viewers now show:
+
+* a dark grey **placeholder panel** reading "no NIR_J_BGSUB", also used for any RGB
+  composite that needs that band;
+* a **note at the bottom of the window**, where the page messages appear, naming the
+  object, the band(s) it lacks and the bands its file does have. Page messages cover
+  it briefly, and it comes back.
+
+A run now starts as long as *some* file has each requested band. Before, it only
+checked the first file, which in the 1-by-1 viewer depends on the seed. It looks in up
+to 100 files, so a mistyped band name is still reported at once.
+
+In the 1-by-1 viewer, an object whose file lacks the **main** band has no RA/Dec. It
+used to keep the previous object's, which would have been written to the CSV and used
+for the survey cutouts. Its CSV row now gets no RA/Dec, the Legacy Survey and PanSTARRS
+panels say "No RA/Dec", and the RA/Dec tools say why they refuse. The "Downloading …"
+status messages now clear once their download ends, and "First/Last image" after 10 s.
+
+## Display: the black point's corner boxes now fit the stamp (possibly temporary)
+
+**This is the first change on this branch to how stamps are displayed.** Until now,
+every FITS band was scaled exactly as in `ERO_edition_2026`. **It may be reverted**
+to the old fixed 10 px box. That is a one-line change in `imaging.corner_box_size`.
+
+A FITS band's black point is the noise measured in four boxes, one in each corner of
+the stamp. Those boxes were always 10×10 px: code meant to size them from the stamp
+was overridden by a leftover `cb=10`. The box side, in both viewers, is now:
+
+* 10 px, growing with large stamps (about 3.2% of the side);
+* at most a quarter of the stamp's side, so the boxes stay clear of the source in the
+  middle;
+* at most 1 arcsec when the stamp has a WCS, or 20 px when it doesn't;
+* never under 7 px. This floor wins over the 1 arcsec limit on coarse pixels.
+
+What that means in practice:
+
+| Stamp | Box | vs. before |
+|---|---|---|
+| Euclid, 0.1″/px, 40 px or more | 10 px | same |
+| Legacy Survey / PanSTARRS FITS (~0.25″/px) | 7 px | smaller |
+| No WCS, over 332 px | up to 20 px | larger |
+| Under 40 px (e.g. the 21 px `VIS_PSF` extension) | 7–9 px | smaller: the PSF's wings now show instead of going black |
+
+Display only: classifications and saved data are unaffected.
+
+## Presets never change the dataset, and say when their bands don't match
+
+A preset saved with **Save as…** used to include the data and output paths, so
+loading it could move the lobby to another dataset. It then lost the tick on every
+colour band the two datasets didn't share, and could save that setup as the old
+dataset's session record. A preset now holds only the scheme, the band setup, the
+mosaic layout and the run options. The data, output and classifications paths, the
+session name and the seed are never saved in one and are ignored when loading an
+older one.
+
+Loading a preset always rescans the current data path and shows only the bands found
+there. A warning lists the bands the preset uses that aren't there, and the bands
+that are there but the preset doesn't use. **Restore previous** stays silent.
+
 ## New: subclasses shared by several majors
 
 A subclass can now sit under more than one major, e.g. `Merger` under both `A` and
@@ -33,6 +101,22 @@ A subclass can now sit under more than one major, e.g. `Merger` under both `A` a
 
 The CSV format is unchanged: `classification` holds the major and `subclassification`
 holds the subclass name.
+
+## New: the `Lens_type_AGN` preset
+
+A fifth shipped preset, the scheme of the lens-type / AGN pass (sessions like
+`Classifying_lens_type_and_removed_missmatches`), read off its CSV:
+
+* Majors `A`, `B`, `C`, `Not a lens`, `Lens, but wrong AGN` on keys 1-5; `A` and
+  `B` positive for extraction.
+* Subclasses, each under the majors it was used with: `Lensing AGN` (A,B,C, `q`),
+  `Lensed type 1` (A,B,C, `w`), `Lensed type 2` (A,B, `e`), `Group/cluster` (A,B, `r`).
+  A shared subclass is clicked first and then its major.
+* No band setup and no mosaic settings: that pass was on PNG stamps, so loading it
+  keeps whatever bands the current path has.
+
+Resuming such a CSV also used to ask to add each bare major (`A` in
+`subclassification`, which a major button writes) as a subclass; fixed (BUGS-DONE 38).
 
 ## New: the `ERO_edition_classic` preset
 
@@ -183,6 +267,11 @@ identity behind on every save.
   across sessions, so one placed in a FITS session came back here with nothing drawn
   on it.
 * Greyscale PNG/JPG stamps show in grey in the 1-by-1 tool; they came out in viridis.
+* Palette PNGs (256 colours or fewer, as some tools write them) show in their real
+  colours in the 1-by-1 tool. It used to draw the palette index numbers in grey, which
+  often made a black sky white and the source dark. CMYK JPGs, which crashed the mosaic
+  and showed all black, and greyscale PNGs with transparency, which crashed the 1-by-1
+  tool, now load as well.
 * **No main band** for PNG/JPG-only data. Most of a main band's job is WCS, which
   PNG/JPG stamps don't have. Both viewers take `-b ''`, and the first `-B` band takes
   over the rest: it lists the objects and is the default panel. The lobby's Main band
@@ -270,6 +359,9 @@ identity behind on every save.
 * Network failures (e.g. "no route to host") degrade gracefully instead of crashing the
   app. (The placeholder image this originally used is gone -- see "Survey cutout caching
   rewritten" below for why it caused more trouble than it solved.)
+* A rotated FITS stamp's pixel size was read too small (×cos of the rotation, 0 at
+  90°), so its Legacy Survey/PanSTARRS cutouts came out too small or empty, and the
+  CSV's `pixel_size` was wrong. North-up stamps, like Euclid's, were unaffected.
 
 ## Survey cutout caching rewritten (1-by-1 tool)
 A failed download used to be written into the cache as a black 66x66 JPEG, at the exact
@@ -665,8 +757,9 @@ user ever naming it.
 
 Mixing the two schemes in one run — some bands from directories, one band an
 extension of another band's file — is out of scope: `--mef` applies to the
-whole run, and every object's file is assumed to share the same extension
-layout as the first one found. New tests: `tests/test_fits_io.py`.
+whole run. Files need not share one extension layout: each band is looked up by
+`EXTNAME` in each object's own file (see "Fixed: `--mef` showed the wrong band"
+above; this entry originally assumed they did). New tests: `tests/test_fits_io.py`.
 
 See the CLI `--help` on either tool for the full current argument list.
 

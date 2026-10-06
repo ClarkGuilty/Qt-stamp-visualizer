@@ -13,6 +13,7 @@ import stat
 from uuid import uuid4
 
 import numpy as np
+from PIL import Image
 
 
 def identity(x):
@@ -55,6 +56,60 @@ def get_value_range_asymmetric(x, q_low=1, q_high=1):
     return low, high
 
 
+# --- black point of a single FITS band ----------------------------------------
+#
+# Both viewers set a FITS band's black point from the noise in the stamp's four
+# corners. The corner-box size is the first change this branch makes to how stamps
+# are displayed (BUGS-DONE 18): until 2026-09-28 every stamp used a fixed 10 px box,
+# as in ERO_edition_2026. POSSIBLY TEMPORARY -- to go back, make corner_box_size
+# return 10.
+
+CORNER_BOX_MIN = 7              # px
+CORNER_BOX_MAX = 20             # px, for a stamp without WCS
+CORNER_BOX_MAX_ARCSEC = 1.0     # for a stamp with WCS
+
+
+def corner_box_size(shape, pixel_scale_arcsec=None):
+    """Side, in pixels, of each corner box background_rms_image measures.
+
+    10 px, or 0.1% of the stamp's area (about 3.2% of a side) once that is larger.
+    Capped at a quarter of the shorter side, so the boxes stay clear of the middle
+    where the source is, and at CORNER_BOX_MAX px -- or at CORNER_BOX_MAX_ARCSEC,
+    rounded to whole pixels, when `pixel_scale_arcsec` comes from a WCS. Never under
+    CORNER_BOX_MIN px: that floor wins when a cap falls below it."""
+    size = max(10, int(np.round(np.sqrt(np.prod(shape) * 0.001))))
+    size = min(size, min(shape) // 4)
+    if pixel_scale_arcsec is None:
+        upper = CORNER_BOX_MAX
+    else:
+        upper = int(np.round(CORNER_BOX_MAX_ARCSEC / pixel_scale_arcsec))
+    return max(CORNER_BOX_MIN, min(size, upper))
+
+
+def background_rms_image(cb, image):
+    """Standard deviation of the pixels in `image`'s four cb x cb corner boxes.
+
+    While one box's mean is over 5 times another's, drops the highest of the values
+    left at each pixel position -- per pixel, not the brightest box -- and tests
+    again (see BUGS.md 35)."""
+    xg, yg = np.shape(image)
+    cut0 = image[0:cb, 0:cb]
+    cut1 = image[xg - cb:xg, 0:cb]
+    cut2 = image[0:cb, yg - cb:yg]
+    cut3 = image[xg - cb:xg, yg - cb:yg]
+    l = [cut0, cut1, cut2, cut3]
+    while len(l) > 1:
+        m = np.nanmean(np.nanmean(l, axis=1), axis=1)
+        if max(m) > 5 * min(m):
+            s = np.sort(l, axis=0)
+            l = s[:-1]
+        else:
+            std = np.nanstd(l)
+            return std
+    std = np.nanstd(l)
+    return std
+
+
 def clip_normalize(x, low=None, high=None):
     x = np.clip(x, low, high)
     x = (x - low) / (high - low)
@@ -73,6 +128,24 @@ def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min,
     contrast = (bkg_color - 1) / (bkg_level - 1)  # with bkg_level != 1 and bkg_color != 1
     bias = 1 - (bkg_level - 1) / (2 * (bkg_color - 1))
     return contrast, bias
+
+
+def open_rendered_image(filepath):
+    """A PNG/JPG stamp as a loaded PIL image in a mode that shows as the file does:
+    greyscale ('L', 16-bit 'I;16'), RGB, or RGBA when the file has transparency.
+
+    Anything else is converted. A palette ('P') image's pixels are palette indices, not
+    intensities: read raw, a black sky stored at the highest index renders white
+    (BUGS-DONE #34). CMYK and grey-plus-alpha ('LA') are neither greyscale nor RGB(A),
+    and PNG cannot hold CMYK at all."""
+    with Image.open(filepath) as im:
+        if im.mode in ('L', 'RGB', 'RGBA') or im.mode.startswith('I'):
+            return im.copy()
+        if im.mode == '1':
+            return im.convert('L')
+        if im.mode in ('LA', 'La', 'PA', 'RGBa') or 'transparency' in im.info:
+            return im.convert('RGBA')
+        return im.convert('RGB')
 
 
 def natural_sort(l):

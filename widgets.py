@@ -12,7 +12,7 @@ from os.path import basename, join, splitext
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QIntValidator
+from PySide6.QtGui import QColor, QFont, QIntValidator, QPalette
 
 import paths
 
@@ -229,6 +229,31 @@ class BandNamesLabel(QtWidgets.QLabel):
         self.setText(join_nested(status_plot_rows))
 
 
+class MissingBandsNote(QtWidgets.QLabel):
+    """Status-bar note naming the bands the shown object(s) have no data for (BUGS 36).
+
+    Added with `statusBar().addWidget`, so it sits where the page messages go: a
+    message covers it, and it comes back when the message ends. It is never shown or
+    hidden by hand, which would override the status bar doing that; an empty note is
+    simply invisible. Coloured with the palette, not a stylesheet: with a stylesheet
+    the label re-shows itself on top of the message. The explicit minimum width lets
+    long text clip (the tooltip has all of it) instead of widening the window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(1)
+        self.setContentsMargins(6, 2, 6, 2)
+        palette = self.palette()
+        palette.setColor(QPalette.Window, QColor('#a04000'))
+        palette.setColor(QPalette.WindowText, Qt.white)
+        self.setPalette(palette)
+
+    def set_note(self, text):
+        self.setText(text)
+        self.setToolTip(text)
+        self.setAutoFillBackground(bool(text))
+
+
 def _sanitize_preset_name(name):
     "Strips path separators so a preset name can't escape its directory."
     return re.sub(r'[\\/]+', '_', name.strip())
@@ -249,16 +274,20 @@ class PredefinedConfigBar(QtWidgets.QWidget):
     Picking one from the dropdown immediately applies it via `apply_config`; the
     config active right before that (fetched via `get_config`) is kept in memory
     so "Restore previous" can undo the swap without needing its own saved file.
+    Restoring goes through `restore_config` when given, else `apply_config` --
+    the lobby uses it to skip the warnings it raises for a preset.
     """
 
     PLACEHOLDER = "(current, unsaved)"
 
-    def __init__(self, directories, write_dir, get_config, apply_config, parent=None):
+    def __init__(self, directories, write_dir, get_config, apply_config, parent=None,
+                 restore_config=None):
         super().__init__(parent)
         self.directories = list(directories)
         self.write_dir = write_dir
         self.get_config = get_config
         self.apply_config = apply_config
+        self.restore_config = restore_config or apply_config
         self._pre_snapshot = None
 
         layout = QtWidgets.QHBoxLayout(self)
@@ -332,7 +361,7 @@ class PredefinedConfigBar(QtWidgets.QWidget):
     def _on_restore_clicked(self):
         if self._pre_snapshot is None:
             return
-        self.apply_config(self._pre_snapshot)
+        self.restore_config(self._pre_snapshot)
         self._pre_snapshot = None
         self.restore_btn.setEnabled(False)
         self.combo.blockSignals(True)
