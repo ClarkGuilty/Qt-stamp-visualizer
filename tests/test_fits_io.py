@@ -23,7 +23,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 
-import fits_io
+from qtstamp import fits_io
 
 
 def _write_fits(directory, name, data, header=None):
@@ -158,7 +158,7 @@ def test_read_pixels_closes_the_file(tmpdir):
         opened.append(hdu_list)
         return hdu_list
 
-    with mock.patch('fits_io.fits.open', side_effect=spying_open):
+    with mock.patch('qtstamp.fits_io.fits.open', side_effect=spying_open):
         fits_io.read_pixels(fits_io.Locator(path, 0))
 
     assert opened and opened[0]._file.closed
@@ -223,6 +223,15 @@ def test_get_ra_dec_rotated_image():
         header = _synthetic_wcs_header(shape=(120, 120), cdelt_arcsec=0.1)
         header['PC1_1'], header['PC1_2'], header['PC2_1'], header['PC2_2'] = c, -s, s, c
         assert np.isclose(fits_io.get_ra_dec(header).pixel_size_arcsec, 0.1, atol=1e-4)
+
+
+def test_get_ra_dec_without_celestial_wcs():
+    "A PSF extension has no WCS: it read as 3600 arcsec/px, and RA/Dec in pixel units."
+    header = fits.Header({'NAXIS': 2, 'NAXIS1': 21, 'NAXIS2': 21})
+    radec = fits_io.get_ra_dec(header)
+    assert np.isnan(radec.ra) and np.isnan(radec.dec) and np.isnan(radec.pixel_size_arcsec)
+    assert radec.image_dim == 21
+    assert np.isnan(fits_io.get_ra_dec(fits.Header({'NAXIS': 0})).ra)    # a dataless primary
 
 
 def test_pixel_scale_arcsec():
@@ -347,7 +356,7 @@ def test_locate_mef_bands_looks_past_a_first_file_that_lacks_one(tmpdir):
 
 def test_locate_mef_bands_stops_once_everything_is_found(tmpdir):
     _two_layouts(tmpdir)
-    with mock.patch('fits_io.discover_mef_bands', wraps=fits_io.discover_mef_bands) as spy:
+    with mock.patch('qtstamp.fits_io.discover_mef_bands', wraps=fits_io.discover_mef_bands) as spy:
         found, _ = fits_io.locate_mef_bands(tmpdir, ['obj1.fits', 'obj2.fits'], {'VIS', 'J'})
     assert found == {'VIS': 'VIS', 'J': 'J'}
     assert spy.call_count == 1

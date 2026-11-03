@@ -20,9 +20,9 @@ os.environ['QTSTAMP_CONFIG_DIR'] = os.path.join(
     tempfile.gettempdir(), 'qtstamp-test-no-such-user-dir')
 os.environ.pop('QTSTAMP_STATE_DIR', None)
 
-import cli
-import lobby
-from imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, classification_csv_base,
+from qtstamp import cli
+from qtstamp import lobby
+from qtstamp.imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, classification_csv_base,
                      classification_csvs, resume_csv)
 
 
@@ -113,7 +113,7 @@ def test_state_dir_override_is_resolved(tmpdir):
 
 
 def test_reset_flags_forget_preferences_position_and_legacy_config(tmpdir):
-    import state
+    from qtstamp import state
     path = _dataset(os.path.join(tmpdir, 'data'), ['g'])
     cls = os.path.join(tmpdir, 'cls')
     args = _parse(['-p', path, '-b', 'g', '-B', '', '--rgb-composites', '', '-N', 'n', '-s', '3',
@@ -178,7 +178,7 @@ def test_shipped_presets_read_back_as_written():
     import glob
     import json
     presets = glob.glob(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                     'qtstamp_defaults', 'presets', '*.json'))
+                                     'qtstamp', 'defaults', 'presets', '*.json'))
     assert presets
     for preset in presets:
         rows = json.load(open(preset)).get('scheme_rows') or []

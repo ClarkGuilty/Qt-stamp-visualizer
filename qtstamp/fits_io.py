@@ -284,8 +284,14 @@ class RaDec(NamedTuple):
 def get_ra_dec(header) -> RaDec:
     """RA/Dec of the image center, arcsec/pixel scale, and image size, from `header`'s
     WCS. Unifies single_viewer's two near-duplicate versions (one a 2-tuple, one a
-    4-tuple) into the one superset shape; callers destructure what they need."""
+    4-tuple) into the one superset shape; callers destructure what they need.
+
+    A header without a celestial WCS (a PSF extension, a stamp saved without one) gives
+    NaN RA/Dec/scale: read as-is it is pixel coordinates at 3600"/px, and a survey
+    cutout of that is ~1e6 px at a meaningless position."""
     w = WCS(header, fix=False)
+    if not w.has_celestial:
+        return RaDec(np.nan, np.nan, np.nan, np.max(w.array_shape) if w.array_shape else 0)
     # array_shape is numpy-order (ny, nx); pixel_to_world_values wants WCS-axis
     # order (x, y) = (nx, ny). Swapping these was a longstanding bug that only
     # showed up for non-square images -- see BUGS.md.

@@ -21,8 +21,8 @@ os.environ['QTSTAMP_CONFIG_DIR'] = os.path.join(
     tempfile.gettempdir(), 'qtstamp-test-no-such-user-dir')
 os.environ.pop('QTSTAMP_STATE_DIR', None)
 
-import lobby
-import state
+from qtstamp import lobby
+from qtstamp import state
 
 
 def _parse(argv):
@@ -242,6 +242,48 @@ def test_band_setup_mismatch_counts_main_colour_and_composite_bands():
 def test_band_setup_mismatch_no_main_band_is_not_a_band():
     config = {'main_band': lobby.NO_MAIN_BAND, 'color_bands': ['J'], 'rgb_composites': []}
     assert lobby.band_setup_mismatch(config, ['J']) == ([], [])
+
+
+# --- how the lobby starts a viewer (the qtstamp/ package move) ---------------
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_tool_argv_in_a_checkout_is_the_launcher_script():
+    for tool in ('mosaic', 'single_viewer'):
+        assert lobby.tool_argv(tool) == [os.path.join(REPO, f'{tool}.py')]
+        assert os.path.isfile(lobby.tool_argv(tool)[0])
+
+
+def test_tool_argv_installed_is_the_package_module(tmpdir):
+    "site-packages has no pyproject.toml, and may hold someone else's mosaic.py."
+    with open(os.path.join(tmpdir, 'mosaic.py'), 'w') as f:
+        f.write('raise SystemExit("not ours")\n')
+    saved, lobby.REPO_ROOT = lobby.REPO_ROOT, str(tmpdir)
+    try:
+        assert lobby.tool_argv('mosaic') == ['-m', 'qtstamp.mosaic']
+        assert lobby.tool_argv('single_viewer') == ['-m', 'qtstamp.single_viewer']
+    finally:
+        lobby.REPO_ROOT = saved
+
+
+def test_printed_command_runs_from_another_directory(tmpdir):
+    """The launcher at the top of the checkout, from a CWD that is not the repo:
+    --print-command, then the printed command itself (with --help, so no window)."""
+    import shlex
+    import subprocess
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', MPLBACKEND='Agg')
+    env.pop('PYTHONPATH', None)
+    printed = subprocess.run([sys.executable, os.path.join(REPO, 'lobby.py'), '--print-command',
+                              '-m', 'chained', '-p', str(tmpdir), '-N', 'x'],
+                             cwd=tmpdir, env=env, capture_output=True, text=True, check=True).stdout
+    commands = [shlex.split(line) for line in printed.splitlines() if line.startswith(sys.executable)]
+    assert [c[1] for c in commands] == [os.path.join(REPO, 'mosaic.py'),
+                                        os.path.join(REPO, 'single_viewer.py')]
+    for command in commands:
+        done = subprocess.run(command[:2] + ['--help'], cwd=tmpdir, env=env,
+                              capture_output=True, text=True)
+        assert done.returncode == 0 and '--path' in done.stdout, done.stderr
 
 
 if __name__ == '__main__':

@@ -16,19 +16,19 @@ from os.path import join
 import sys
 from time import time
 
-import cli
-from dataset import DatasetError, load_dataset
-import fits_io
-from imaging import (
+from . import cli
+from .dataset import DatasetError, load_dataset
+from . import fits_io
+from .imaging import (
     SCALES, MOSAIC_DISPLAY, scale_limits, rescale_image, composite_image,
     open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
     MOSAIC_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
 )
-import paths
-import state
-from widgets import (
+from . import paths
+from . import state
+from .widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, MissingBandsNote, NamedLabel,
     PanelOrderPicker,
 )

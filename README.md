@@ -15,6 +15,9 @@ The repo ships three programs that are meant to be used together:
 | **Mosaic** | `mosaic.py` | Page-based grid of many stamps at once, for fast first-pass triage. |
 | **1-by-1** | `single_viewer.py` | One object at a time, for detailed classification. |
 
+Those three scripts are all you run. The code behind them is the `qtstamp/` package,
+and the tests are in `tests/`.
+
 Highlights:
 
 * Multiband FITS with configurable bands and on-the-fly RGB composites — nothing is

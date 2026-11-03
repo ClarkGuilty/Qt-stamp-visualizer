@@ -32,22 +32,22 @@ import sys
 from time import time
 import webbrowser
 
-import cli
-from dataset import DatasetError, load_dataset
-import fits_io
-from imaging import (
+from . import cli
+from .dataset import DatasetError, load_dataset
+from . import fits_io
+from .imaging import (
     SCALES, SINGLE_DISPLAY, scale_limits, rescale_image, composite_image,
     open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
     SINGLE_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
 )
-import paths
-import state
-from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel, MissingBandsNote
-from workers import (
+from . import paths
+from . import state
+from .widgets import PanelRowPicker, SettingsMenu, BandNamesLabel, MissingBandsNote
+from .workers import (
     CacheState, SingleFetchWorker, PanstarrsFetchWorker,
-    cache_state, fetch_legacy_survey, fetch_panstarrs,
+    cache_state, failure_title, fetch_legacy_survey, fetch_panstarrs,
     legacy_survey_cache_name, panstarrs_cache_name,
     purge_placeholder_cutouts,
 )
@@ -220,6 +220,8 @@ class FetchThread(QThread):
             ra,dec,image_pixel_size,image_dim = fits_io.get_ra_dec(fits_io.read_header(locator))
         else:
             ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
+        if any(pd.isna(v) for v in (ra, dec, image_pixel_size, image_dim)):
+            return  # no sky WCS in the main band, or a CSV row missing its scale: nothing to fetch
         if self.fetch_panstarrs:
             n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
             self.download_panstarrs(ra,dec,size=n_pixels_ps1)
@@ -802,7 +804,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.filetype != 'FITS':
             self.status.showMessage("RA,Dec is only available for FITS input.",5000)
             return
-        if self._main_band_missing("Copying RA,Dec"):
+        if self._radec_unavailable("Copying RA,Dec"):
             return
         to_copy = f"{self.ra},{self.dec}"
         self.clipboard.setText(to_copy)
@@ -967,10 +969,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # Drawn anyway: an axes nothing was drawn on shows up as a white box.
             self.plot_no_legacy_survey(title='Needs FITS input\n(RA/Dec from WCS)')
             return
-        if self.main_band in self.missing_bands:
+        no_radec = self._no_radec_reason()
+        if no_radec is not None:
             # No stale cutout from the previous object may land here either.
             self.legacy_filename = None
-            self.plot_no_legacy_survey(title=f'No RA/Dec:\nno {self.main_band}')
+            self.plot_no_legacy_survey(title=f'No RA/Dec:\n{no_radec}')
             return
         pixscale = str(LEGACY_SURVEY_PIXEL_SIZE)
         n_pixels_in_ls, pixels_big_fov_ls = legacy_survey_number_of_pixels(self.image_pixel_size, 
@@ -993,10 +996,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.plot_legacy_survey(savefile, title)
                 return
             if state is CacheState.MISS:
-                # Known gap in coverage, recorded recently enough to trust.
-                # Say so at once instead of spawning a thread to re-confirm it.
-                self.plot_no_legacy_survey(title='No Legacy Survey data available',
-                                           colormap='viridis', savefile=savefile)
+                # A recent miss, still fresh enough to trust: a coverage gap, or a
+                # failure not yet due a retry. Say which at once, without a thread.
+                self._on_fetch_failed('Legacy Survey', self.plot_no_legacy_survey, savefile)
                 return
             self.plot_no_legacy_survey(savefile=savefile)
             self.status.showMessage(DOWNLOADING_LS_MESSAGE)
@@ -1010,8 +1012,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.singleFetchWorker.moveToThread(self.workerThread)
 
             self.singleFetchWorker.successful_download.connect(partial(self.plot_legacy_survey, savefile, title))
-            self.singleFetchWorker.failed_download.connect(partial(self.plot_no_legacy_survey,title='No Legacy Survey data available',
-                            colormap='viridis', savefile=savefile))
+            self.singleFetchWorker.failed_download.connect(partial(self._on_fetch_failed, 'Legacy Survey',
+                                                                   self.plot_no_legacy_survey, savefile))
             self.workerThread.finished.connect(self.workerThread.deleteLater)
             self.workerThread.setTerminationEnabled(True)
 
@@ -1051,6 +1053,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[_PANSTARRS_KEY].set_axis_off()
         self.canvas[_PANSTARRS_KEY].draw()
 
+    def _on_fetch_failed(self, survey, plot_no_data, savefile):
+        "Title read from the miss marker, which the fetch writes before the worker signals."
+        plot_no_data(title=failure_title(survey, savefile), colormap='viridis', savefile=savefile)
+
     def plot_no_panstarrs(self, title='Waiting for data',
                             colormap='Greys_r', savefile=None):
         # Same staleness guard as above: a late failure from the previous
@@ -1071,10 +1077,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # Drawn anyway: an axes nothing was drawn on shows up as a white box.
             self.plot_no_panstarrs(title='Needs FITS input\n(RA/Dec from WCS)')
             return
-        if self.main_band in self.missing_bands:
+        no_radec = self._no_radec_reason()
+        if no_radec is not None:
             # No stale cutout from the previous object may land here either.
             self.panstarrs_filename = None
-            self.plot_no_panstarrs(title=f'No RA/Dec:\nno {self.main_band}')
+            self.plot_no_panstarrs(title=f'No RA/Dec:\n{no_radec}')
             return
         n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
                                     np.max(self.images[self.main_band].shape))
@@ -1092,10 +1099,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                 self.plot_panstarrs(savefile, title)
                 return
             if state is CacheState.MISS:
-                # Known gap in coverage, recorded recently enough to trust.
-                # Say so at once instead of spawning a thread to re-confirm it.
-                self.plot_no_panstarrs(title='No PanSTARRS data available',
-                                       colormap='viridis', savefile=savefile)
+                # A recent miss, still fresh enough to trust: a coverage gap, or a
+                # failure not yet due a retry. Say which at once, without a thread.
+                self._on_fetch_failed('PanSTARRS', self.plot_no_panstarrs, savefile)
                 return
             self.plot_no_panstarrs(savefile=savefile)
             self.status.showMessage(DOWNLOADING_PS_MESSAGE)
@@ -1108,8 +1114,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.singleFetchWorkerPS.moveToThread(self.workerThreadPS)
 
             self.singleFetchWorkerPS.successful_download.connect(partial(self.plot_panstarrs, savefile, title))
-            self.singleFetchWorkerPS.failed_download.connect(partial(self.plot_no_panstarrs,title='No PanSTARRS data available',
-                            colormap='viridis', savefile=savefile))
+            self.singleFetchWorkerPS.failed_download.connect(partial(self._on_fetch_failed, 'PanSTARRS',
+                                                                     self.plot_no_panstarrs, savefile))
             self.workerThreadPS.finished.connect(self.workerThreadPS.deleteLater)
             self.workerThreadPS.setTerminationEnabled(True)
 
@@ -1235,13 +1241,13 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def viewls(self):
-        if self._main_band_missing("Open LS"):
+        if self._radec_unavailable("Open LS"):
             return
         webbrowser.open("https://www.legacysurvey.org/viewer?ra={}&dec={}&layer=ls-dr10&zoom=14&manga&spectra&desi-spec-edr&desi-spec-dr1".format(self.ra,self.dec))
 
     @Slot()
     def viewPanSTARRS(self):
-        if self._main_band_missing("Open PanSTARRS"):
+        if self._radec_unavailable("Open PanSTARRS"):
             return
         n_pixels_in_ps1, pixels_big_fov_ps1 = panstarrs_number_of_pixels(self.image_pixel_size,
                                     np.max(self.images[self.main_band].shape))
@@ -1251,7 +1257,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     @Slot()
     def viewESASky(self):
-        if self._main_band_missing("Open ESASky"):
+        if self._radec_unavailable("Open ESASky"):
             return
         fov = (self.image_pixel_size * np.max(self.images[self.main_band].shape)) / 3600
         website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov={fov}&cooframe=J2000&sci=true&lang=en&"
@@ -1331,11 +1337,22 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             # the previous object's must not carry over into the CSV or the cutouts.
             self.ra = self.dec = self.image_pixel_size = np.nan
 
-    def _main_band_missing(self, action):
-        "True, saying so, when this object has no RA/Dec because its file lacks the main band."
-        if self.main_band not in self.missing_bands:
+    def _no_radec_reason(self):
+        "Why this object has no RA/Dec, or None when it has one."
+        if self.filetype != 'FITS':
+            return "PNG/JPG input (RA/Dec needs FITS)"
+        if self.main_band in self.missing_bands:
+            return f"no {self.main_band}"
+        if pd.isna(getattr(self, 'ra', np.nan)) or pd.isna(getattr(self, 'image_pixel_size', np.nan)):
+            return f"no sky WCS in {self.main_band}"
+        return None
+
+    def _radec_unavailable(self, action):
+        "True, saying so, when this object has no RA/Dec."
+        reason = self._no_radec_reason()
+        if reason is None:
             return False
-        self.status.showMessage(f"{action} needs RA/Dec, but this object has no {self.main_band}.", 5000)
+        self.status.showMessage(f"{action} needs RA/Dec, but this object has {reason}.", 5000)
         return True
 
     def plot_band(self, band, scale_min = None, scale_max = None):

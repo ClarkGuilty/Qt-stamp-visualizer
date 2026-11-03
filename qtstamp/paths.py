@@ -110,13 +110,13 @@ STATE_DIR_ENV = 'QTSTAMP_STATE_DIR'
 
 
 def packaged_defaults_dir():
-    """Read-only defaults shipped with the tool (`qtstamp_defaults/`).
+    """Read-only defaults shipped with the tool (`qtstamp/defaults/`).
 
     Last entry on the config search path, so a brand-new workspace starts from
     something reasonable instead of from nothing. Nothing ever writes here --
     under `pip install` it is inside site-packages.
     """
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'qtstamp_defaults')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'defaults')
 
 
 def state_dir(anchor=None, override=None):

@@ -14,7 +14,7 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIntValidator, QPalette
 
-import paths
+from . import paths
 
 
 class AlignDelegate(QtWidgets.QStyledItemDelegate):

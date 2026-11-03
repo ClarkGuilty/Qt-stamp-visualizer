@@ -26,12 +26,12 @@ from PySide6 import QtWidgets
 
 # An argv neither viewer understands: importing them must not parse it.
 _argv, sys.argv = sys.argv, ['viewer', '--not-a-viewer-option']
-import mosaic
-import single_viewer
+from qtstamp import mosaic
+from qtstamp import single_viewer
 sys.argv = _argv
 
-import lobby
-from imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, classification_csv_base,
+from qtstamp import lobby
+from qtstamp.imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, classification_csv_base,
                      classification_csvs)
 
 APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -182,6 +182,117 @@ def test_panstarrs_large_fov_matches_legacy_survey():
         ls_sky = ls_big*single_viewer.LEGACY_SURVEY_PIXEL_SIZE
         assert abs(ps_sky - ls_sky) <= single_viewer.PANSTARRS_PIXEL_SIZE*2
 
+
+
+class _FakeResponse:
+    def __init__(self, text):
+        self._text = text.encode()
+    def read(self):
+        return self._text
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+
+
+def test_panstarrs_filename_lookup_remembered_in_memory_only(tmpdir):
+    "One ps1filenames.py call per position, not one per cutout size; failures and no-rows are retried."
+    import urllib.request
+    from qtstamp import workers
+    calls = []
+    table = ('projcell subcell ra dec filter mjd type filename shortname badflag\n' +
+             ''.join(f'1 2 3 4 {f} 5 stack /x/{f}.fits {f}.fits 0\n' for f in 'grz'))
+    def fake_urlopen(url, timeout=None):
+        calls.append(url)
+        if len(calls) == 2:
+            raise TimeoutError('slow STScI')
+        if len(calls) == 4:
+            return _FakeResponse('')                         # truncated reply: reads as no rows
+        return _FakeResponse(table)
+    real, urllib.request.urlopen = urllib.request.urlopen, fake_urlopen
+    workers._PS1_FILENAMES.clear()
+    cwd = os.getcwd()
+    os.chdir(tmpdir)                                         # a stray relative write lands here
+    try:
+        first = workers.get_panstarrs_filenames(10.5, -20.25)
+        assert workers.get_panstarrs_filenames(np.float64(10.5), np.float64(-20.25)) == first
+        assert len(calls) == 1 and first['z'] == '/x/z.fits'
+        try:
+            workers.get_panstarrs_filenames(11.0, -20.25)
+            raise AssertionError('the timeout should propagate')
+        except TimeoutError:
+            pass
+        workers.get_panstarrs_filenames(11.0, -20.25)      # not remembered: asks again
+        assert len(calls) == 3
+        assert workers.get_panstarrs_filenames(12.0, -20.25) is None
+        assert workers.get_panstarrs_filenames(12.0, -20.25) is not None   # None not remembered
+        assert len(calls) == 5
+    finally:
+        os.chdir(cwd)
+        urllib.request.urlopen = real
+        workers._PS1_FILENAMES.clear()
+    assert os.listdir(tmpdir) == []
+
+
+def test_failure_title_says_no_data_only_for_a_coverage_gap(tmpdir):
+    from qtstamp import workers
+    savefile = os.path.join(tmpdir, 'cut.jpg')
+    assert 'timed out or failed' in workers.failure_title('PanSTARRS', savefile)  # no marker
+    workers.record_miss(savefile, 'transient', 'timed out')
+    assert 'timed out or failed' in workers.failure_title('PanSTARRS', savefile)
+    workers.record_miss(savefile, 'no_coverage', 'no rows')
+    assert workers.failure_title('PanSTARRS', savefile) == 'No PanSTARRS data available'
+    with open(savefile + workers.MISS_SUFFIX, 'w') as f:      # expired: says nothing now
+        json.dump({'reason': 'no_coverage', 'time': 0}, f)
+    assert 'timed out or failed' in workers.failure_title('PanSTARRS', savefile)
+
+
+def test_fits_main_band_without_wcs_fetches_nothing(tmpdir):
+    "Read as-is, a header with no WCS asked PanSTARRS for a 1e6 px cutout at RA/Dec (11, 11)."
+    from astropy.io import fits
+    import webbrowser
+    rng = np.random.default_rng(0)
+    data = os.path.join(tmpdir, 'data')
+    for band in ('r', 'g'):
+        os.makedirs(os.path.join(data, band))
+        for i in range(3):
+            fits.PrimaryHDU(rng.random((20, 20)).astype(np.float32)).writeto(
+                os.path.join(data, band, f'obj{i}.fits'))
+    argv = ['-p', data, '-b', 'r', '-B', 'g', '--rgb-composites', '', '-N', 'run', '-s', '7',
+            '--classifications-dir', os.path.join(tmpdir, 'cls'),
+            '--state-dir', os.path.join(tmpdir, 'state')]
+    win = single_viewer.ApplicationWindow(single_viewer.parse_args(argv), clipboard=APP.clipboard())
+    opened, real_open = [], webbrowser.open
+    webbrowser.open = opened.append
+    try:
+        assert win.filetype == 'FITS' and np.isnan(win.ra)
+        win.set_panstarrs()
+        assert win.ax['PanSTARRS'].get_title() == 'No RA/Dec:\nno sky WCS in r'
+        assert win.panstarrs_filename is None and getattr(win, 'workerThreadPS', None) is None
+        win.set_legacy_survey()
+        assert win.ax['Legacy Survey'].get_title() == 'No RA/Dec:\nno sky WCS in r'
+        win.viewPanSTARRS(); win.viewls(); win.viewESASky()
+        assert opened == []
+    finally:
+        webbrowser.open = real_open
+        win.close()
+
+
+def test_png_input_says_radec_needs_fits(tmpdir):
+    "Not 'no sky WCS': a PNG has no WCS to lack."
+    import webbrowser
+    data = _png_dataset(os.path.join(tmpdir, 'data'), ['r', 'g'])
+    win = single_viewer.ApplicationWindow(
+        single_viewer.parse_args(_argv(tmpdir, data, '--no-legacysurvey')), clipboard=APP.clipboard())
+    opened, real_open = [], webbrowser.open
+    webbrowser.open = opened.append
+    try:
+        assert win._no_radec_reason().startswith('PNG/JPG input')
+        win.viewls(); win.viewPanSTARRS(); win.viewESASky()
+        assert opened == []
+    finally:
+        webbrowser.open = real_open
+        win.close()
 
 if __name__ == '__main__':
     import inspect

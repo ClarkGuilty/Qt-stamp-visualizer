@@ -10,7 +10,7 @@ from os.path import join
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import paths
+from qtstamp import paths
 
 
 # --- relative_to / resolve_against round trips -----------------------------
@@ -340,7 +340,7 @@ def test_packaged_presets_are_discoverable_and_are_valid_json():
     import glob
     import json
     found = glob.glob(join(paths.packaged_defaults_dir(), paths.PRESETS_SUBDIR, '*.json'))
-    assert found, 'no presets shipped in qtstamp_defaults/presets'
+    assert found, 'no presets shipped in qtstamp/defaults/presets'
     for path in found:
         with open(path) as f:
             preset = json.load(f)

@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -31,7 +32,7 @@ import urllib.request
 from PIL import Image
 from PySide6.QtCore import QObject, Signal, Slot
 
-from imaging import atomic_write
+from .imaging import atomic_write
 
 PS1_FILENAMES_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1filenames.py'
 PS1_FITSCUT_URL = 'https://ps1images.stsci.edu/cgi-bin/fitscut.cgi'
@@ -41,6 +42,10 @@ LEGACY_SURVEY_CUTOUT_URL = 'https://www.legacysurvey.org/viewer/cutout.jpg'
 # is why the downloads it used to do could hang forever on a stalled server and
 # park the prefetch thread on a single object for the rest of the session.
 NETWORK_TIMEOUT = 15
+# STScI's PS1 services are slower: the filename lookup was measured at 4-14 s and a
+# 512 px fitscut at ~8 s before its first byte, too close to NETWORK_TIMEOUT. Not
+# much more: it is per blocking read, and the prefetch runs its fetches in series.
+PS1_NETWORK_TIMEOUT = 30
 
 # How long a recorded miss suppresses re-downloading.
 MISS_TTL_SECONDS = {
@@ -147,6 +152,16 @@ def miss_is_current(marker):
     return 0 <= age < ttl
 
 
+def failure_title(survey, savefile):
+    """Panel title for a cutout that could not be shown. Only a recorded 'no_coverage'
+    means the survey has nothing here; a timeout or server error must not say so."""
+    marker = read_miss(savefile)
+    if miss_is_current(marker) and marker.get('reason') == 'no_coverage':
+        return f'No {survey} data available'
+    return (f'{survey} timed out or failed\n'
+            f'(retried after {MISS_TTL_SECONDS["transient"] // 60} min)')
+
+
 def cache_state(savefile):
     """Tri-state cache lookup: HIT (image on disk), MISS (known-bad and still
     fresh) or RETRY (nothing known, or the miss expired)."""
@@ -207,9 +222,33 @@ def _is_uniform_image(path):
 
 
 def get_panstarrs_filenames(ra, dec, filters='grz'):
-    "Look up PS1 stack image filenames for ra/dec via the STScI ps1filenames.py service."
+    """Look up PS1 stack image filenames for ra/dec via the STScI ps1filenames.py service.
+
+    Remembered for the life of the process, in memory only, never on disk: the answer
+    depends on ra/dec alone, and the normal and Large FoV cutouts of one object would
+    otherwise each pay for the lookup. Only a full answer is remembered: an exception
+    or None (no rows -- also what a truncated reply looks like) asks again next time."""
+    key = (float(ra), float(dec), filters)
+    with _PS1_FILENAMES_LOCK:
+        if key in _PS1_FILENAMES:
+            return dict(_PS1_FILENAMES[key])
+    filenames = _query_panstarrs_filenames(*key)
+    if filenames is not None:
+        with _PS1_FILENAMES_LOCK:
+            if len(_PS1_FILENAMES) >= _PS1_FILENAMES_MAX:
+                _PS1_FILENAMES.clear()
+            _PS1_FILENAMES[key] = dict(filenames)
+    return filenames
+
+
+_PS1_FILENAMES = {}
+_PS1_FILENAMES_MAX = 4096
+_PS1_FILENAMES_LOCK = threading.Lock()
+
+
+def _query_panstarrs_filenames(ra, dec, filters):
     query_url = f"{PS1_FILENAMES_URL}?ra={ra}&dec={dec}&filters={filters}&type=stack"
-    with urllib.request.urlopen(query_url, timeout=NETWORK_TIMEOUT) as response:
+    with urllib.request.urlopen(query_url, timeout=PS1_NETWORK_TIMEOUT) as response:
         lines = response.read().decode('utf-8').splitlines()
     if len(lines) < 2:
         return None
@@ -290,7 +329,7 @@ def fetch_panstarrs(savefile, ra, dec, size, verbose=False):
            f"&output_size=256&autoscale=99.5&format=jpg")
     print(url) if verbose else False
     try:
-        _download_to(url, savefile)
+        _download_to(url, savefile, timeout=PS1_NETWORK_TIMEOUT)
     except Exception as exc:
         result = _classify_exception(exc)
         record_miss(savefile, result.value, exc)

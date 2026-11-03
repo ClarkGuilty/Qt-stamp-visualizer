@@ -8,6 +8,30 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## The code moved into a `qtstamp/` package
+
+The top of the repo now holds only the three scripts you run (`lobby.py`, `mosaic.py`,
+`single_viewer.py`), plus the README, the licence and the packaging. All the code,
+the tools' own included, is in `qtstamp/`. The shipped presets moved from
+`qtstamp_defaults/` to `qtstamp/defaults/`. Nothing you type changes: `python lobby.py`
+and the `qtstamp-*` commands work as before, and `python -m qtstamp` now starts the
+lobby. Two things to do after updating:
+
+* If you installed with `pip install -e .` (or `uv pip install -e .`), run it again. The
+  `qtstamp-*` commands otherwise keep looking for the old files.
+* Local edits to one of the moved files now belong in `qtstamp/<the same name>`. The
+  top-level scripts are only launchers.
+
+## Fixed: slow PanSTARRS panel, and timeouts reported as "no data"
+
+Switching to Large FoV repeated a slow STScI file lookup (4-14 s) for an object it had
+just looked up. The answer is now remembered in memory for the session; nothing is
+written to disk. PanSTARRS requests may take 30 s instead of 15 before giving up. When a
+Legacy Survey or PanSTARRS cutout fails, the panel now says whether the survey has no
+data there or the request timed out or failed (retried after 15 min), instead of always
+"No data available". A FITS main band without sky coordinates now shows "No RA/Dec"
+rather than requesting a huge cutout at a meaningless position.
+
 ## Fixed: two datasets with the same CSV name kept starting new files
 
 A classification CSV is named after `--name`, the object count and the seed, so two

@@ -41,8 +41,19 @@ def _md5(data):
     return hashlib.md5(data).hexdigest()
 
 
+def _tool(name):
+    "The tool module from SRC_DIR: in the `qtstamp` package, or flat at its root before the move."
+    import importlib
+    try:
+        return importlib.import_module(f'qtstamp.{name}')
+    except ModuleNotFoundError as e:
+        if e.name != 'qtstamp':
+            raise
+        return importlib.import_module(name)
+
+
 def _snapshot_mosaic(argv):
-    import mosaic
+    mosaic = _tool('mosaic')
     win = mosaic.MosaicVisualizer(mosaic.parse_args(argv + ['-l', '3', '-m', '2']))
 
     def tiles():
@@ -62,7 +73,7 @@ def _snapshot_mosaic(argv):
 
 def _snapshot_single(argv, qapp):
     import numpy as np
-    import single_viewer
+    single_viewer = _tool('single_viewer')
     win = single_viewer.ApplicationWindow(single_viewer.parse_args(argv + ['--no-legacysurvey']),
                                           clipboard=qapp.clipboard())
     win.show()

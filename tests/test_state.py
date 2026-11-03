@@ -24,8 +24,8 @@ os.environ['QTSTAMP_CONFIG_DIR'] = os.path.join(
     tempfile.gettempdir(), 'qtstamp-test-no-such-user-dir')
 os.environ.pop('QTSTAMP_STATE_DIR', None)
 
-import paths
-import state
+from qtstamp import paths
+from qtstamp import state
 
 
 SINGLE = 'single'

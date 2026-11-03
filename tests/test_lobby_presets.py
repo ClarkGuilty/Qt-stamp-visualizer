@@ -23,8 +23,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6 import QtWidgets
 
-import lobby
-import state
+from qtstamp import lobby
+from qtstamp import state
 
 APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -162,7 +162,7 @@ def test_lens_type_preset_resumes_its_csv_without_unknown_labels(tmpdir):
     # A major button writes its own name into subclassification too, so a
     # bare 'A' there is known, not an unknown subclass to prompt about.
     shipped = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           'qtstamp_defaults', 'presets', 'Lens_type_AGN.json')
+                           'qtstamp', 'defaults', 'presets', 'Lens_type_AGN.json')
     with open(shipped) as f:
         preset = json.load(f)
     w = _lobby(tmpdir, _dataset(tmpdir, 'pngs', ['png']))

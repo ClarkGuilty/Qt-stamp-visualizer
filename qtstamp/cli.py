@@ -16,8 +16,8 @@ import sys
 from collections import namedtuple
 from os.path import join
 
-import paths
-import state
+from . import paths
+from . import state
 
 # What a viewer uses when -b/-B/--rgb-composites are not given. The lobby omits
 # -b when no main band is set, so it needs the first of these too.

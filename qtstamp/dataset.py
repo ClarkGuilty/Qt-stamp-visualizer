@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Set
 
 import numpy as np
 
-import fits_io
+from . import fits_io
 
 
 class DatasetError(Exception):

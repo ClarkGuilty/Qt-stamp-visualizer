@@ -24,18 +24,35 @@ from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
-import cli
-import dataset
-import extraction
-import fits_io
-import paths
-import state
-from imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, atomic_write,
+from . import cli
+from . import dataset
+from . import extraction
+from . import fits_io
+from . import paths
+from . import state
+from .imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, atomic_write,
                      classification_csv_base, classification_csvs, resume_csv)
-from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
-from widgets import PredefinedConfigBar
+from .paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
+from .widgets import PredefinedConfigBar
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+# The checkout's root (the package's parent): where the launcher scripts are, and
+# where pre-2b-v versions wrote their config. Under `pip install`, site-packages.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def tool_argv(tool):
+    """The start of the command line that runs `tool` ('mosaic' or 'single_viewer').
+
+    From a checkout, its launcher script by absolute path, so a printed command
+    runs from any directory without an install. Installed, there is no launcher,
+    but the package is importable from anywhere: `-m qtstamp.<tool>`. A checkout
+    is told apart by its pyproject.toml, not by the launcher alone: site-packages
+    can hold some other distribution's top-level `mosaic.py`.
+    """
+    launcher = join(REPO_ROOT, f"{tool}.py")
+    if os.path.isfile(launcher) and os.path.isfile(join(REPO_ROOT, "pyproject.toml")):
+        return [launcher]
+    return ["-m", f"qtstamp.{tool}"]
 
 LOBBY_CONFIG_NAME = "config_lobby.json"
 # 2b-iii's spelling. Never migrated out of the per-user config dir (other
@@ -69,7 +86,7 @@ def lobby_state(state_dir_override=None):
     says otherwise. Returns `(config_path, preset_dirs, preset_write_dir)` --
     `config_path` is where the config is *written*; reading goes through
     `paths.find_config`, which also sees the per-user dir and the presets
-    shipped in `qtstamp_defaults/`.
+    shipped in `qtstamp/defaults/`.
 
     Called at startup rather than resolved at import, because the override
     comes from parsed args and because the CWD is only meaningful once the
@@ -170,7 +187,7 @@ def load_config_dict(path=None, state_dir_override=None):
     from the defaults). Returns a fresh, fully-owned dict -- safe to mutate.
 
     `path=None` means "wherever the search path finds one" -- the workspace's
-    state dir, then the per-user dir, then `qtstamp_defaults/`. Finding nothing
+    state dir, then the per-user dir, then `qtstamp/defaults/`. Finding nothing
     is normal for a fresh workspace and yields DEFAULT_CONFIG untouched.
     """
     if path is None:
@@ -271,7 +288,7 @@ def build_band_argv(main_band, color_bands, composites, mef=False):
 
 
 def build_mosaic_argv(path, name, seed, ncols, nrows, classifications_dir, printname=False, band_argv=None):
-    argv = [join(REPO_ROOT, "mosaic.py"),
+    argv = [*tool_argv("mosaic"),
             "-p", path, "-l", str(ncols), "-m", str(nrows)]
     if name:
         argv += ["-N", name]
@@ -291,7 +308,7 @@ def build_mosaic_argv(path, name, seed, ncols, nrows, classifications_dir, print
 
 
 def build_single_argv(path, name, seed, classifications_string, classifications_dir, band_argv=None):
-    argv = [join(REPO_ROOT, "single_viewer.py"),
+    argv = [*tool_argv("single_viewer"),
             "-p", path, "--classifications", classifications_string]
     if name:
         argv += ["-N", name]

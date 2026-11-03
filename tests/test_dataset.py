@@ -19,9 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from astropy.io import fits
 
-import cli
-import fits_io
-from dataset import DatasetError, load_dataset
+from qtstamp import cli
+from qtstamp import fits_io
+from qtstamp.dataset import DatasetError, load_dataset
 from sample_data import write_band_dirs, write_mef_set
 
 
@@ -76,7 +76,7 @@ def test_mef_bands_searched_in_file_order_whatever_the_seed(tmpdir):
         searched.append(list(filenames))
         return real(directory, filenames, wanted)
 
-    with mock.patch('fits_io.locate_mef_bands', spy):
+    with mock.patch('qtstamp.fits_io.locate_mef_bands', spy):
         ds = _load(['-p', mef, '--mef', '-b', 'VIS_BGSUB', '-B', '', '--rgb-composites', '',
                     '-s', '7'])
     assert searched == [fits_io.list_fits_files(mef)]

@@ -54,8 +54,8 @@ import os
 from collections import namedtuple
 from datetime import datetime, timezone
 
-import paths
-from imaging import OLD_SCALE_NAMES, SCALES, atomic_write
+from . import paths
+from .imaging import OLD_SCALE_NAMES, SCALES, atomic_write
 
 STORE_VERSION = 1
 SESSIONS_FILENAME = 'sessions.json'

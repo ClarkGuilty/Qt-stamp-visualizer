@@ -52,3 +52,7 @@ temp_extract/
 # Role-workflow working state (dev-workflow skill), not for the public repo
 STATUS.md
 STEP.md
+
+# Wheel builds (`uv build`, `pip wheel .`)
+build/
+dist/

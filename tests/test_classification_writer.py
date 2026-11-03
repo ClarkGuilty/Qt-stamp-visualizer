@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
-from imaging import (ClassificationWriter, atomic_to_csv, next_free_csv_path,
+from qtstamp.imaging import (ClassificationWriter, atomic_to_csv, next_free_csv_path,
                      NEW_DATASET_FORK, SIMULTANEOUS_FORK)
 
 POSIX = sys.platform != 'win32'   # elsewhere chmod only toggles the read-only bit

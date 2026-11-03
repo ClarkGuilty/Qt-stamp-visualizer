@@ -24,29 +24,17 @@ dependencies = [
 Repository = "https://github.com/ClarkGuilty/Qt-stamp-visualizer"
 
 [project.scripts]
-qtstamp-mosaic = "mosaic:main"
-qtstamp-single = "single_viewer:main"
-qtstamp-lobby = "lobby:main"
+qtstamp-mosaic = "qtstamp.mosaic:main"
+qtstamp-single = "qtstamp.single_viewer:main"
+qtstamp-lobby = "qtstamp.lobby:main"
 
-[tool.setuptools]
-packages = ["qtstamp_defaults"]
-py-modules = [
-    "lobby",
-    "mosaic",
-    "single_viewer",
-    "cli",
-    "dataset",
-    "extraction",
-    "fits_io",
-    "imaging",
-    "paths",
-    "state",
-    "widgets",
-    "workers",
-]
+# One package. The top-level lobby.py, mosaic.py and single_viewer.py are launchers
+# for running from a checkout and are not installed: `qtstamp-*` replaces them.
+[tool.setuptools.packages.find]
+include = ["qtstamp*"]
 
 # The presets shipped as the last entry on paths.config_search_path(). Without
 # this they are absent from a wheel and a pip-installed lobby shows an empty
-# preset dropdown -- the same packaging hole fits_io.py fell into (PLAN.md 2b).
+# preset dropdown.
 [tool.setuptools.package-data]
-qtstamp_defaults = ["presets/*.json"]
+"qtstamp.defaults" = ["presets/*.json"]

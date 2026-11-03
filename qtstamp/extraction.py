@@ -13,7 +13,7 @@ from os.path import join
 
 import pandas as pd
 
-import fits_io
+from . import fits_io
 
 
 class ExtractionResult:

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from PIL import Image
 
-from imaging import (open_rendered_image, corner_box_size, background_rms_image,
+from qtstamp.imaging import (open_rendered_image, corner_box_size, background_rms_image,
                      SCALES, MOSAIC_DISPLAY, SINGLE_DISPLAY,
                      scale_limits, rescale_image, composite_image, get_value_range_asymmetric)
 
