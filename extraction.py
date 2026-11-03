@@ -13,6 +13,8 @@ from os.path import join
 
 import pandas as pd
 
+import fits_io
+
 
 class ExtractionResult:
     def __init__(self):
@@ -49,22 +51,35 @@ def extract(csv_path, source_root, output_root, positive_values,
     """Filter csv_path by positive_values and materialize matching files from
     every band subfolder of source_root into output_root, symlinking by
     default (use_symlink=False to copy instead). Returns an ExtractionResult.
+
+    A multi-extension FITS dataset (`fits_io.is_mef_dataset`: FITS files directly
+    under source_root, one per object, as the lobby detects it) has no band
+    subfolders: its matching files land directly in output_root, where the next
+    stage's --mef finds them (BUGS 41). Reported as one band, '(MEF)'.
+
+    Raises ValueError, before touching anything, when output_root is source_root.
     """
     def progress(msg):
         if on_progress is not None:
             on_progress(msg)
 
+    if os.path.realpath(output_root) == os.path.realpath(source_root):
+        # Each destination would be its own source: removed, then linked to itself.
+        raise ValueError(f"The output path is the data path ({source_root}); "
+                         "extracting there would delete the stamps. Pick another output path.")
+
     result = ExtractionResult()
     filenames = select_positive_filenames(csv_path, positive_values)
     progress(f"{len(filenames)} positive file(s) selected from {csv_path}")
 
-    bands = sorted(b for b in os.listdir(source_root)
-                    if os.path.isdir(join(source_root, b)))
-    result.bands_processed = bands
+    if fits_io.is_mef_dataset(source_root):
+        groups = [('(MEF)', source_root, output_root)]
+    else:
+        groups = [(b, join(source_root, b), join(output_root, b))
+                  for b in sorted(os.listdir(source_root)) if os.path.isdir(join(source_root, b))]
+    result.bands_processed = [band for band, _, _ in groups]
 
-    for band in bands:
-        src_band_dir = join(source_root, band)
-        out_band_dir = join(output_root, band)
+    for band, src_band_dir, out_band_dir in groups:
         os.makedirs(out_band_dir, exist_ok=True)
 
         for filename in filenames:

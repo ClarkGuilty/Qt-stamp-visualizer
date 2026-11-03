@@ -34,6 +34,8 @@ py-modules = [
     "lobby",
     "mosaic",
     "single_viewer",
+    "cli",
+    "dataset",
     "extraction",
     "fits_io",
     "imaging",

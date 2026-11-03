@@ -11,7 +11,6 @@ Run ``python lobby.py --help`` for the CLI.
 
 import argparse
 import copy
-import glob
 import json
 import os
 import shlex
@@ -25,10 +24,14 @@ from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QCheckBox, QComboBox
 
+import cli
+import dataset
 import extraction
 import fits_io
 import paths
 import state
+from imaging import (MOSAIC_CSV_PREFIX, SINGLE_CSV_PREFIX, atomic_write,
+                     classification_csv_base, classification_csvs, resume_csv)
 from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 from widgets import PredefinedConfigBar
 
@@ -185,21 +188,17 @@ def load_config_dict(path=None, state_dir_override=None):
 
 
 def count_band_images(source_path, band, mef=False):
-    if mef:
-        # Every band is an extension of the same per-object file, so any band's count
-        # is the dataset's object count -- there's no single per-band directory to look in.
-        return len(fits_io.list_fits_files(source_path))
-    band_path = join(source_path, band)
-    count = len({os.path.basename(f) for f in glob.glob(join(band_path, "*.fits"))})
-    if count:
-        return count
-    return len({os.path.basename(f) for f in (glob.glob(join(band_path, "*.png")) +
-                                                glob.glob(join(band_path, "*.jpg")) +
-                                                glob.glob(join(band_path, "*.jpeg")))})
+    "How many objects a viewer lists for `band` as its main band: the count in its CSV name."
+    return len(dataset.list_dataset_objects(source_path, band, mef)[0])
 
 
-def count_vis_images(source_path):
-    return count_band_images(source_path, "VIS", mef=fits_io.is_mef_dataset(source_path))
+def effective_main_band(main_band, color_bands):
+    """The band a viewer launched with these settings lists objects from, resolved
+    by the viewers' own rule from the -b/-B that build_band_argv sends them."""
+    main_band = (main_band or '').strip()
+    # NO_MAIN_BAND goes out as -b ''; an unset one is left out, so the viewer's default applies.
+    sent = '' if main_band == NO_MAIN_BAND else (main_band or cli.DEFAULT_MAIN_BAND)
+    return cli.resolve_main_band(sent, cli.split_bands(','.join(color_bands)))[0]
 
 
 def discover_bands(path):
@@ -218,55 +217,32 @@ def discover_bands(path):
     return sorted(d for d in os.listdir(path) if os.path.isdir(join(path, d)))
 
 
-def predict_mosaic_csv_path(source_path, name, seed, classifications_dir):
-    """Best-effort prediction of the CSV the mosaic tool just wrote.
+def _session_csvs(prefix, source_path, name, seed, main_band, mef, classifications_dir):
+    """Every CSV a viewer session for this dataset may have written, found exactly as
+    the viewer's own obtain_df() finds them, with `main_band` the band the viewer
+    lists objects from (see effective_main_band)."""
+    n_images = count_band_images(source_path, main_band, mef=mef)
+    return classification_csvs(classifications_dir,
+                               classification_csv_base(prefix, name, n_images, seed))
 
-    Replicates mosaic.py's own obtain_df() base_filename formula: dataset
-    identity only -- name, image count, seed. The grid shape is not part of it.
 
-    Rather than also replicating obtain_df()'s file-selection logic, this globs
-    for anything matching the base filename and returns the most recently
-    modified match -- mosaic rewrites its CSV on every click, so "most recently
-    modified" reliably identifies the file that session just wrote. Returns None
-    if nothing matches, so the caller can fall back to asking the user.
-    """
-    name = name or ''
-    n_images = count_vis_images(source_path)
-    base_filename = f'classification_mosaic_autosave_{name}_{n_images}'
-    if seed is None:
-        # `_*` is the seeded layout, which this unseeded session must not claim.
-        matches = ((set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv')))
-                    - set(glob.glob(join(classifications_dir, f'{base_filename}_*.csv'))))
-                   | set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
-    else:
-        matches = set(glob.glob(join(classifications_dir, f'{base_filename}_{seed}*.csv')))
-    if not matches:
-        return None
-    return max(matches, key=os.path.getmtime)
+def predict_mosaic_csv_path(source_path, name, seed, main_band, mef, classifications_dir):
+    """The CSV the mosaic just wrote, for chained-mode extraction: the newest of the
+    session's files, since the mosaic rewrites its CSV on every click, fork or not.
+    None if there is none, so the caller can fall back to asking the user."""
+    candidates = _session_csvs(MOSAIC_CSV_PREFIX, source_path, name, seed, main_band, mef,
+                               classifications_dir)
+    return max(candidates, key=os.path.getmtime) if candidates else None
 
 
 def predict_single_csv_path(source_path, name, seed, main_band, mef, classifications_dir):
-    """Best-effort prediction of the CSV a previous 1-by-1 session for this
-    dataset wrote, so a pre-launch scheme check (BUGS.md #15/#14) can look at
-    it before the viewer does. Replicates single_viewer.py's own obtain_df()
-    base_filename formula and glob patterns; see predict_mosaic_csv_path for
-    why "most recently modified match" stands in for obtain_df()'s own
-    file-selection logic.
-    """
-    name = name or ''
-    n_images = count_band_images(source_path, main_band, mef=mef)
-    base_filename = f'classification_single_{name}_{n_images}'
-    if seed is None:
-        matches = ((set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv')))
-                    - set(glob.glob(join(classifications_dir, f'{base_filename}_*.csv'))))
-                   | set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
-    else:
-        base_filename = f'{base_filename}_{seed}'
-        matches = (set(glob.glob(join(classifications_dir, f'{base_filename}-*.csv'))) |
-                   set(glob.glob(join(classifications_dir, f'{base_filename}.csv'))))
-    if not matches:
-        return None
-    return max(matches, key=os.path.getmtime)
+    """The CSV the 1-by-1 viewer will reopen for this dataset -- its own pick,
+    imaging.resume_csv over its own object order -- so a pre-launch scheme check
+    (BUGS.md #15/#14) can look at it before the viewer does."""
+    listimage = dataset.shuffle(dataset.list_dataset_objects(source_path, main_band, mef)[0],
+                                seed)
+    return resume_csv(classification_csvs(classifications_dir, classification_csv_base(
+        SINGLE_CSV_PREFIX, name, len(listimage), seed)), listimage)
 
 
 def build_band_argv(main_band, color_bands, composites, mef=False):
@@ -339,49 +315,38 @@ def classifications_string_from_rows(rows, log=None):
         if log is not None:
             log(message)
 
-    tokens = []
+    entries = []
     positive_majors = set()
-    seen_keys = {}
-    seen_subs = {}
     known_majors = {r['major'] for r in rows if r.get('type') == 'major'}
 
     for row_dict in rows:
         major, sub, key = row_dict.get('major', ''), row_dict.get('sub', ''), row_dict.get('key', '')
         if row_dict.get('type') != 'major':
             # A subclass may be shared by several majors: "A,B".
-            majors = split_majors(major)
+            majors = cli.split_majors(major)
             major = ','.join(majors)
         if not major or not key:
             continue
         if row_dict.get('type') == 'major':
-            tokens.append(f"{major}={key}")
+            entries.append(cli.SchemeEntry(major, '', key))
             if row_dict.get('positive'):
                 positive_majors.add(major)
         else:
             for m in majors:
                 if m not in known_majors:
                     warn(f"Warning: subclass '{sub}' refers to unknown major '{m}'")
-            tokens.append(f"{major}:{sub}={key}")
-            seen_subs[sub] = seen_subs.get(sub, 0) + 1
-        label = f"{major}:{sub}" if row_dict.get('type') == 'subclass' and sub else major
-        seen_keys.setdefault(key, []).append(label)
+            entries.append(cli.SchemeEntry(major, sub, key))
 
-    for key, labels in seen_keys.items():
-        if len(labels) > 1:
-            warn(f"Warning: keyboard shortcut '{key}' is assigned to more than "
-                 f"one button: {', '.join(labels)}")
-    for sub, count in seen_subs.items():
-        if count > 1:
-            warn(f"Warning: subclass '{sub}' is in {count} rows -- use one row and "
-                 "tick all its majors instead, or only one of its buttons lights up "
-                 "on a resumed object.")
+    for key, labels in cli.duplicate_keys(entries).items():
+        warn(f"Warning: keyboard shortcut '{key}' is assigned to more than "
+             f"one button: {', '.join(labels)}")
+    for sub, count in cli.duplicate_subclasses(entries).items():
+        warn(f"Warning: subclass '{sub}' is in {count} rows -- use one row and "
+             "tick all its majors instead, or only one of its buttons lights up "
+             "on a resumed object.")
 
-    return ";".join(tokens), positive_majors
+    return cli.format_classifications(entries), positive_majors
 
-
-def split_majors(text):
-    "A subclass row's Major cell ('A' or 'A,B') as a list of major names, no repeats."
-    return list(dict.fromkeys(m.strip() for m in (text or '').split(',') if m.strip()))
 
 
 class MultiMajorCombo(QComboBox):
@@ -995,11 +960,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _effective_main_band(self):
         "The band the viewer will treat as main: with NO_MAIN_BAND, the first ticked color band."
-        main_band = self._main_band_choice()
-        if main_band == NO_MAIN_BAND:
-            color_bands = self._checked_color_bands()
-            return color_bands[0] if color_bands else ''
-        return main_band
+        return effective_main_band(self._main_band_choice(), self._checked_color_bands())
 
     def _populate_color_bands_list(self, bands, checked):
         self.color_bands_list.clear()
@@ -1119,7 +1080,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         if isinstance(combo, MultiMajorCombo):
             return
         combo = MultiMajorCombo(majors_source=self._scheme_major_names,
-                                checked=split_majors(item.text()))
+                                checked=cli.split_majors(item.text()))
         combo.majorsChanged.connect(lambda _: self.update_classifications_preview())
         self.scheme_table.setCellWidget(row, COL_MAJOR, combo)
         item.setText('')
@@ -1353,6 +1314,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             return
 
         self._save_session_record()
+        self.save_dict()  # on every Run too, not only on a clean close (BUGS 19)
         self._log_band_warnings()
         band_argv = self._band_argv()
         classifications_dir = self._classifications_dir()
@@ -1409,6 +1371,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'source_path': path,
             'name': name,
             'seed': seed,
+            'main_band': self._effective_main_band(),
+            'mef': self.mef,
             'ncols': ncols,
             'nrows': nrows,
             'classifications_dir': classifications_dir,
@@ -1434,7 +1398,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         csv_path = predict_mosaic_csv_path(
             source_path, context.get('name'), context.get('seed'),
-            classifications_dir)
+            context.get('main_band', self._effective_main_band()),
+            context.get('mef', self.mef), classifications_dir)
         if csv_path:
             self.log(f"Auto-detected classification CSV: {csv_path}")
         else:
@@ -1454,12 +1419,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         positive_values = self._mosaic_positive_values()
 
-        result = extraction.extract(
-            csv_path, source_path, output_path, positive_values,
-            use_symlink=not self.copy_instead_cb.isChecked(),
-            on_progress=self.log,
-        )
-        self.log(f"Extraction complete. {result.summary()}")
+        result = self._extract(csv_path, source_path, output_path, positive_values)
+        if result is None:
+            return
 
         classifications_string = self.resolve_single_classifications_string(
             output_path, context.get('name'), context.get('seed'), classifications_dir)
@@ -1490,12 +1452,21 @@ class LobbyWindow(QtWidgets.QMainWindow):
         _, scheme_positive_majors = self.build_classifications_string()
         positive_values |= scheme_positive_majors
 
-        result = extraction.extract(
-            csv_path, source_path, output_path, positive_values,
-            use_symlink=not self.copy_instead_cb.isChecked(),
-            on_progress=self.log,
-        )
+        self._extract(csv_path, source_path, output_path, positive_values)
+
+    def _extract(self, csv_path, source_path, output_path, positive_values):
+        "extraction.extract with this window's options, logged. None if it refused."
+        try:
+            result = extraction.extract(
+                csv_path, source_path, output_path, positive_values,
+                use_symlink=not self.copy_instead_cb.isChecked(),
+                on_progress=self.log,
+            )
+        except ValueError as e:
+            self.log(f"Extraction not run: {e}")
+            return None
         self.log(f"Extraction complete. {result.summary()}")
+        return result
 
     # ---------------------------------------------------------- persistence
 
@@ -1631,8 +1602,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
                 print(f"Warning: {os.path.dirname(self.config_path)} is not writable; "
                       "lobby settings will not be remembered.", file=sys.stderr)
                 return False
-            with open(self.config_path, 'w') as f:
-                json.dump(self.config_dict, f, ensure_ascii=False, indent=4)
+            atomic_write(self.config_path,
+                         lambda f: json.dump(self.config_dict, f, ensure_ascii=False, indent=4),
+                         suffix='.json')
         except OSError as exc:
             print(f"Warning: could not save the lobby config to {self.config_path}: {exc}",
                   file=sys.stderr)
@@ -1775,11 +1747,6 @@ def mosaic_positive_values_from_config(c):
     return values
 
 
-def _parse_rgb_composites(text):
-    return [[b.strip() for b in triple.split(',')]
-            for triple in text.split(';') if triple.strip()]
-
-
 def config_from_cli(args):
     """Lobby config dict for the headless CLI (BUGS.md item 14).
 
@@ -1835,7 +1802,8 @@ def config_from_cli(args):
     if args.color_bands is not None:
         c['color_bands'] = [b.strip() for b in args.color_bands.split(',') if b.strip()]
     if args.rgb_composites is not None:
-        c['rgb_composites'] = _parse_rgb_composites(args.rgb_composites)
+        # The viewers' grammar: ValueError on an entry that is not R,G,B (see main).
+        c['rgb_composites'] = [list(t) for t in cli.parse_rgb_composites(args.rgb_composites)]
     if args.ncols is not None:
         c['mosaic_ncols'] = args.ncols
     if args.nrows is not None:
@@ -1866,8 +1834,9 @@ def run_headless(config, classifications_override=None, print_command_only=False
     path = os.path.abspath(os.path.expanduser(path)) if path else path
     name = config['session_name']
     seed = config['seed_value'] if config['seed_enabled'] else None
+    mef = fits_io.is_mef_dataset(path)
     band_argv = build_band_argv(config['main_band'], config['color_bands'],
-                                config['rgb_composites'], mef=fits_io.is_mef_dataset(path))
+                                config['rgb_composites'], mef=mef)
     classifications_dir = resolve_classifications_dir(config['classifications_path'])
 
     if classifications_override is not None:
@@ -1932,16 +1901,22 @@ def run_headless(config, classifications_override=None, print_command_only=False
         log(f"Mosaic stage exited with code {code} -- stopping before extraction.")
         return code
 
-    csv_path = predict_mosaic_csv_path(path, name, seed, classifications_dir)
+    csv_path = predict_mosaic_csv_path(
+        path, name, seed, effective_main_band(config['main_band'], config['color_bands']),
+        mef, classifications_dir)
     if not csv_path:
         log("Could not auto-detect the mosaic classification CSV -- run the chained "
             "workflow from the lobby GUI instead, or extract manually.")
         return 3
     log(f"Auto-detected classification CSV: {csv_path}")
 
-    result = extraction.extract(
-        csv_path, path, output_path, mosaic_positive_values_from_config(config),
-        use_symlink=not config['copy_instead_of_symlink'], on_progress=log)
+    try:
+        result = extraction.extract(
+            csv_path, path, output_path, mosaic_positive_values_from_config(config),
+            use_symlink=not config['copy_instead_of_symlink'], on_progress=log)
+    except ValueError as e:
+        log(f"Extraction not run: {e}")
+        return 2
     log(f"Extraction complete. {result.summary()}")
 
     return run(build_single_argv(output_path, name, seed, classifications_string,
@@ -1950,7 +1925,6 @@ def run_headless(config, classifications_override=None, print_command_only=False
 
 def _build_arg_parser():
     p = argparse.ArgumentParser(
-        prog="lobby.py",
         description="Launcher for the mosaic and 1-by-1 stamp viewers. With no "
                     "arguments it opens the lobby window; --no-gui / --print-command "
                     "run the configured workflow straight from the command line, "
@@ -2032,7 +2006,11 @@ def main():
         win.show()
         sys.exit(app.exec())
 
-    sys.exit(run_headless(config_from_cli(args),
+    try:
+        config = config_from_cli(args)
+    except ValueError as e:
+        parser.error(str(e))
+    sys.exit(run_headless(config,
                           classifications_override=args.classifications,
                           print_command_only=args.print_command,
                           state_dir_override=state_dir_override))

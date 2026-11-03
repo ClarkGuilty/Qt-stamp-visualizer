@@ -44,7 +44,8 @@ a defined fallback -- start at 0 -- rather than an out-of-range index.
 Everything here is a pure function over directory paths: no Qt, no globals.
 The imports are `imaging.atomic_write` and `paths` (itself Qt- and
 astropy-free), so the session store and the classification CSVs are written --
-and keep their permissions -- the same way.
+and keep their permissions -- the same way; and `imaging.SCALES`/`OLD_SCALE_NAMES`,
+to read a saved scale name.
 """
 
 import hashlib
@@ -54,7 +55,7 @@ from collections import namedtuple
 from datetime import datetime, timezone
 
 import paths
-from imaging import atomic_write
+from imaging import OLD_SCALE_NAMES, SCALES, atomic_write
 
 STORE_VERSION = 1
 SESSIONS_FILENAME = 'sessions.json'
@@ -266,6 +267,10 @@ def _update_session(session_id, classifications_dir, fields, max_sessions=MAX_SE
     there competing for a slot under `prune`. That is the same "both keys are
     one identity" rule `forget_session` already applies; before this, a
     pre-2b-i entry survived every save as a stale duplicate.
+
+    Not locked: when another tool saves between this read and this write, the
+    later write wins and the other's change is lost until that tool saves again
+    (BUGS 17, accepted as a risk). Each viewer saves on every page or object.
     """
     store = load_store(classifications_dir)  # both viewers and the lobby share this file
     key = session_key(session_id, classifications_dir)
@@ -285,7 +290,12 @@ def _update_session(session_id, classifications_dir, fields, max_sessions=MAX_SE
 
 def save_session(session_id, classifications_dir, position_filename=None, csv=None,
                  max_sessions=MAX_SESSIONS):
-    "Record where this session is, and which CSV that position belongs to."
+    """Record where this session is, and which CSV that position belongs to.
+
+    The two are one record and are replaced together: saving a position without
+    its `csv` clears the recorded one, on purpose (BUGS 20, closed). Keeping it
+    would have `resolve_position` check the new position against a file it was
+    not recorded for. The entry's other keys (the lobby's config) are kept."""
     return _update_session(session_id, classifications_dir, {
         'position_filename': position_filename,
         'csv': paths.relative_to(csv, classifications_dir)[0] if csv else None,
@@ -589,3 +599,39 @@ def migrate_legacy_config(legacy_path, session_id, defaults, listimage, legacy_i
 
     os.replace(legacy_path, legacy_path + '.bak')
     return True
+
+
+# --- viewer startup -----------------------------------------------------------
+
+def open_classifications_dir(path=None):
+    """The classifications directory a viewer is about to write in: resolved,
+    created, and holding any pre-2b-i store from the CWD (`migrate_sessions_store`)."""
+    classifications_dir = paths.resolve_classifications_dir(path)
+    os.makedirs(classifications_dir, exist_ok=True)
+    migrate_sessions_store(classifications_dir)
+    return classifications_dir
+
+
+def load_viewer_state(session_id, defaults, listimage, legacy_config_file, legacy_index,
+                      csv, classifications_dir, config_dir=None):
+    """(preferences, resume index) for a viewer that has just opened its CSV.
+
+    Runs the one-time migrations first, then reads both. The index is checked
+    against `csv` (`resolve_position`): a position recorded against another
+    classification file is stale, and resumes at 0.
+    """
+    tool = session_id.tool
+    migrate_preferences_file(tool, config_dir=config_dir)
+    migrate_legacy_config(legacy_config_file, session_id, defaults, listimage, legacy_index,
+                          csv=csv, classifications_dir=classifications_dir, config_dir=config_dir)
+    preferences = load_preferences(tool, defaults, config_dir=config_dir)
+    if preferences.get('colormap') == 'gray':  # renamed upstream long ago
+        preferences['colormap'] = 'gist_gray'
+    if 'scale' in preferences:
+        # The 1-by-1's names before 2026-10-06 are read as today's; one neither
+        # viewer knows (a hand edit, a newer build) falls back to the default.
+        scale = OLD_SCALE_NAMES.get(preferences['scale'], preferences['scale'])
+        preferences['scale'] = scale if scale in SCALES else defaults['scale']
+    position = resolve_position(load_session(session_id, classifications_dir), listimage,
+                                csv=csv, classifications_dir=classifications_dir)
+    return preferences, position

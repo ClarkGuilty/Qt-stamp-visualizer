@@ -464,6 +464,20 @@ def test_explicit_state_dir_wins_over_global(tmpdir, monkeypatch):
     assert paths.resolve_state_dir_override(args) == join(paths.absolute(tmpdir), 'explicit')
 
 
+def test_empty_state_dir_is_an_error_not_the_default():
+    "BUGS 28: `--state-dir ''` used to fall through to ./.qtstamp silently."
+    import contextlib
+    import io
+    for value in ('', '  '):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                _parse(['--state-dir', value])
+        except SystemExit as e:
+            assert e.code == 2
+        else:
+            raise AssertionError(f'--state-dir {value!r} was accepted')
+
+
 # --- scratch_dir: one scratch directory per process ------------------------
 
 def _dead_pid():

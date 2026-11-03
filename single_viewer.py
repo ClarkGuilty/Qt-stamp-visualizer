@@ -32,17 +32,17 @@ import sys
 from time import time
 import webbrowser
 
+import cli
+from dataset import DatasetError, load_dataset
 import fits_io
 from imaging import (
-    identity, log, asinh2,
-    get_value_range_asymmetric, clip_normalize, contrast_bias_scale,
-    get_contrast_bias_reasonable_assumptions, natural_sort, open_rendered_image,
-    corner_box_size, background_rms_image,
+    SCALES, SINGLE_DISPLAY, scale_limits, rescale_image, composite_image,
+    open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
+    SINGLE_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
 )
 import paths
-from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 import state
 from widgets import PanelRowPicker, SettingsMenu, BandNamesLabel, MissingBandsNote
 from workers import (
@@ -52,168 +52,6 @@ from workers import (
     purge_placeholder_cutouts,
 )
 
-parser = argparse.ArgumentParser(description='configure the parameters of the execution.')
-parser.add_argument('-p',"--path", help="path to the images to inspect",
-                    default="Color_stamps_to_inspect")
-parser.add_argument('-N',"--name", help="name of the classifying session.",
-                    default=None)
-parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
-                    "tool's default band: the panel that's always individually shown and pre-selected. "
-                    "Pass -b '' for no main band (PNG/JPG sets, which have no WCS): the first -B "
-                    "band then takes its place.",
-                    default="VIS")
-parser.add_argument('-B',"--color_bands", help='Comma-separated bands to show individually via "Show NISP '
-                    'bands". Example: "Y,J,H"',
-                    default="Y,J,H")
-parser.add_argument("--reset-config", help="forgets the saved preferences (colormap, scale, "
-                    "panels, toggles) during startup. Resume positions are kept; use "
-                    "--reset-position for those.",
-                    action="store_true", default=False)
-parser.add_argument("--reset-position", help="forgets the saved resume position for this "
-                    "--path/--name/--seed, so the session restarts at the first image. "
-                    "Preferences are kept.",
-                    action="store_true", default=False)
-parser.add_argument("--verbose", help="activates loging to terminal",
-                    action="store_true", default=False)
-parser.add_argument("--clean", help="cleans the legacy survey folder.",
-                    action="store_true")
-parser.add_argument("--legacysurvey",
-                    help="Enables the Legacy Survey panel and downloads. On by default; "
-                    "pass --no-legacysurvey to disable (e.g. if the Legacy Survey server is unreliable).",
-                    action=argparse.BooleanOptionalAction,
-                    default=True)
-parser.add_argument("--ls-big-fov-residuals",
-                    help="Also pre-fetch the large-field-of-view Legacy Survey residual "
-                    "cutout, so that turning on both 'Large FoV' and 'Residuals' shows a "
-                    "cached image instead of downloading on demand. Off by default: it "
-                    "adds a fourth Legacy Survey download per object.",
-                    action=argparse.BooleanOptionalAction,
-                    default=False)
-parser.add_argument('-s',"--seed", help="seed used to shuffle the images.",type=int,
-                    default=None)
-parser.add_argument('--classifications',
-                    help='Classification buttons: semicolon-separated MAJOR=KEY or MAJOR:SUB=KEY entries. '
-                    'A bare MAJOR=KEY (or empty SUB) makes a major-class button; MAJOR:SUB=KEY makes a '
-                    'subclass button under that major, setting both fields when clicked. A subclass '
-                    'shared by several majors lists them comma-separated, MAJOR1,MAJOR2:SUB=KEY: '
-                    'clicking it highlights those majors and dims every other button, and the major '
-                    'clicked next sets both fields; clicking the subclass again cancels. '
-                    'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"',
-                    default="A=1;B=2;C=3;X=4;I=5")
-parser.add_argument('--rgb-composites',
-                    help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
-                    "under --path can be a band -- not just VIS/Y/J/H/I). A composite's own name/label is "
-                    'simply its comma-joined member list. Example: "H,Y,I;H,J,Y". '
-                    'All three bands in a composite must have the exact same image dimensions '
-                    '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
-                    default="H,Y,I;H,J,Y")
-parser.add_argument("--classifications-dir", metavar="PATH",
-                    help="Directory for the autosaved classification CSVs. Absolute, or "
-                    "relative to the directory you launch from; created if it does not "
-                    "exist. Default: ./Classifications",
-                    default=None)
-parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
-                    "files -- one file per object, with bands as HDU extensions "
-                    "(identified by EXTNAME) inside it, instead of one subdirectory per "
-                    "band. Bands are looked up by EXTNAME in each object's own file, so "
-                    "files may differ; a band a file lacks shows as a placeholder. Names "
-                    "passed to -b/-B/--rgb-composites must match an EXTNAME some file has.",
-                    action="store_true", default=False)
-add_state_dir_args(parser)
-
-args = parser.parse_args()
-STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
-
-# Empty entries dropped: -B '' means "no color bands", not one band named ''
-# (which passes the missing-directory check below -- it resolves to --path itself
-# -- and then fails at image load).
-args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
-
-# -b '' means "no main band": PNG/JPG stamps carry no WCS, which is most of what a
-# main band is for. The first color band takes its other job -- the object list and
-# the default panel -- so the rest of the tool never sees an empty main band.
-args.main_band = (args.main_band or '').strip()
-if not args.main_band:
-    if not args.color_bands:
-        parser.error('-b "" (no main band) needs at least one -B color band to take its place.')
-    args.main_band = args.color_bands.pop(0)
-
-args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
-args.composite_band_members = {}  # key -> (r, g, b) tuple
-for entry in args.rgb_composites.split(';'):
-    entry = entry.strip()
-    if not entry:
-        continue
-    members = tuple(b.strip() for b in entry.split(','))
-    if len(members) != 3:
-        parser.error(f'--rgb-composites entry "{entry}" must have exactly 3 comma-separated bands (R,G,B).')
-    key = ','.join(members)
-    args.composite_bands.append(key)
-    args.composite_band_members[key] = members
-
-if not args.mef:
-    # Under --mef there are no per-band subdirectories to check here -- band names are
-    # validated against the first file's extensions instead, once ApplicationWindow opens it.
-    _referenced_bands = ({args.main_band} | set(args.color_bands) |
-                          {b for members in args.composite_band_members.values() for b in members})
-    _missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
-    if _missing_bands:
-        _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
-            if os.path.isdir(args.path) else []
-        print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
-              f"{', '.join(sorted(_missing_bands))}")
-        print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
-        sys.exit(1)
-
-args.major_classes = []  # list of (major, key) tuples, in declared order
-args.subclasses = []  # list of (majors, sub, key) tuples, in declared order; majors is a tuple
-seen_keys = {}  # key -> list of labels, for the duplicate-key warning
-seen_subs = {}  # sub -> number of entries declaring it, for the duplicate-subclass warning
-for entry in args.classifications.split(';'):
-    entry = entry.strip()
-    if not entry:
-        continue
-    rest, _, key = entry.rpartition('=')
-    key = key.strip()
-    major, _, sub = rest.partition(':')
-    major, sub = major.strip(), sub.strip()
-    label = f"{major}:{sub}" if sub else major
-    seen_keys.setdefault(key, []).append(label)
-    if sub:
-        majors = tuple(dict.fromkeys(m.strip() for m in major.split(',') if m.strip())) or ('',)
-        args.subclasses.append((majors, sub, key))
-        seen_subs[sub] = seen_subs.get(sub, 0) + 1
-    else:
-        args.major_classes.append((major, key))
-for key, labels in seen_keys.items():
-    if len(labels) > 1:
-        print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
-for sub, count in seen_subs.items():
-    if count > 1:
-        # One button per subclass name is what lights up on a resumed row -- the
-        # CSV stores only the name -- so a second entry would take its place.
-        print(f"Warning: subclass '{sub}' is declared {count} times -- declare it once "
-              f"with its majors comma-separated (e.g. \"A,B:{sub}=KEY\") instead.")
-
-
-# Downloaded cutouts live with the workspace (2b-v), under the state dir's
-# cache/. `paths.cache_dir` falls back to the per-user cache dir if the local
-# one is unusable -- unlike settings, a cache has no user intent to respect and
-# no fetch can succeed without somewhere to land. Cutouts already downloaded
-# into the per-user dir by a 2b-iii-era run are not reused here: moving them
-# would strand every other workspace that reads them, so they re-download.
-_CACHE_DIR = paths.cache_dir(override=STATE_DIR_OVERRIDE)
-LEGACY_SURVEY_PATH = os.path.join(_CACHE_DIR, 'Legacy_survey')
-PANSTARRS_PATH = os.path.join(_CACHE_DIR, 'PanSTARRS')
-# ... but not when the workspace *is* the checkout: `Legacy_survey/README` and
-# `PanSTARRS/README` are tracked, and migrating moves the whole directory, which
-# would show up as a deletion in `git status`. Someone running inside the
-# checkout keeps their old cutouts where they are and re-downloads into
-# `.qtstamp/cache/` -- far cheaper than a surprise `git rm` of tracked files.
-_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-if paths.absolute(os.curdir) != paths.absolute(_REPO_ROOT):
-    paths.migrate_once(os.path.join(os.curdir, 'Legacy_survey'), LEGACY_SURVEY_PATH)
-    paths.migrate_once(os.path.join(os.curdir, 'PanSTARRS'), PANSTARRS_PATH)
 LEGACY_SURVEY_PIXEL_SIZE=0.262
 
 PANSTARRS_PIXEL_SIZE = 0.25
@@ -233,37 +71,88 @@ SESSION_TOOL = 'single'
 # kept as a .bak -- see state.migrate_legacy_config.
 LEGACY_CONFIG_FILE = ".config.json"
 
-if args.reset_config:
-    state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
-    if state.reset_preferences(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE):
-        print("Preferences reset.")
-    if os.path.exists(LEGACY_CONFIG_FILE):
-        # Otherwise the migration below would immediately restore what was just reset.
-        os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
+def parse_args(argv=None):
+    """The 1-by-1 viewer's arguments, normalised (see cli.finish_dataset_args), with
+    --classifications split into `major_classes` and `subclasses`. `argv` defaults
+    to sys.argv."""
+    parser = argparse.ArgumentParser(description='configure the parameters of the execution.')
+    cli.add_dataset_args(parser)
+    parser.add_argument("--verbose", help="activates loging to terminal",
+                        action="store_true", default=False)
+    parser.add_argument("--clean", help="Empties this workspace's Legacy Survey and PanSTARRS "
+                        "cutout caches (.qtstamp/cache/, or under --state-dir) before starting.",
+                        action="store_true")
+    parser.add_argument("--legacysurvey",
+                        help="Enables the Legacy Survey panel and downloads. On by default; "
+                        "pass --no-legacysurvey to disable (e.g. if the Legacy Survey server is unreliable).",
+                        action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--ls-big-fov-residuals",
+                        help="Also pre-fetch the large-field-of-view Legacy Survey residual "
+                        "cutout, so that turning on both 'Large FoV' and 'Residuals' shows a "
+                        "cached image instead of downloading on demand. Off by default: it "
+                        "adds a fourth Legacy Survey download per object.",
+                        action=argparse.BooleanOptionalAction,
+                        default=False)
+    parser.add_argument('--classifications',
+                        help='Classification buttons: semicolon-separated MAJOR=KEY or MAJOR:SUB=KEY entries. '
+                        'A bare MAJOR=KEY (or empty SUB) makes a major-class button; MAJOR:SUB=KEY makes a '
+                        'subclass button under that major, setting both fields when clicked. A subclass '
+                        'shared by several majors lists them comma-separated, MAJOR1,MAJOR2:SUB=KEY: '
+                        'clicking it highlights those majors and dims every other button, and the major '
+                        'clicked next sets both fields; clicking the subclass again cancels. '
+                        'Example: "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"',
+                        default="A=1;B=2;C=3;X=4;I=5")
+    args = parser.parse_args(argv)
+    cli.finish_dataset_args(parser, args)
 
-if args.reset_position:
-    _anchor = resolve_classifications_dir(args.classifications_dir)
-    state.migrate_sessions_store(_anchor)
-    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed),
-                            _anchor):
-        print("Resume position reset.")
+    entries = cli.parse_classifications(args.classifications)
+    # major_classes: [(major, key)]; subclasses: [(majors, sub, key)], majors a tuple.
+    args.major_classes, args.subclasses = cli.scheme_buttons(entries)
+    for key, labels in cli.duplicate_keys(entries).items():
+        print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
+    for sub, count in cli.duplicate_subclasses(entries).items():
+        print(f"Warning: subclass '{sub}' is declared {count} times -- declare it once "
+              f"with its majors comma-separated (e.g. \"A,B:{sub}=KEY\") instead.")
+    return args
 
-if args.clean:
-    for f in (glob.glob(join(LEGACY_SURVEY_PATH,"*.jpg")) +
-              glob.glob(join(PANSTARRS_PATH,"*.jpg")) +
-              glob.glob(join(LEGACY_SURVEY_PATH,"*.miss")) +
-              glob.glob(join(PANSTARRS_PATH,"*.miss"))):
-        if os.path.exists(f):
-            os.remove(f)
-else:
-    # Older versions wrote a black 66x66 JPEG into the cache whenever a
-    # download failed, and every reader then treated that file's existence as a
-    # cache hit -- so one outage blacked out those coordinates permanently.
-    # Misses are sidecar markers now; clear the placeholders left behind.
-    _purged = purge_placeholder_cutouts(LEGACY_SURVEY_PATH, PANSTARRS_PATH)
-    if _purged:
-        print(f"Removed {_purged} cached failure placeholder(s); "
-              "those cutouts will be downloaded again when needed.")
+
+def survey_cache_paths(state_dir_override=None):
+    "(Legacy Survey, PanSTARRS) cutout cache directories for this workspace."
+    # Downloaded cutouts live with the workspace (2b-v), under the state dir's
+    # cache/. `paths.cache_dir` falls back to the per-user cache dir if the local
+    # one is unusable -- unlike settings, a cache has no user intent to respect and
+    # no fetch can succeed without somewhere to land. Cutouts already downloaded
+    # into the per-user dir by a 2b-iii-era run are not reused here: moving them
+    # would strand every other workspace that reads them, so they re-download.
+    cache = paths.cache_dir(override=state_dir_override)
+    return os.path.join(cache, 'Legacy_survey'), os.path.join(cache, 'PanSTARRS')
+
+
+def prepare_survey_caches(args):
+    """Startup housekeeping on the cutout caches: bring old cutouts over from the
+    CWD, then empty the caches (--clean) or clear out the failure placeholders
+    older versions left in them."""
+    legacy_survey_path, panstarrs_path = survey_cache_paths(args.state_dir_override)
+    paths.migrate_once(os.path.join(os.curdir, 'Legacy_survey'), legacy_survey_path)
+    paths.migrate_once(os.path.join(os.curdir, 'PanSTARRS'), panstarrs_path)
+
+    if args.clean:
+        for f in (glob.glob(join(legacy_survey_path,"*.jpg")) +
+                  glob.glob(join(panstarrs_path,"*.jpg")) +
+                  glob.glob(join(legacy_survey_path,"*.miss")) +
+                  glob.glob(join(panstarrs_path,"*.miss"))):
+            if os.path.exists(f):
+                os.remove(f)
+    else:
+        # Older versions wrote a black 66x66 JPEG into the cache whenever a
+        # download failed, and every reader then treated that file's existence as a
+        # cache hit -- so one outage blacked out those coordinates permanently.
+        # Misses are sidecar markers now; clear the placeholders left behind.
+        purged = purge_placeholder_cutouts(legacy_survey_path, panstarrs_path)
+        if purged:
+            print(f"Removed {purged} cached failure placeholder(s); "
+                  "those cutouts will be downloaded again when needed.")
 
 def legacy_survey_number_of_pixels(image_pixel_size,
                                     image_dim,
@@ -273,26 +162,30 @@ def legacy_survey_number_of_pixels(image_pixel_size,
         pixels_big_fov_ls = 2*n_pixels_in_ls
     return n_pixels_in_ls, pixels_big_fov_ls
 
-PANSTARRS_BIG_FOV_ARCSEC = 1.4
+# One "Large FoV" toggle drives both survey panels, so PanSTARRS covers the same
+# ~2.1' as Legacy Survey's 488 px, and doubles the stamp when that is wider (BUGS 44).
+PANSTARRS_BIG_FOV_ARCSEC = 488*LEGACY_SURVEY_PIXEL_SIZE
 
 def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECONDS
     n_pixels_in_ps1 = int(np.ceil(image_pixel_size*image_dim/PANSTARRS_PIXEL_SIZE))
     pixels_big_fov_ps1 = int(np.ceil(PANSTARRS_BIG_FOV_ARCSEC/PANSTARRS_PIXEL_SIZE))
+    if n_pixels_in_ps1 >= pixels_big_fov_ps1:
+        pixels_big_fov_ps1 = 2*n_pixels_in_ps1
     return n_pixels_in_ps1, pixels_big_fov_ps1
 
 
 class FetchThread(QThread):
     def __init__(self, df, initial_counter, main_band_source, listimage,
+                 legacy_survey_path, panstarrs_path,
                  fetch_panstarrs=True, fetch_legacysurvey=True,
-                 fetch_big_fov_residuals=False, parent=None):
+                 fetch_big_fov_residuals=False, verbose=False, parent=None):
             QThread.__init__(self, parent)
 
             self.df = df
             self.initial_counter = initial_counter
-            self.legacy_survey_path = LEGACY_SURVEY_PATH
-            self.panstarrs_path = PANSTARRS_PATH
-            self.stampspath = args.path
-            self.main_band = args.main_band
+            self.legacy_survey_path = legacy_survey_path
+            self.panstarrs_path = panstarrs_path
+            self.verbose = verbose
             # Passed in rather than rediscovered here, so this thread's view of "the
             # main band's file for object N" can never drift from ApplicationWindow's.
             self.main_band_source = main_band_source
@@ -308,12 +201,12 @@ class FetchThread(QThread):
         savefile = os.path.join(self.legacy_survey_path,
                                 legacy_survey_cache_name(ra, dec, size, residual=residual))
         return fetch_legacy_survey(savefile, ra, dec, size, residual=residual,
-                                   pixscale=pixscale, verbose=args.verbose)
+                                   pixscale=pixscale, verbose=self.verbose)
 
     def download_panstarrs(self,ra,dec,size=240):
         savefile = os.path.join(self.panstarrs_path,
                                 panstarrs_cache_name(ra, dec, size))
-        return fetch_panstarrs(savefile, ra, dec, size, verbose=args.verbose)
+        return fetch_panstarrs(savefile, ra, dec, size, verbose=self.verbose)
 
     def interrupt(self):
         self._active = False
@@ -357,8 +250,9 @@ class FetchThread(QThread):
         return 0
 
 class ApplicationWindow(QtWidgets.QMainWindow):
-    def __init__(self, clipboard=None):
+    def __init__(self, args, clipboard=None):
         super().__init__()
+        self.args = args
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
@@ -399,90 +293,28 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.buttoncolor = "darkRed"
         self.buttonclasscolor = "darkRed"
         self.buttonoptioncolor = "darkOrange"  # majors offered by a pending shared subclass
-        self.scale2funct = {'identity':identity,
-                            'sqrt':np.sqrt,
-                            'log':log,
-                            'log10':log,
-                            'cbrt':np.cbrt,
-                            'asinh2':asinh2}
 
 
         self.stampspath = args.path
         self.main_band = args.main_band
         self.color_bands = args.color_bands
-        self.legacy_survey_path = LEGACY_SURVEY_PATH
-        self.panstarrs_path = PANSTARRS_PATH
+        self.legacy_survey_path, self.panstarrs_path = survey_cache_paths(args.state_dir_override)
         self.random_seed = args.seed
 
-        if args.mef:
-            self.listimage = fits_io.list_fits_files(self.stampspath)
-            self.filetype = 'FITS'
-            print(f"Classifying {len(self.listimage)} sources.")
-            if len(self.listimage) < 1:
-                print(f"No FITS files found in {self.stampspath}.")
-                sys.exit(1)
-        else:
-            base_band_path = join(self.stampspath, self.main_band)
-            self.listimage, self.filetype = fits_io.list_objects(base_band_path)
-            print(f"Classifying {len(self.listimage)} sources.")
-
-            if len(self.listimage) < 1:
-                print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
-                sys.exit(1)
-
-        if self.random_seed is not None:
-            print(f"Shuffling with seed {self.random_seed}")
-            rng = np.random.default_rng(self.random_seed)
-            rng.shuffle(self.listimage) #inplace shuffling
-
-        if args.mef:
-            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                    {b for members in args.composite_band_members.values() for b in members})
-            # Only a band no file has stops the run; one some files lack is a placeholder there.
-            mef_bands, seen = fits_io.locate_mef_bands(self.stampspath, self.listimage,
-                                                       self.all_single_bands)
-            missing = sorted(b for b in self.all_single_bands if b not in mef_bands)
-            if missing:
-                searched = min(len(self.listimage), fits_io.MEF_BAND_SEARCH_FILES)
-                where = (f"any of the {searched}" if searched == len(self.listimage)
-                         else f"the first {searched} of the {len(self.listimage)}")
-                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {where} files "
-                      f"in {self.stampspath}: {', '.join(missing)}")
-                print(f"Available extensions: {', '.join(seen) if seen else '(none found)'}")
-                sys.exit(1)
-            self.band_filetype = {b: 'FITS' for b in self.all_single_bands}
-            self.band_sources = {b: fits_io.ExtensionBandSource(self.stampspath, mef_bands[b])
-                                  for b in self.all_single_bands}
-            # MEF bands are always FITS, so every declared composite is automatically eligible.
-            self.composite_bands = list(args.composite_bands)
-            self.composite_band_members = dict(args.composite_band_members)
-        else:
-            # Each band's format is a property of its own directory (detected independently),
-            # so bands can mix FITS and PNG/JPG within the same session -- only the main band
-            # (self.filetype) governs the object list and RA/Dec-dependent tools.
-            self.band_filetype = {self.main_band: self.filetype}
-            for band in (set(self.color_bands) |
-                         {b for members in args.composite_band_members.values() for b in members}):
-                self.band_filetype.setdefault(band, fits_io.detect_band_filetype(join(self.stampspath, band)))
-
-            # RGB composites require all three member bands to be FITS -- drop any composite
-            # that isn't, rather than crashing or silently mixing formats into one image.
-            self.composite_bands = []
-            self.composite_band_members = {}
-            for key in args.composite_bands:
-                members = args.composite_band_members[key]
-                non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
-                if non_fits:
-                    print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
-                          f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
-                    continue
-                self.composite_bands.append(key)
-                self.composite_band_members[key] = members
-
-            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                    {b for members in self.composite_band_members.values() for b in members})
-            self.band_sources = {band: fits_io.DirBandSource(join(self.stampspath, band), self.band_filetype[band])
-                                  for band in self.all_single_bands}
+        try:
+            dataset = load_dataset(self.stampspath, self.main_band, self.color_bands,
+                                   args.composite_bands, args.composite_band_members,
+                                   args.mef, self.random_seed)
+        except DatasetError as e:
+            print(e)
+            sys.exit(1)
+        self.listimage = dataset.listimage
+        self.filetype = dataset.filetype
+        self.band_filetype = dataset.band_filetype
+        self.composite_bands = dataset.composite_bands
+        self.composite_band_members = dataset.composite_band_members
+        self.all_single_bands = dataset.all_single_bands
+        self.band_sources = dataset.band_sources
 
         self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
         self.all_bands = [self.main_band,
@@ -496,9 +328,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                           {band: EXTERNAL_BAND for band in self.external_bands} |
                           {_PANSTARRS_KEY: EXTERNAL_BAND})
 
-        self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
-        os.makedirs(self.classifications_dir, exist_ok=True)
-        state.migrate_sessions_store(self.classifications_dir)
+        self.classifications_dir = state.open_classifications_dir(args.classifications_dir)
 
         self.session_id = state.SessionId(SESSION_TOOL, self.stampspath, self.name, self.random_seed)
         self.df = self.obtain_df()  # sets self.df_name
@@ -506,32 +336,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         # another process has written since we last saved it.
         self.csv_writer = ClassificationWriter(self.df_name)
 
-        state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
-        state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
-                                    self.listimage, self.legacy_counter, csv=self.df_name,
-                                    classifications_dir=self.classifications_dir,
-                                    config_dir=STATE_DIR_OVERRIDE)
-        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults,
-                                                  config_dir=STATE_DIR_OVERRIDE)
-        if self.config_dict['colormap'] == 'gray':  # renamed upstream long ago
-            self.config_dict['colormap'] = 'gist_gray'
+        self.config_dict, self.counter = state.load_viewer_state(
+            self.session_id, self.defaults, self.listimage, LEGACY_CONFIG_FILE,
+            self.legacy_counter, csv=self.df_name,
+            classifications_dir=self.classifications_dir, config_dir=args.state_dir_override)
         if not args.legacysurvey:
             self.config_dict['legacysurvey'] = False
         self.colormap = self.config_dict['colormap']
-        self.scale = self.scale2funct[self.config_dict['scale']]
-
-        # resolve_position cross-checks the CSV: if obtain_df just resolved to a
-        # different classification file than the one the position was recorded
-        # against, the two disagree about which session is open and the position
-        # is stale by definition.
-        self.counter = state.resolve_position(
-            state.load_session(self.session_id, self.classifications_dir),
-            self.listimage, csv=self.df_name, classifications_dir=self.classifications_dir)
 
         self.number_graded = 0
         self.COUNTER_MIN = 0
         self.COUNTER_MAX = len(self.listimage)
-        self.filename = join(self.listimage[self.counter])
+        self.filename = self.listimage[self.counter]
 
         main_layout = QtWidgets.QVBoxLayout(self._main)
         self.label_layout = QtWidgets.QHBoxLayout()
@@ -658,8 +474,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for row_key in self.panel_row_layout:
             self.panel_picker.set_row_panels(row_key, [b for b in self.config_dict[row_key].split(';') if b])
         self.panel_picker.rowChanged.connect(self.on_panel_row_changed)
-        self.blsarea = self.panel_picker.add_toggle("Large FoV", checked=self.config_dict['legacybigarea'])
-        self.blsarea.clicked.connect(self.checkbox_ls_change_area)
         list_button_row0_layout.append(self.panel_picker)
 
         #PanSTARRS and Legacy Survey are both self.panel_keys now, so their visibility/placement
@@ -671,6 +485,12 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.config_dict['legacysurvey'] = _LEGACY_SURVEY_KEY in visible_panels
         if self.config_dict['legacysurvey']:
             self.set_legacy_survey()
+
+        #Beside Residuals, but not under args.legacysurvey: it sizes the PanSTARRS panel too.
+        self.blsarea = QtWidgets.QCheckBox("Large FoV")
+        self.blsarea.setChecked(self.config_dict['legacybigarea'])
+        self.blsarea.clicked.connect(self.checkbox_ls_change_area)
+        list_button_row0_layout.append(self.blsarea)
 
         if args.legacysurvey:
             self.blsresidual = QtWidgets.QCheckBox("Residuals")
@@ -740,7 +560,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         for major, _ in args.major_classes:
             self.dict_subclass2button.setdefault(major, None)
 
-        self.scale_options = {'Linear':'identity', 'Sqrt':'sqrt', 'Cbrt':'cbrt', 'Log':'log'}
+        self.scale_options = {'Linear':'linear', 'Sqrt':'sqrt', 'Cbrt':'cbrt', 'Log':'log', 'Asinh':'asinh'}
         scale2display = {v: k for k, v in self.scale_options.items()}
         self.cbscale = QtWidgets.QComboBox()
         self.cbscale.addItems(self.scale_options.keys())
@@ -865,7 +685,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.fetchthread_ps = FetchThread(self.df,self.counter,
                                         self.band_sources[self.main_band], self.listimage,
-                                        fetch_panstarrs=True, fetch_legacysurvey=False) #Always store in an object.
+                                        self.legacy_survey_path, self.panstarrs_path,
+                                        fetch_panstarrs=True, fetch_legacysurvey=False,
+                                        verbose=self.args.verbose) #Always store in an object.
             self.fetchthread_ps.finished.connect(self.fetchthread_ps.deleteLater)
             # A finished pass leaves the config flag claiming a thread is still
             # running; the next toggle would then try to interrupt a destroyed
@@ -887,8 +709,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.fetchthread_ls = FetchThread(self.df,self.counter,
                                         self.band_sources[self.main_band], self.listimage,
+                                        self.legacy_survey_path, self.panstarrs_path,
                                         fetch_panstarrs=False, fetch_legacysurvey=True,
-                                        fetch_big_fov_residuals=args.ls_big_fov_residuals) #Always store in an object.
+                                        fetch_big_fov_residuals=self.args.ls_big_fov_residuals,
+                                        verbose=self.args.verbose) #Always store in an object.
             self.fetchthread_ls.finished.connect(self.fetchthread_ls.deleteLater)
             self.fetchthread_ls.finished.connect(
                 partial(self.on_prefetch_finished, 'prefetch_legacysurvey', self.bprefetch_ls))
@@ -931,7 +755,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
     def save_preferences(self):
         state.save_preferences(SESSION_TOOL, self.config_dict,
-                               config_dir=STATE_DIR_OVERRIDE)
+                               config_dir=self.args.state_dir_override)
 
     def save_position(self):
         "Persist the resume position as a filename, so it survives a reshuffle-free relist."
@@ -1179,7 +1003,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.workerThread = QThread(parent=self)
             self.singleFetchWorker = SingleFetchWorker(savefile, self.ra, self.dec, size,
                             residual=self.config_dict['legacyresiduals'],
-                            pixscale=pixscale, verbose=args.verbose)
+                            pixscale=pixscale, verbose=self.args.verbose)
             self.workerThread.finished.connect(self.singleFetchWorker.deleteLater)
             self.workerThread.started.connect(self.singleFetchWorker.run)
         
@@ -1277,7 +1101,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.status.showMessage(DOWNLOADING_PS_MESSAGE)
             self.workerThreadPS = QThread(parent=self)
             self.singleFetchWorkerPS = PanstarrsFetchWorker(self.ra, self.dec, savefile, size,
-                                                            verbose=args.verbose)
+                                                            verbose=self.args.verbose)
             self.workerThreadPS.finished.connect(self.singleFetchWorkerPS.deleteLater)
             self.workerThreadPS.started.connect(self.singleFetchWorkerPS.run)
 
@@ -1353,7 +1177,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.set_legacy_survey()
         self.update_row_visibility()
         self.rows_summary_label.updateText(self.visible_rows_summary())
-        self.rows_summary_label.updateText(self.visible_rows_summary())
 
 
     @Slot()
@@ -1395,12 +1218,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             if band_filetype != 'FITS': #ds9 only understands FITS -- skip any non-FITS band.
                 continue
             try:
-                filename = self._band_filepath(band).filepath
+                located = fits_io.locate(self.band_sources, band, self.stem)
             except fits_io.MissingBandError:
                 continue
+            filename = located.filepath
+            if located.hdu:   # an --mef extension: ds9's file[EXTNAME], or it opens the empty primary
+                filename += f'[{located.hdu}]'
             arguments += [filename, '-zoom', 'to',str(band2zoom.get(band, default_zoom)), '-colorbar', 'no']
         print(" ".join(arguments))
-        subprocess.Popen(arguments)
+        # The handle is dropped on purpose: CPython reaps a finished child on the
+        # next Popen, so at most one exited ds9 waits as a zombie (BUGS 25).
+        try:
+            subprocess.Popen(arguments)
+        except OSError as e:
+            self.status.showMessage(f"Could not start ds9: {e}", 8000)
 
     @Slot()
     def viewls(self):
@@ -1429,7 +1260,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @Slot()
     def change_scale(self, display_text):
         scale = self.scale_options[display_text]
-        self.scale = self.scale2funct[scale]
         self.config_dict['scale'] = scale
         self.replot()
         self.save_preferences()
@@ -1440,99 +1270,6 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.replot()
         self.save_preferences()
 
-    def scale_val(self,image_array, pixel_scale_arcsec=None):
-        if len(np.shape(image_array)) == 2:
-            image_array = [image_array]
-
-        if image_array[0].shape[0] > 170:
-            box_size_vmax = np.round(np.sqrt(np.prod(image_array[0].shape) * 0.01)).astype(int)
-        else:
-            #Sensible default values
-            box_size_vmax = 14
-        box_size_vmin = corner_box_size(image_array[0].shape, pixel_scale_arcsec)
-        vmin = np.nanmin([background_rms_image(box_size_vmin, image) for image in image_array])
-        xl, yl = np.shape(image_array[0])
-        xmin = int((xl) / 2. - (box_size_vmax / 2.))
-        xmax = int((xl) / 2. + (box_size_vmax / 2.))
-        ymin = int((yl) / 2. - (box_size_vmax / 2.))
-        ymax = int((yl) / 2. + (box_size_vmax / 2.))
-        vmax = np.nanmax([image[xmin:xmax, ymin:ymax] for image in image_array])
-        return vmin*1.0, vmax*1.3 #vmin is 1 sigma of noise.
-
-    def rescale_image_composite(self, image, scale_min, scale_max, composite = False):
-        factor = self.scale(scale_max - scale_min)
-        image = np.clip(image, scale_min, scale_max)
-        image -= scale_min
-
-        indices1 = np.where(image > 0)
-        image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
-        return image
-
-    def rescale_image_composite2(self, image,
-                                p_low = 1,
-                                p_high = 1,
-                                value_at_min = 0,
-                                color_bkg_level = 0.1):
-        scale_min, scale_max = get_value_range_asymmetric(image,p_low,p_high)
-
-        image = clip_normalize(image,scale_min,scale_max)
-        image = self.scale(image)
-        contrast, bias = get_contrast_bias_reasonable_assumptions(
-                                                                    max(value_at_min,scale_min),
-                                                                    color_bkg_level,
-                                                                    scale_min,
-                                                                    scale_max,
-                                                                    self.scale)
-        image = contrast_bias_scale(image, contrast, bias)
-
-        return image
-
-    def rescale_single_band(self, image,
-                            scale_min,
-                            scale_max,
-                            value_at_min=0,
-                            color_bkg_level=-0.05):
-
-        image = clip_normalize(image,scale_min,scale_max)
-        image = self.scale(image)
-        contrast, bias = get_contrast_bias_reasonable_assumptions(
-                                                                    max(value_at_min,scale_min),
-                                                                    color_bkg_level,
-                                                                    scale_min,
-                                                                    scale_max,
-                                                                    self.scale)
-        return contrast_bias_scale(image, contrast, bias)
-
-    def prepare_composite_image(self, images,
-                                p_low=2, p_high=0.1,
-                                value_at_min=0,
-                                color_bkg_level=-0.05,
-                                ):
-        composite_image = np.zeros_like(images,
-                                    dtype=float)
-        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high)
-        for i in range(images.shape[-1]):
-            composite_image[:,:,i] = self.rescale_single_band(
-                            images[:,:,i],
-                            scale_min,
-                            scale_max,
-                            value_at_min,
-                            color_bkg_level)
-        return composite_image
-
-
-    def rescale_image(self, image, scale_min, scale_max):
-            factor = self.scale(scale_max - scale_min)
-            image = image.clip(min=scale_min, max=scale_max)
-            indices0 = np.where(image < scale_min)
-            indices1 = np.where((image >= scale_min) & (image <= scale_max))
-            indices2 = np.where(image > scale_max)
-            image[indices0] = 0.0 #Why would there be a value below scale_min?
-            image[indices2] = 1.0 #This is probably useless
-            image[indices1] = self.scale(image[indices1]) / (factor * 1.0)
-
-            return image
-
     def load_fits(self, locator, get_radec=False):
         "Pixels and header. With get_radec, also records the object's RA/Dec and pixel size."
         image, header = fits_io.read_pixels_and_header(locator)
@@ -1542,15 +1279,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.image_pixel_size = radec.pixel_size_arcsec
         return image, header
 
-    def _band_filepath(self, band):
-        "Resolves band's source location (file + HDU) for the current object."
-        stem = os.path.splitext(self.filename)[0]
-        locator = fits_io.resolve(self.band_sources[band], stem)
-        if locator is None:
-            raise fits_io.MissingBandError(band)
-        return locator
-
-    def plot(self, scale_min = None, scale_max = None, band = None):
+    def plot(self):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.counter]}")
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
@@ -1569,11 +1298,20 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.rows_summary_label.updateText(self.visible_rows_summary())
         self.show_missing_bands()
 
+    @property
+    def scale(self):
+        "The scale function the saved preference names."
+        return SCALES[self.config_dict['scale']]
+
+    @property
+    def stem(self):
+        "The current object's filename without its extension: its name in every band."
+        return os.path.splitext(self.filename)[0]
+
     def show_missing_bands(self):
         "Names the bands this object has no data for in the status-bar note, or empties it."
-        stem = os.path.splitext(self.filename)[0]
         self.missing_bands_note.set_note(
-            f"{stem}: {fits_io.missing_bands_note(self.missing_bands)}" if self.missing_bands else '')
+            f"{self.stem}: {fits_io.missing_bands_note(self.missing_bands)}" if self.missing_bands else '')
 
     def _draw_missing_band(self, panel_key, bands):
         "Placeholder panel naming the band(s) this object has no data for (BUGS 36)."
@@ -1605,7 +1343,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         get_radec = True if band == self.main_band else False
         band_filetype = self.band_filetype.get(band)
         try:
-            locator = self._band_filepath(band)
+            locator = fits_io.locate(self.band_sources, band, self.stem)
             if band_filetype == 'FITS':
                 image, header = self.load_fits(locator, get_radec)
         except fits_io.MissingBandError as e:
@@ -1615,10 +1353,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if band_filetype == 'FITS':
             self.images[band] = np.copy(image)
             if scale_min is None or scale_max is None:
-                scale_min, scale_max = self.scale_val(image, fits_io.pixel_scale_arcsec(header))
+                scale_min, scale_max = scale_limits(image, SINGLE_DISPLAY,
+                                                    fits_io.pixel_scale_arcsec(header))
             self.scale_mins[band] = scale_min
             self.scale_maxs[band] = scale_max
-            image = self.rescale_image(image, scale_min, scale_max)
+            image = rescale_image(image, scale_min, scale_max, self.scale, SINGLE_DISPLAY)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
             image = np.asarray(open_rendered_image(locator.filepath))
@@ -1646,7 +1385,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             images = {}
             for band in base_bands:
                 try:
-                    images[band] = self.load_fits(self._band_filepath(band),get_radec=False)[0]
+                    images[band] = self.load_fits(fits_io.locate(self.band_sources, band, self.stem),
+                                                  get_radec=False)[0]
                 except fits_io.MissingBandError as e:
                     self._record_missing_band(band, e)
                     absent.append(band)
@@ -1662,7 +1402,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             raise ValueError(
                 f"RGB composite '{composite_band}' requires all member bands to have the exact same "
                 f"image dimensions -- got {shapes}")
-        image = self.prepare_composite_image(stacked)
+        image = composite_image(stacked, self.scale, SINGLE_DISPLAY)
         self.ax[composite_band].imshow(image, origin='lower')
         self.ax[composite_band].set_axis_off() #Always before .draw()!
         self.canvas[composite_band].draw()
@@ -1688,7 +1428,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         image = np.copy(self.images[band])
         band_filetype = self.band_filetype.get(band)
         if band_filetype == 'FITS':
-            image = self.rescale_image(image, self.scale_mins[band], self.scale_maxs[band])
+            image = rescale_image(image, self.scale_mins[band], self.scale_maxs[band], self.scale,
+                                  SINGLE_DISPLAY)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
             self._imshow_rendered(band, image)
@@ -1697,30 +1438,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
 
     def obtain_df(self):
-        if self.random_seed is None:
-            base_filename = f'classification_single_{self.name}_{len(self.listimage)}'
-            string_to_glob = join(self.classifications_dir, f'{base_filename}-*.csv')
-            string_to_glob_for_files_with_seed = join(self.classifications_dir,
-                                                      f'{base_filename}_*.csv')
-            glob_results = (set(glob.glob(string_to_glob)) -
-                            set(glob.glob(string_to_glob_for_files_with_seed)) |
-                            set(glob.glob(join(self.classifications_dir, f'{base_filename}.csv'))))
-        else:
-            base_filename = f'classification_single_{self.name}_{len(self.listimage)}_{self.random_seed}'
-            # Not `{base}*.csv`: seed 7 would also match seed 70 and 78. Every
-            # suffix this tool writes is introduced by `-` (see
-            # `next_free_csv_path`), so match that and the bare name only.
-            glob_results = (set(glob.glob(join(self.classifications_dir, f'{base_filename}-*.csv'))) |
-                            set(glob.glob(join(self.classifications_dir, f'{base_filename}.csv'))))
-        
+        base_filename = classification_csv_base(SINGLE_CSV_PREFIX, self.name,
+                                                len(self.listimage), self.random_seed)
         fresh_name = join(self.classifications_dir, f'{base_filename}.csv')
         new_dataset_name = ''
-        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
-        if len(class_file) >= 1:
-            file_index = 0
-            if len(class_file) > 1:
-                file_index = -2
-            self.df_name = class_file[file_index]
+        existing = resume_csv(classification_csvs(self.classifications_dir, base_filename),
+                              self.listimage)
+        if existing is not None:
+            self.df_name = existing
             print('Reading '+ self.df_name)
             df = pd.read_csv(self.df_name,index_col=0)
             keys_to_drop = []
@@ -1895,7 +1620,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
 
         summary = ', '.join(f"'{label}' ({n} row{'s' if n != 1 else ''})"
                             for label, n in sorted(counts.items()))
-        scheme = ', '.join(major for major, _ in args.major_classes) or '(none)'
+        scheme = ', '.join(major for major, _ in self.args.major_classes) or '(none)'
         backup_path, backup_line = self._backup_classification_csv()
         print("=" * 72)
         print("WARNING: this session's classification file holds labels that the")
@@ -1967,7 +1692,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.bactivatedsubclassification = button
 
             
-def main():
+def main(argv=None):
+    args = parse_args(argv)
+    cli.apply_reset_flags(args, SESSION_TOOL, LEGACY_CONFIG_FILE)
+    prepare_survey_caches(args)
+
     # Check whether there is already a running QApplication (e.g., if running
     # from an IDE).
     qapp = QtWidgets.QApplication.instance()
@@ -1975,7 +1704,7 @@ def main():
         qapp = QtWidgets.QApplication(sys.argv)
 
     clipboard = QtWidgets.QApplication.clipboard()
-    app = ApplicationWindow(clipboard=clipboard)
+    app = ApplicationWindow(args, clipboard=clipboard)
     app.show()
     app.activateWindow()
     app.raise_()

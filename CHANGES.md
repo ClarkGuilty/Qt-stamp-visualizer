@@ -8,11 +8,128 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## Fixed: two datasets with the same CSV name kept starting new files
+
+A classification CSV is named after `--name`, the object count and the seed, so two
+datasets can share a name; the second then gets a `-new_dataset_1` file. Reopening
+the first used to pick that file, find the wrong objects, and start
+`-new_dataset_2`. Every switch after that started another empty file, and the
+earlier grades were never reopened. Both viewers now reopen the CSV that holds
+exactly this session's objects in this order, and the lobby's pre-launch check reads
+the same one. Nothing on disk is moved or merged; the extra files from before stay
+where they are.
+
+## Fixed: chained mode with `--mef` extracted nothing
+
+The extraction step looked only for band directories, which a multi-extension FITS
+dataset doesn't have, so the 1-by-1 stage started on an empty directory and exited.
+The selected files are now linked (or copied) straight into the output path. Also,
+an output path equal to the data path is refused: extracting there deleted the stamps.
+
+## Fixed: RGB composites that drew nothing
+
+A flat composite (all three bands zero, for example outside the NIR coverage) was
+computed as NaN in both viewers, and one with nothing above zero in its centre as
+±inf. A flat one now shows the background colour. On stamps smaller than the centre
+box (14 px for a band's white point, 8 px for a composite's), the box used to wrap
+around to the far edge; it is clamped now. Stamps of normal size draw exactly as
+before.
+
+## Fixed: "Open ds9" on an `--mef` dataset
+
+ds9 got the same file once per band and opened its empty primary HDU each time. It
+now opens each band's extension (`file.fits[VIS_BGSUB]`). If ds9 is not installed,
+the status bar says so instead of the terminal printing a traceback.
+
+## Smaller fixes
+
+* The lobby saves its settings (data path, session name, seed, run mode, output path)
+  on every Run, not only when its window is closed, so a crash no longer loses them.
+* `--state-dir ''` is an error now; it used to mean the default silently.
+* `--clean` says what it does: it empties both the Legacy Survey and the PanSTARRS
+  cutout caches.
+* A blank FITS band (all zeros, for example outside coverage) no longer prints a
+  RuntimeWarning every time it is drawn. It looks the same as before.
+* `qtstamp-lobby --help` gives its own name; it said `lobby.py`.
+
+## Tests run without survey data
+
+The tests and the before/after snapshot (`tests/snapshot_viewers.py`) now run on fake
+stamps written on the fly by `tests/sample_data.py`, so they pass on a fresh clone with
+or without pytest. The same script writes a sample set to try the tools on:
+`python tests/sample_data.py OUT_DIR`.
+
+## Changed: fewer files at the top of the repo
+
+`Legacy_survey/`, `PanSTARRS/` and `Classifications/` are no longer in the repository:
+the first two have been unused since the cutout caches moved into `.qtstamp/cache/`, and
+the third is created on first save. Their notes, and `CONTRIBUTORS.md`, are now in the
+README. Old cutouts in a `Legacy_survey/` or `PanSTARRS/` beside where you launch the
+1-by-1 viewer are now moved into `.qtstamp/cache/` from inside the checkout too.
+
+## Fixed: the main band showed twice when also picked as a color band
+
+Ticking the main band among the color bands (or passing `-b r -B r,g`) listed it twice
+in both viewers' panel pickers. The main band is now dropped from the color bands.
+
+## Fixed: chained mode could pick up the wrong mosaic CSV, or none
+
+In chained mode the lobby finds the CSV the mosaic just wrote, to extract its positives
+for the 1-by-1 stage. It used its own copy of the mosaic's file naming, and that copy
+had fallen behind:
+
+* It counted objects in a `VIS` directory whatever the main band was. On any dataset
+  without one (Legacy Survey, PanSTARRS, most JPG sets) it found nothing.
+  The window asked you to pick the file, and `--no-gui` stopped with exit code 3.
+* With a seed, it also matched seeds that start with the same digits (7 found 70). It
+  took the newest match, so it could extract another session's positives without any
+  error.
+
+The lobby now names and finds classification CSVs with the same code the viewers use.
+In the same change:
+
+* The 1-by-1 pre-launch check for labels missing from the scheme now reads the file
+  the viewer will actually reopen.
+* `lobby.py --no-gui` rejects an `--rgb-composites` entry that isn't three bands
+  up front, as the viewers do.
+* A session name or classifications path containing `[`, `*` or `?` is matched
+  literally when the tools look for existing CSVs.
+
+## Changed: seed 99 shuffles like any other seed
+
+The mosaic used to swap seed 99 for a different number before shuffling, to stay
+compatible with early prototypes; the 1-by-1 viewer never did. Both now shuffle the
+same way for every seed. A mosaic session saved with seed 99 under the old rule no
+longer resumes: its order differs, so the mosaic starts a new `-new_dataset_1` file and
+leaves the old one untouched.
+
+## Internal: the viewers share their command line and file naming
+
+Both viewers used to read the command line when they were imported, which kept them
+out of the tests. The arguments they share, how those are tidied up, and the
+`--classifications` grammar the lobby writes now live in one module, `cli.py`, and
+each viewer reads its arguments when it starts. Classification-CSV naming lives in
+`imaging.py`, used by all three tools. On a multi-extension FITS set and a JPG set, both
+viewers produce the same CSVs and the same pixels as before. The help text of the
+shared options is now worded the same in both viewers.
+
+How a viewer opens a dataset (listing the objects, finding each band, shuffling) is
+in one module too, `dataset.py`. The mosaic now also prints "Shuffling with seed N".
+
+The two viewers' image scaling is now one set of functions in `imaging.py`. Each
+viewer keeps its own settings for it, so neither draws anything differently. The
+1-by-1 now saves its scale under the mosaic's names (`linear`, `log`, `asinh`) and
+reads its old ones. An older version opening a preferences file saved by this one
+fails on the new name. `--reset-config` clears it.
+
+The 1-by-1's scale menu now offers Asinh, as the mosaic's does. A saved asinh setting
+used to show as "Log" there, and picking Log then did nothing.
+
 ## Fixed: `--mef` showed the wrong band when one file's extensions differed
 
 With `--mef`, each band was read from the same extension *position* in every file,
 taken from the first file. A file that lacks a band, or stores its bands in another
-order, shifted everything after it. One of the shipped test files has no `NIR_J_*`,
+order, shifted everything after it. Some cutout files have no `NIR_J_*`,
 so its "J" panel quietly showed H, and asking for H crashed both viewers. Bands are
 now looked up by name (`EXTNAME`) in each object's own file.
 
@@ -362,6 +479,11 @@ identity behind on every save.
 * A rotated FITS stamp's pixel size was read too small (×cos of the rotation, 0 at
   90°), so its Legacy Survey/PanSTARRS cutouts came out too small or empty, and the
   CSV's `pixel_size` was wrong. North-up stamps, like Euclid's, were unaffected.
+* "Large FoV" made the PanSTARRS panel *smaller*: a 1.5″ cutout (6 px) instead of a
+  wide field. It now shows the same ~2.1′ as Legacy Survey's, or twice the stamp when
+  the stamp is already wider. "Open PanSTARRS" opens the same size.
+* "Large FoV" is now a checkbox next to "Residuals" instead of an item at the bottom
+  of the Panels dropdown. It stays when Legacy Survey is off, for PanSTARRS.
 
 ## Survey cutout caching rewritten (1-by-1 tool)
 A failed download used to be written into the cache as a black 66x66 JPEG, at the exact

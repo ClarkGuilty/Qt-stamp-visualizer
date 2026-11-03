@@ -92,9 +92,6 @@ class NamedLabel(QtWidgets.QWidget):
     def setText(self, input):
         self.label.setText(str(input))
 
-    def getValue(self):
-        return int(self.lineEdit.text())-1
-
 
 def add_checkable_menu_action(menu, label, checked=False):
     "Adds a plain checkable item (QWidgetAction-wrapped QCheckBox) to a QMenu, returns the checkbox."
@@ -196,11 +193,6 @@ class PanelRowPicker(QtWidgets.QWidget):
         submenu = self.rows[row_key]
         for panel_key in self.panel_keys:
             submenu.set_checked(panel_key, panel_key in panel_keys)
-
-    def add_toggle(self, label, checked=False):
-        "Adds a plain (non-row) checkable setting to the bottom of the menu, e.g. 'Large FoV'."
-        self.menu.addSeparator()
-        return add_checkable_menu_action(self.menu, label, checked)
 
 
 class SettingsMenu(QtWidgets.QWidget):

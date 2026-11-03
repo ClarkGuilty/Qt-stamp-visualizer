@@ -1,8 +1,6 @@
 # This Python file uses the following encoding: utf-8
 import argparse
 
-import glob
-
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -18,129 +16,23 @@ from os.path import join
 import sys
 from time import time
 
+import cli
+from dataset import DatasetError, load_dataset
 import fits_io
 from imaging import (
-    identity, log, asinh2, get_value_range_asymmetric, clip_normalize,
-    contrast_bias_scale, get_contrast_bias_reasonable_assumptions,
-    natural_sort, open_rendered_image, corner_box_size, background_rms_image,
+    SCALES, MOSAIC_DISPLAY, scale_limits, rescale_image, composite_image,
+    open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
+    MOSAIC_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
 )
 import paths
-from paths import add_state_dir_args, resolve_classifications_dir, resolve_state_dir_override
 import state
 from widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, MissingBandsNote, NamedLabel,
     PanelOrderPicker,
 )
 
-
-parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
-parser.add_argument('-p',"--path", help="Path to the images to inspect.",
-                    default="Color_stamps_to_inspect")
-parser.add_argument('-N',"--name", help="Name of the classifying session.",
-                    default=None)
-parser.add_argument('-b',"--main_band", help='High resolution band. Example: "VIS". This is also the '
-                    "tool's default band: the panel that's always individually shown and pre-selected. "
-                    "Pass -b '' for no main band (PNG/JPG sets, which have no WCS): the first -B "
-                    "band then takes its place.",
-                    default="VIS")
-parser.add_argument('-B',"--color_bands", help='Comma-separated bands to make individually selectable as '
-                    'their own panel (in addition to the RGB composites). Example: "Y,J,H"',
-                    default="Y,J,H")
-parser.add_argument('--rgb-composites',
-                    help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
-                    "under --path can be a band -- not just VIS/Y/J/H/I). A composite's own name/label is "
-                    'simply its comma-joined member list. Example: "H,Y,I;H,J,Y". '
-                    'All three bands in a composite must have the exact same image dimensions '
-                    '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
-                    default="H,Y,I;H,J,Y")
-parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
-                    default=5)
-parser.add_argument('-m',"--nrows", 
-                    help="Number of rows per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
-                    default=8)
-parser.add_argument('-s',"--seed", help="Seed used to shuffle the images.",type=int,
-                    default=None)
-parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The default (66) should be good enough, but you can try smaller values if the mosaic is too big for your screen. You can change this even after you started a classification.",type=int,
-                    default=None)
-parser.add_argument("--printname",
-                    help="Print the file name of every stamp you click (shown in the "
-                    "lobby's log pane when mosaic is launched from it). Enabled by "
-                    "default; use --no-printname to silence it.",
-                    action=argparse.BooleanOptionalAction,
-                    default=True)
-parser.add_argument("--page", help="Initial page.",type=int,
-                    default=None)
-parser.add_argument('--resize',
-                    help="Set to allow the resizing of the stamps with the window.",
-                    action=argparse.BooleanOptionalAction,
-                    default=False)
-parser.add_argument("--reset-config", help="Forgets the saved preferences (colormap, scale, "
-                    "panels) during startup. Resume positions are kept; use --reset-position "
-                    "for those.",
-                    action="store_true", default=False)
-parser.add_argument("--reset-position", help="Forgets the saved resume page for this "
-                    "--path/--name/--seed, so the session restarts at the first page. "
-                    "Preferences are kept.",
-                    action="store_true", default=False)
-parser.add_argument("--classifications-dir", metavar="PATH",
-                    help="Directory for the autosaved classification CSVs. Absolute, or "
-                    "relative to the directory you launch from; created if it does not "
-                    "exist. Default: ./Classifications",
-                    default=None)
-parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
-                    "files -- one file per object, with bands as HDU extensions "
-                    "(identified by EXTNAME) inside it, instead of one subdirectory per "
-                    "band. Bands are looked up by EXTNAME in each object's own file, so "
-                    "files may differ; a band a file lacks shows as a placeholder. Names "
-                    "passed to -b/-B/--rgb-composites must match an EXTNAME some file has.",
-                    action="store_true", default=False)
-add_state_dir_args(parser)
-
-
-args = parser.parse_args()
-STATE_DIR_OVERRIDE = resolve_state_dir_override(args)
-# Empty entries dropped: -B '' means "no color bands", not one band named ''
-# (which passes the missing-directory check below -- it resolves to --path itself
-# -- and then fails at image load).
-args.color_bands = [b.strip() for b in args.color_bands.split(',') if b.strip()]
-
-# -b '' means "no main band": PNG/JPG stamps carry no WCS, which is most of what a
-# main band is for. The first color band takes its other job -- the object list and
-# the default panel -- so the rest of the tool never sees an empty main band.
-args.main_band = (args.main_band or '').strip()
-if not args.main_band:
-    if not args.color_bands:
-        parser.error('-b "" (no main band) needs at least one -B color band to take its place.')
-    args.main_band = args.color_bands.pop(0)
-
-args.composite_bands = []  # ordered list of composite keys ("H,Y,I")
-args.composite_band_members = {}  # key -> (r, g, b) tuple
-for entry in args.rgb_composites.split(';'):
-    entry = entry.strip()
-    if not entry:
-        continue
-    members = tuple(b.strip() for b in entry.split(','))
-    if len(members) != 3:
-        parser.error(f'--rgb-composites entry "{entry}" must have exactly 3 comma-separated bands (R,G,B).')
-    key = ','.join(members)
-    args.composite_bands.append(key)
-    args.composite_band_members[key] = members
-
-if not args.mef:
-    # Under --mef there are no per-band subdirectories to check here -- band names are
-    # validated against the first file's extensions instead, once MosaicVisualizer opens it.
-    _referenced_bands = ({args.main_band} | set(args.color_bands) |
-                          {b for members in args.composite_band_members.values() for b in members})
-    _missing_bands = [b for b in _referenced_bands if not os.path.isdir(join(args.path, b))]
-    if _missing_bands:
-        _available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
-            if os.path.isdir(args.path) else []
-        print(f"Band director{'y' if len(_missing_bands) == 1 else 'ies'} not found under {args.path}: "
-              f"{', '.join(sorted(_missing_bands))}")
-        print(f"Available subdirectories: {', '.join(_available) if _available else '(none found)'}")
-        sys.exit(1)
 
 C_INTERESTING = 2
 C_LENS = 1
@@ -151,20 +43,34 @@ SESSION_TOOL = 'mosaic'
 # kept as a .bak -- see state.migrate_legacy_config.
 LEGACY_CONFIG_FILE = '.config_mosaic.json'
 
-if args.reset_config:
-    state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
-    if state.reset_preferences(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE):
-        print("Preferences reset.")
-    if os.path.exists(LEGACY_CONFIG_FILE):
-        # Otherwise the migration below would immediately restore what was just reset.
-        os.replace(LEGACY_CONFIG_FILE, LEGACY_CONFIG_FILE + '.bak')
 
-if args.reset_position:
-    _anchor = resolve_classifications_dir(args.classifications_dir)
-    state.migrate_sessions_store(_anchor)
-    if state.forget_session(state.SessionId(SESSION_TOOL, args.path, args.name or '', args.seed),
-                            _anchor):
-        print("Resume position reset.")
+def parse_args(argv=None):
+    "The mosaic's arguments, normalised (see cli.finish_dataset_args). `argv` defaults to sys.argv."
+    parser = argparse.ArgumentParser(description='Configure the parameters of the execution.')
+    cli.add_dataset_args(parser)
+    parser.add_argument('-l',"--ncols","--gridsize", help="Number of columns per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
+                        default=5)
+    parser.add_argument('-m',"--nrows",
+                        help="Number of rows per page. Find the optimal value before starting the classification. Once you start the classification do not change this.",type=int,
+                        default=8)
+    parser.add_argument("--minimum_size", help="Minimum size of the stamps in the mosaic. The default (66) should be good enough, but you can try smaller values if the mosaic is too big for your screen. You can change this even after you started a classification.",type=int,
+                        default=None)
+    parser.add_argument("--printname",
+                        help="Print the file name of every stamp you click (shown in the "
+                        "lobby's log pane when mosaic is launched from it). Enabled by "
+                        "default; use --no-printname to silence it.",
+                        action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--page", help="Initial page.",type=int,
+                        default=None)
+    parser.add_argument('--resize',
+                        help="Set to allow the resizing of the stamps with the window.",
+                        action=argparse.BooleanOptionalAction,
+                        default=False)
+    args = parser.parse_args(argv)
+    cli.finish_dataset_args(parser, args)
+    return args
+
 
 def _solid_pixmap(color, size=128):
     pixmap = QPixmap(size, size)
@@ -240,6 +146,8 @@ class MiniMosaics(QtWidgets.QLabel):
                     status, activation, update_df_func,
                     image_width=None,
                     image_height=None,
+                    minimum_size=None,
+                    resize=False,
                     parent=None):
         QtWidgets.QLabel.__init__(self, parent)
         self.filepaths = filepaths
@@ -260,7 +168,7 @@ class MiniMosaics(QtWidgets.QLabel):
 
         self.target_width = 66 #At the very least, should be the initial size
         self.target_height = 66 #
-        self.user_minimum_size = 66 if args.minimum_size is None else args.minimum_size
+        self.user_minimum_size = 66 if minimum_size is None else minimum_size
         if image_width is not None:
             self.target_width = image_width
         if image_height is not None:
@@ -272,7 +180,7 @@ class MiniMosaics(QtWidgets.QLabel):
         self.setMinimumSize(self.user_minimum_size*3,self.user_minimum_size)
         self.setSizePolicy(sizePolicy,sizePolicy)
 
-        self.setScaledContents(args.resize)
+        self.setScaledContents(resize)
         
         qlabelSizePolicy = QtWidgets.QSizePolicy.Ignored 
 
@@ -333,10 +241,6 @@ class MiniMosaics(QtWidgets.QLabel):
             return True
         return False
 
-    def toggle_candidate_status(self):
-        if self.is_activate:
-            self.is_a_candidate = not self.is_a_candidate
-
 
     def paint_pixmap(self):
         if self.is_activate:
@@ -386,15 +290,16 @@ class MiniMosaics(QtWidgets.QLabel):
 
 
 class MosaicVisualizer(QtWidgets.QMainWindow):
-    def __init__(self, path_to_the_stamps= args.path):
+    def __init__(self, args):
         super().__init__()
+        self.args = args
         self._main = QtWidgets.QWidget()
         self._main.setStyleSheet('background-color: black')
 
         self.setCentralWidget(self._main)
         self.status = self.statusBar()
         self.random_seed = args.seed            
-        self.stampspath = path_to_the_stamps
+        self.stampspath = args.path
 
         self.main_band = args.main_band
         self.color_bands = args.color_bands
@@ -405,94 +310,32 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # mosaic with nowhere to render cannot run at all. `scratch_dir` then
         # carves out a per-process subdirectory, so two mosaics sharing one
         # workspace no longer wipe each other's tiles.
-        cache_root = paths.cache_dir(override=STATE_DIR_OVERRIDE)
+        cache_root = paths.cache_dir(override=args.state_dir_override)
         # Before `scratch_dir`, which sweeps the root: the legacy dir lands there
         # as loose tiles and is swept on this same run, which is what used to
         # happen to it anyway (`clean_dir` wiped it immediately). The point of the
         # migration is only to get `.temp` out of the CWD.
         paths.migrate_once(os.path.join(os.curdir, '.temp'), os.path.join(cache_root, 'temp'))
         self.scratchpath = paths.scratch_dir(cache_root)
-        self.classifications_dir = resolve_classifications_dir(args.classifications_dir)
-        os.makedirs(self.classifications_dir, exist_ok=True)
-        state.migrate_sessions_store(self.classifications_dir)
+        self.classifications_dir = state.open_classifications_dir(args.classifications_dir)
         self.clean_dir(self.scratchpath)
 
-        if args.mef:
-            self.listimage = fits_io.list_fits_files(self.stampspath)
-            self.filetype = 'FITS'
-            print(f"Classifying {len(self.listimage)} sources.")
-            if len(self.listimage) < 1:
-                print(f"No FITS files found in {self.stampspath}.")
-                sys.exit(1)
-
-            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                    {b for members in args.composite_band_members.values() for b in members})
-            # Only a band no file has stops the run; one some files lack is a placeholder there.
-            mef_bands, seen = fits_io.locate_mef_bands(self.stampspath, self.listimage,
-                                                       self.all_single_bands)
-            missing = sorted(b for b in self.all_single_bands if b not in mef_bands)
-            if missing:
-                searched = min(len(self.listimage), fits_io.MEF_BAND_SEARCH_FILES)
-                where = (f"any of the {searched}" if searched == len(self.listimage)
-                         else f"the first {searched} of the {len(self.listimage)}")
-                print(f"Extension{'s' if len(missing) != 1 else ''} not found in {where} files "
-                      f"in {self.stampspath}: {', '.join(missing)}")
-                print(f"Available extensions: {', '.join(seen) if seen else '(none found)'}")
-                sys.exit(1)
-            self.band_filetype = {b: 'FITS' for b in self.all_single_bands}
-            self.band_sources = {b: fits_io.ExtensionBandSource(self.stampspath, mef_bands[b])
-                                  for b in self.all_single_bands}
-            # MEF bands are always FITS, so every declared composite is automatically eligible.
-            self.composite_bands = list(args.composite_bands)
-            self.composite_band_members = dict(args.composite_band_members)
-        else:
-            base_band_path = join(self.stampspath, self.main_band)
-            self.listimage, self.filetype = fits_io.list_objects(base_band_path)
-            print(f"Classifying {len(self.listimage)} sources.")
-
-            if len(self.listimage) < 1:
-                print(f"No FITS, PNG, or JPG files found in {base_band_path}.")
-                sys.exit(1)
-
-            # Each band's format is a property of its own directory (detected independently),
-            # so bands can mix FITS and PNG/JPG within the same session -- only the main band
-            # (self.filetype) governs the object list.
-            self.band_filetype = {self.main_band: self.filetype}
-            for band in (set(self.color_bands) |
-                         {b for members in args.composite_band_members.values() for b in members}):
-                self.band_filetype.setdefault(band, fits_io.detect_band_filetype(join(self.stampspath, band)))
-
-            # RGB composites require all three member bands to be FITS -- drop any composite
-            # that isn't, rather than crashing or silently mixing formats into one image.
-            self.composite_bands = []
-            self.composite_band_members = {}
-            for key in args.composite_bands:
-                members = args.composite_band_members[key]
-                non_fits = [b for b in members if self.band_filetype.get(b) != 'FITS']
-                if non_fits:
-                    print(f"RGB composite '{key}' skipped -- requires FITS bands, but "
-                          f"{', '.join(non_fits)} {'is' if len(non_fits) == 1 else 'are'} not FITS.")
-                    continue
-                self.composite_bands.append(key)
-                self.composite_band_members[key] = members
-
-            self.all_single_bands = ({self.main_band} | set(self.color_bands) |
-                                    {b for members in self.composite_band_members.values() for b in members})
-            self.band_sources = {band: fits_io.DirBandSource(join(self.stampspath, band), self.band_filetype[band])
-                                  for band in self.all_single_bands}
-
+        try:
+            dataset = load_dataset(self.stampspath, self.main_band, self.color_bands,
+                                   args.composite_bands, args.composite_band_members,
+                                   args.mef, self.random_seed)
+        except DatasetError as e:
+            print(e)
+            sys.exit(1)
+        self.listimage = dataset.listimage
+        self.filetype = dataset.filetype
+        self.band_filetype = dataset.band_filetype
+        self.composite_bands = dataset.composite_bands
+        self.composite_band_members = dataset.composite_band_members
+        self.all_single_bands = dataset.all_single_bands
+        self.band_sources = dataset.band_sources
         self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
-        if self.random_seed is not None:
-            # 99 is always changed to this number when sorting to mantain compatibility with old classifications.
-            # 128 bits, proton decay might be more likely than someone *randomly* using this number.
-            # Please, do not use this number as your seed.
-            seed_to_use = 120552782132343758881253061212639178445 if self.random_seed == 99 else self.random_seed
-            rng = np.random.default_rng(seed_to_use)
-            rng.shuffle(self.listimage) #inplace shuffling
-        
-        if len(self.listimage) == 0:
-            print("WARNING: no images found in {}".format(self.stampspath))
         self.ncols = args.ncols
         if args.nrows is None:
             self.nrows = self.ncols
@@ -500,12 +343,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.nrows = args.nrows
         self.gridarea = self.nrows*self.ncols
         self.PAGE_MAX = int(np.ceil(len(self.listimage) / self.gridarea))
-        self.scale2funct = {'linear': identity,
-                            'sqrt': np.sqrt,
-                            'cbrt': np.cbrt,
-                            'log': log,
-                            'asinh': asinh2}
-
         self.cmname2cm = {
                             'gray':'gist_gray',
                             'gist_gray':'gist_gray',
@@ -551,25 +388,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # another process has written since we last saved it.
         self.csv_writer = ClassificationWriter(self.df_name, index=False)
 
-        state.migrate_preferences_file(SESSION_TOOL, config_dir=STATE_DIR_OVERRIDE)
-        state.migrate_legacy_config(LEGACY_CONFIG_FILE, self.session_id, self.defaults,
-                                    self.listimage, self.legacy_page_index, csv=self.df_name,
-                                    classifications_dir=self.classifications_dir,
-                                    config_dir=STATE_DIR_OVERRIDE)
-        self.config_dict = state.load_preferences(SESSION_TOOL, self.defaults,
-                                                  config_dir=STATE_DIR_OVERRIDE)
-        if self.config_dict['scale'] == 'log10':  # renamed upstream long ago
-            self.config_dict['scale'] = 'log'
-        if self.config_dict['colormap'] == 'gray':
-            self.config_dict['colormap'] = 'gist_gray'
+        self.config_dict, position = state.load_viewer_state(
+            self.session_id, self.defaults, self.listimage, LEGACY_CONFIG_FILE,
+            self.legacy_page_index, csv=self.df_name,
+            classifications_dir=self.classifications_dir, config_dir=args.state_dir_override)
 
-        # resolve_position cross-checks the CSV: if obtain_df just resolved to a
-        # different classification file than the one the position was recorded
-        # against, the two disagree about which session is open and the position
-        # is stale by definition.
-        position = state.resolve_position(
-            state.load_session(self.session_id, self.classifications_dir),
-            self.listimage, csv=self.df_name, classifications_dir=self.classifications_dir)
         self.page = min(position // self.gridarea, max(self.PAGE_MAX - 1, 0))
         if args.page is not None:
             self.page = max(min(args.page - 1, self.PAGE_MAX - 1), 0)
@@ -625,8 +448,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         delegate = AlignDelegate(self.cbscale)
         self.cbscale.setItemDelegate(delegate)
         self.cbscale.setFont(QFont("Arial",self.fontsize))
-        self.cbscale.addItems(self.scale2funct.keys())
-        self.cbscale.setCurrentIndex(list(self.scale2funct.keys()).index(self.config_dict['scale']))
+        self.cbscale.addItems(SCALES.keys())
+        self.cbscale.setCurrentIndex(list(SCALES).index(self.config_dict['scale']))
         self.cbscale.setStyleSheet('background-color: gray')
         self.cbscale.currentIndexChanged.connect(self.change_scale)
 
@@ -685,7 +508,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         page_counter_layout.addWidget(self.bclickcounter)
         page_counter_layout.addWidget(self.bcounter)
 
-        self.total_n_frame = int(len(self.listimage)/(self.gridarea))
         start = self.page*self.gridarea
 
         for i in range(start,start+self.gridarea):
@@ -704,6 +526,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                                     self.deactivated_pixmap,
                                     i-start, classification, activation,
                                     self.my_label_clicked,
+                                    minimum_size=args.minimum_size,
+                                    resize=args.resize,
                                     )
             button.reorder_panels(self.config_dict['panel_order'].split(';'))
             stamp_grid_layout.addWidget(
@@ -796,7 +620,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             print('Something is wrong. This condition should not be trigger.')
         else:
             object_index = self.gridarea*self.page+i
-            if args.printname:
+            if self.args.printname:
                 print(self.df.iloc[object_index,
                             self.df.columns.get_loc('file_name')])
             self.df.iloc[object_index,
@@ -829,7 +653,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
     def save_preferences(self):
         state.save_preferences(SESSION_TOOL, self.config_dict,
-                               config_dir=STATE_DIR_OVERRIDE)
+                               config_dir=self.args.state_dir_override)
 
     def save_position(self):
         """Persist the page as the filename of the object in its top-left cell.
@@ -874,35 +698,14 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         encode: `-` introduces an iteration suffix and `_` introduces the seed,
         so the two never collide in a glob.
         """
-        base_prefix = 'classification_mosaic_autosave_{}_{}'.format(
-                                self.name, len(self.listimage))
-        if self.random_seed is None:
-            base_filename = base_prefix
-            string_to_glob = join(self.classifications_dir, '{}-*.csv'.format(base_filename))
-            string_to_glob_for_files_with_seed = join(self.classifications_dir,
-                                                      '{}_*.csv'.format(base_filename))
-            glob_results = (set(glob.glob(string_to_glob))
-                            - set(glob.glob(string_to_glob_for_files_with_seed))
-                            | set(glob.glob(join(self.classifications_dir,
-                                                 '{}.csv'.format(base_filename)))))
-        else:
-            base_filename = '{}_{}'.format(base_prefix, self.random_seed)
-            # Not `{base}*.csv`: seed 7 would also match seed 70 and 78. Every
-            # suffix this tool writes is introduced by `-` (see
-            # `next_free_csv_path`), so match that and the bare name only.
-            glob_results = (set(glob.glob(join(self.classifications_dir,
-                                               '{}-*.csv'.format(base_filename))))
-                            | set(glob.glob(join(self.classifications_dir,
-                                                 '{}.csv'.format(base_filename)))))
-
-        class_file = np.array(natural_sort(glob_results)) #better to use natural sort.
+        base_filename = classification_csv_base(MOSAIC_CSV_PREFIX, self.name,
+                                                len(self.listimage), self.random_seed)
         fresh_name = join(self.classifications_dir, '{}.csv'.format(base_filename))
         new_dataset_name = ''
-        if len(class_file) >= 1:
-            file_index = 0
-            if len(class_file) > 1:
-                file_index = -2
-            self.df_name = class_file[file_index]
+        existing = resume_csv(classification_csvs(self.classifications_dir, base_filename),
+                              self.listimage)
+        if existing is not None:
+            self.df_name = existing
             print('Reading '+ self.df_name)
             df = pd.read_csv(self.df_name)
             if (len(self.listimage) == len(df) and
@@ -995,14 +798,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                          for stem, missing in missing_by_object.items())
         self.missing_bands_note.set_note(text)
 
-    def _band_filepath(self, i, band):
-        "Resolves band's source location (file + HDU) for object i -- directory-per-band or MEF extension."
-        stem = os.path.splitext(self.listimage[i])[0]
-        locator = fits_io.resolve(self.band_sources[band], stem)
-        if locator is None:
-            raise fits_io.MissingBandError(band)
-        return locator
-
     def _save_missing_band_png(self, bands, path):
         "Placeholder tile for a panel with no data (BUGS 36), where its PNG would have gone."
         _missing_band_pixmap(bands).save(path, 'PNG')
@@ -1013,10 +808,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         # self.composite_bands only ever contains composites whose 3 members are all FITS
         # bands (filtered at startup), so no per-composite format branching is needed below.
         fits_bands = [band for band in self.all_single_bands if self.band_filetype.get(band) == 'FITS']
+        stem = os.path.splitext(self.listimage[i])[0]
         band_images, headers, missing = {}, {}, {}
         for band in fits_bands:
             try:
-                locator = self._band_filepath(i, band)
+                locator = fits_io.locate(self.band_sources, band, stem)
                 band_images[band], headers[band] = fits_io.read_pixels_and_header(locator)
             except fits_io.MissingBandError as e:
                 missing[band] = e
@@ -1031,7 +827,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 plt.imsave(out, image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
             else:
                 try:
-                    src = self._band_filepath(i, band).filepath
+                    src = fits_io.locate(self.band_sources, band, stem).filepath
                 except fits_io.MissingBandError as e:
                     missing[band] = e
                     self._save_missing_band_png([band], out)
@@ -1052,100 +848,35 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                     raise ValueError(
                         f"RGB composite '{composite_band}' requires all member bands to have the exact "
                         f"same image dimensions -- got {shapes}")
-                composite_image = self.prepare_composite_band(stacked)
                 plt.imsave(self.filepath(i, self.page, band=composite_band),
-                    composite_image, origin="lower")
+                    composite_image(stacked, SCALES[self.config_dict['scale']], MOSAIC_DISPLAY),
+                    origin="lower")
         return missing
 
     def prepare_single_band(self, image, pixel_scale_arcsec=None):
-        scale_min, scale_max = self.scale_val(image, pixel_scale_arcsec)
-        image = self.rescale_image(image, scale_min, scale_max)
+        scale_min, scale_max = scale_limits(image, MOSAIC_DISPLAY, pixel_scale_arcsec)
+        image = rescale_image(image, scale_min, scale_max, SCALES[self.config_dict['scale']],
+                              MOSAIC_DISPLAY)
         image[np.isnan(image)] = np.nanmin(image)
         return image
-            
-
-    def prepare_composite_band(self,images,
-                                p_low=1, p_high=0.1,
-                                value_at_min=0,
-                                color_bkg_level=0.015,):
-        
-        composite_image = np.zeros_like(images,
-                                    dtype=float)
-        scale_min, scale_max = get_value_range_asymmetric(images,p_low,p_high)
-        
-        for i in range(images.shape[-1]):
-            composite_image[:,:,i] = self.rescale_single_band(
-                            images[:,:,i],
-                            scale_min,
-                            scale_max,
-                            value_at_min,
-                            color_bkg_level)
-        return composite_image
-
-    def rescale_single_band(self, image,
-                            scale_min,
-                            scale_max,
-                            value_at_min=0,
-                            color_bkg_level=-0.05):
-
-        image = clip_normalize(image,scale_min,scale_max)
-        image = self.scale2funct[self.config_dict['scale']](image)
-        contrast, bias = get_contrast_bias_reasonable_assumptions(
-                                                                    max(value_at_min,scale_min),
-                                                                    color_bkg_level,
-                                                                    scale_min,
-                                                                    scale_max,
-                                                                    self.scale2funct[self.config_dict['scale']])
-        return contrast_bias_scale(image, contrast, bias)
-
-
 
     def clean_dir(self, path_dir):
         "Removes everything in the scratch folder."
         for f in os.listdir(path_dir):
             os.remove(join(path_dir, f))
 
-    def rescale_image(self, image, scale_min, scale_max):
-        factor = self.scale2funct[self.config_dict['scale']](scale_max - scale_min)
-        image = image.clip(min=scale_min, max=scale_max)
 
-        # Clipping to [scale_min, scale_max] before scaling is what keeps bright noise from
-        # washing the stamp out.
-        indices0 = np.where(image < scale_min)
-        indices1 = np.where((image >= scale_min) & (image < scale_max))
-        indices2 = np.where(image >= scale_max)
-        image[indices0] = 0.0
-        image[indices2] = 1.0
-        image[indices1] = self.scale2funct[self.config_dict['scale']](image[indices1]) / ((factor) * 1.0)
-        return image
+def main(argv=None):
+    args = parse_args(argv)
+    cli.apply_reset_flags(args, SESSION_TOOL, LEGACY_CONFIG_FILE)
 
-    def scale_val(self, image_array, pixel_scale_arcsec=None):
-        if image_array.shape[0] > 173:
-            box_size_vmax = np.round(np.sqrt(np.prod(image_array.shape) * 0.01)).astype(int)
-        else:
-            box_size_vmax = 14
-        box_size_vmin = corner_box_size(image_array.shape, pixel_scale_arcsec)
-        vmin = np.nanmin(background_rms_image(box_size_vmin, image_array))
-        if vmin == 0:
-            vmin += 1e-3              
-        
-        xl, yl = np.shape(image_array)
-        xmin = int((xl) / 2. - (box_size_vmax / 2.))
-        xmax = int((xl) / 2. + (box_size_vmax / 2.))
-        ymin = int((yl) / 2. - (box_size_vmax / 2.))
-        ymax = int((yl) / 2. + (box_size_vmax / 2.))
-        vmax = np.nanmax(image_array[xmin:xmax, ymin:ymax])
-        return vmin*1.0, vmax*1.3 #vmin is 1 sigma.
-
-
-def main():
     # Check whether there is already a running QApplication (e.g., if running
     # from an IDE).
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 
-    app = MosaicVisualizer()
+    app = MosaicVisualizer(args)
     app.show()
     app.activateWindow()
     qapp.exec()

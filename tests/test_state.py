@@ -135,6 +135,17 @@ def test_save_and_load_roundtrip(tmpdir):
     assert entry['name'] == '' and entry['tool'] == SINGLE
 
 
+def test_a_position_saved_without_its_csv_does_not_inherit_the_old_one(tmpdir):
+    "BUGS 20 (closed): position and csv are one record, replaced together."
+    state.save_session(sid(), tmpdir, position_filename='a.fits',
+                       csv=os.path.join(tmpdir, 'x.csv'))
+    state.save_session_config(sid(), tmpdir, {'scheme_rows': []})
+    state.save_session(sid(), tmpdir, position_filename='b.fits')
+    entry = state.load_session(sid(), tmpdir)
+    assert (entry['position_filename'], entry['csv']) == ('b.fits', None)
+    assert entry['config'] == {'scheme_rows': []}
+
+
 def test_sessions_of_different_identities_do_not_collide(tmpdir):
     state.save_session(sid(seed=1), tmpdir, position_filename='a.fits')
     state.save_session(sid(seed=2), tmpdir, position_filename='d.fits')
@@ -1079,6 +1090,46 @@ def test_migrate_preferences_file_picks_up_the_dotted_name_in_the_state_dir(tmpd
         assert state.migrate_preferences_file(SINGLE, legacy_dir=tmpdir, config_dir=local) is True
         assert not os.path.exists(dotted)
         assert state.load_preferences(SINGLE, DEFAULTS, config_dir=local)['colormap'] == 'viridis'
+
+
+
+# --- viewer startup ---------------------------------------------------------
+
+def test_open_classifications_dir_creates_it(tmpdir):
+    target = os.path.join(tmpdir, 'deep', 'Classifications')
+    assert state.open_classifications_dir(target) == target
+    assert os.path.isdir(target)
+
+
+def test_load_viewer_state_reads_preferences_and_position(tmpdir):
+    config_dir = os.path.join(tmpdir, 'config')
+    csv = os.path.join(tmpdir, 'run.csv')
+    state.save_preferences(SINGLE, dict(DEFAULTS, colormap='gray'), config_dir=config_dir)
+    state.save_session(sid(), tmpdir, position_filename='c.fits', csv=csv)
+    no_legacy = os.path.join(tmpdir, '.config.json')
+
+    prefs, position = state.load_viewer_state(sid(), DEFAULTS, LIST, no_legacy, lambda _: None,
+                                              csv, tmpdir, config_dir=config_dir)
+    assert prefs == dict(DEFAULTS, colormap='gist_gray')   # the old name, renamed
+    assert position == 2
+    # Recorded against another CSV: stale, so the start.
+    _, position = state.load_viewer_state(sid(), DEFAULTS, LIST, no_legacy, lambda _: None,
+                                          os.path.join(tmpdir, 'other.csv'), tmpdir,
+                                          config_dir=config_dir)
+    assert position == 0
+
+
+
+def test_load_viewer_state_reads_old_scale_names(tmpdir):
+    """The 1-by-1 saved identity/log10/asinh2 before the viewers shared imaging.SCALES.
+    A name neither viewer knows is the default, not a crash at startup."""
+    no_legacy = os.path.join(tmpdir, '.config.json')
+    for old, new in (('identity', 'linear'), ('log10', 'log'), ('asinh2', 'asinh'), ('sqrt', 'sqrt'),
+                     ('Log', 'log'), (3, 'log')):
+        state.save_preferences(SINGLE, dict(DEFAULTS, scale=old), config_dir=tmpdir)
+        prefs, _ = state.load_viewer_state(sid(), DEFAULTS, LIST, no_legacy, lambda _: None,
+                                           None, tmpdir, config_dir=tmpdir)
+        assert prefs['scale'] == new, old
 
 
 if __name__ == '__main__':

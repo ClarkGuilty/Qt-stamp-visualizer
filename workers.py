@@ -31,6 +31,8 @@ import urllib.request
 from PIL import Image
 from PySide6.QtCore import QObject, Signal, Slot
 
+from imaging import atomic_write
+
 PS1_FILENAMES_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1filenames.py'
 PS1_FITSCUT_URL = 'https://ps1images.stsci.edu/cgi-bin/fitscut.cgi'
 LEGACY_SURVEY_CUTOUT_URL = 'https://www.legacysurvey.org/viewer/cutout.jpg'
@@ -104,12 +106,11 @@ def _miss_path(savefile):
 
 
 def record_miss(savefile, reason, detail=''):
-    "Record that `savefile` could not be fetched, and why."
+    """Record that `savefile` could not be fetched, and why. Atomic, like the
+    download itself: two workers missing the same cutout can't interleave (BUGS 27)."""
+    marker = {'reason': reason, 'time': time.time(), 'detail': str(detail)[:500]}
     try:
-        os.makedirs(os.path.dirname(savefile) or '.', exist_ok=True)
-        with open(_miss_path(savefile), 'w') as f:
-            json.dump({'reason': reason, 'time': time.time(),
-                       'detail': str(detail)[:500]}, f)
+        atomic_write(_miss_path(savefile), lambda f: json.dump(marker, f))
     except OSError:
         pass  # an unwritable cache dir must not break the fetch itself
 

@@ -5,9 +5,6 @@ Qt tools for the visual inspection and classification of astronomical stamps.
 A fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool), rebuilt on
 the Qt framework (PySide6).
 
-> **Note:** the `unified_dev_with_lobby` branch is experimental — it was vibecoded with
-> Claude. See [CHANGES.md](CHANGES.md) for what changed and why.
-
 ## Contents
 
 The repo ships three programs that are meant to be used together:
@@ -35,11 +32,13 @@ For any given visual inspection it's usually better to get the tool together wit
 data. To inspect your own images, clone the repo directly:
 
 ```bash
-git clone -b unified_dev_with_lobby --single-branch https://github.com/ClarkGuilty/Qt-stamp-visualizer.git
+git clone https://github.com/ClarkGuilty/Qt-stamp-visualizer.git
 cd Qt-stamp-visualizer
 ```
 
-Only the `unified_dev_with_lobby` branch matters here.
+The version from before the per-survey editions were merged into this one is kept on
+the [`classic_tool`](https://github.com/ClarkGuilty/Qt-stamp-visualizer/tree/classic_tool)
+branch. [CHANGES.md](CHANGES.md) lists what this version changed, and why.
 
 ## Installation
 
@@ -348,7 +347,7 @@ python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
 | `--reset-config` | off | Forget the saved preferences (colormap, scale, panels, toggles). Resume positions are kept. |
 | `--reset-position` | off | Forget the resume position for this `--path`/`--name`/`--seed`, so the session restarts at the first image. Preferences are kept. |
 | `--verbose` | off | Log to the terminal. |
-| `--clean` | off | Clean the Legacy Survey cache folder. |
+| `--clean` | off | Empty the Legacy Survey and PanSTARRS cutout caches (`.qtstamp/cache/`, or under `--state-dir`) before starting. |
 | `--classifications-dir` | `./Classifications` | Directory for the autosaved classification CSVs. Absolute, or relative to the directory you launch from; created if it doesn't exist. |
 
 **Classification scheme.** `--classifications` takes one semicolon-separated string of
@@ -369,8 +368,9 @@ usual). Clicking the subclass again cancels. For example:
 * The **Panels** dropdown assigns each panel — the main band, the RGB composites, the
   individual color bands, Legacy Survey and PanSTARRS — to one of 3 display rows
   (mutually exclusive across rows). A row appears as soon as you check a panel into it,
-  and the title bar shows a live summary of what's in each one. The dropdown also carries
-  a **Large FoV** toggle for wider Legacy Survey / PanSTARRS cutouts.
+  and the title bar shows a live summary of what's in each one.
+* The **Large FoV** checkbox, next to **Residuals**, switches the Legacy Survey and
+  PanSTARRS panels to wider cutouts.
 * The **Tools** dropdown holds *Open ds9*, *Open LS*, *Open PanSTARRS* and *Open ESASky*.
 * The **Settings** dropdown holds:
   * **Pre-fetch PanSTARRS** and **Pre-fetch Legacy Survey** — independent toggles, each
@@ -451,9 +451,21 @@ you point it.
 | `.qtstamp/config_lobby.json` | Saved lobby settings that belong to the workspace rather than to one session: data path, run mode, output path, extraction options, panel layout. Also the scheme and band setup you last used, as the starting point for a session that has no record of its own yet. |
 | `.qtstamp/preferences_mosaic.json`, `.qtstamp/preferences_single.json` | Saved viewer preferences — colormap, scale, panels, toggles. They survive a change of `--path`/`--name`/`--seed` (`--reset-config` clears them). |
 | `.qtstamp/presets/` | Named lobby presets. |
-| `.qtstamp/cache/Legacy_survey/`, `.qtstamp/cache/PanSTARRS/` | Downloaded cutout caches (`--clean` clears the Legacy Survey one). |
+| `.qtstamp/cache/Legacy_survey/`, `.qtstamp/cache/PanSTARRS/` | Downloaded cutout caches (`--clean` empties both). |
 | `.qtstamp/cache/temp/` | Mosaic scratch renders. Safe to delete at any time. |
 | `.config_mosaic.json.bak`, `.config.json.bak` | The pre-split config files, kept after they are migrated. Safe to delete. |
+
+Classification CSVs are named `classification_mosaic_autosave_{name}_{n_stamps}[_{seed}].csv`
+(mosaic) and `classification_single_{name}_{n_stamps}[_{seed}].csv` (1-by-1), the seed part
+only when you pass one. When a name is already taken, the file that moves aside says why:
+
+- `-new_dataset_N`: the name was taken by a *different* dataset. Pass `-N name` to give your
+  sessions distinct names and avoid this.
+- `-simultaneous_N`: another viewer is grading this same session right now. Its file is left
+  untouched and this viewer's grades go here, so neither set is lost; reconcile them afterwards.
+
+Both count up (`_1`, `_2`, ...). Files with the older `-(N)` suffix are still found, read and
+resumed; that suffix is no longer written, since parentheses need quoting in a shell.
 
 Upgrading from an older version: a `.config_lobby.json`, `.predefined_configs/`,
 `.preferences_*.json`, `Legacy_survey/`, `PanSTARRS/` or `.temp/` left in your working
@@ -462,5 +474,10 @@ read but never moved, since other working directories may still be using them.
 
 ## License and contributors
 
-MIT — see [LICENSE](LICENSE). Contributors are listed in
-[CONTRIBUTORS.md](CONTRIBUTORS.md).
+MIT — see [LICENSE](LICENSE).
+
+- Javier Acevedo Barroso ([@ClarkGuilty](https://github.com/ClarkGuilty)) — project lead
+- Karina Rojas ([@Krojas](https://github.com/Krojas))
+
+Originally forked from [Visualisation-tool](https://github.com/esavary/Visualisation-tool)
+by esavary.

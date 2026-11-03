@@ -6,10 +6,13 @@ FITS/band-directory I/O lives in fits_io.py, not here -- this module stays
 astropy-free.
 """
 
+import csv
+import glob
 import os
 from os.path import join
 import re
 import stat
+from dataclasses import dataclass
 from uuid import uuid4
 
 import numpy as np
@@ -21,7 +24,7 @@ def identity(x):
 
 
 def log(x, a=1000):
-    "Simple log base 1000 function that ignores numbers less than 0"
+    "Log base `a` of `a*x + 1`: 0 at 0, about 1 at 1. Meant for x >= 0; NaN below -1/a."
     return np.log(a * x + 1) / np.log(a)
 
 
@@ -29,29 +32,28 @@ def asinh2(x):
     return np.arcsinh(10 * x) / 3
 
 
-def print_range(image):
-    return f"{image.min() = }, {image.max() = }"
-
-
-def get_value_range(x, p=98):
-    q = (100 - p) / 2
-    low = np.nanpercentile(x, q)
-    high = np.nanpercentile(x, 100 - q)
-    return low, high
+def _central_box(shape, box_size):
+    """(xmin, xmax, ymin, ymax) of a box_size box at the centre of a 2-D `shape`.
+    Clamped at 0: on a stamp smaller than the box a negative start would wrap
+    around and slice the far edge instead (BUGS 23)."""
+    xl, yl = shape[:2]
+    return (max(0, int(xl / 2. - box_size / 2.)), int(xl / 2. + box_size / 2.),
+            max(0, int(yl / 2. - box_size / 2.)), int(yl / 2. + box_size / 2.))
 
 
 def get_value_range_asymmetric(x, q_low=1, q_high=1):
+    """(black, white) points of an (ny, nx, 3) composite stack: the q_low percentile
+    of everything, and the 100 - q_high percentile of a box at the centre."""
     low = np.nanpercentile(x, q_low)
 
+    # np.prod over all three bands: the box is 3% of the stamp's area, not 1%. A
+    # composite always has exactly three bands, so this is a fixed size, and it is
+    # how composites have always looked (BUGS 22).
     if x.shape[0] > 80:
         pixel_boxsize_low = np.round(np.sqrt(np.prod(x.shape) * 0.01)).astype(int)
     else:
         pixel_boxsize_low = 8
-    xl, yl, _ = np.shape(x)
-    xmin = int((xl) / 2. - (pixel_boxsize_low / 2.))
-    xmax = int((xl) / 2. + (pixel_boxsize_low / 2.))
-    ymin = int((yl) / 2. - (pixel_boxsize_low / 2.))
-    ymax = int((yl) / 2. + (pixel_boxsize_low / 2.))
+    xmin, xmax, ymin, ymax = _central_box(x.shape, pixel_boxsize_low)
     high = np.nanpercentile(x[xmin:xmax, ymin:ymax], 100 - q_high)
     return low, high
 
@@ -111,6 +113,9 @@ def background_rms_image(cb, image):
 
 
 def clip_normalize(x, low=None, high=None):
+    "`x` clipped to [low, high] and mapped onto [0, 1]. All 0 when low == high (a flat image)."
+    if high == low:
+        return np.zeros_like(x, dtype=float)
     x = np.clip(x, low, high)
     x = (x - low) / (high - low)
     return x
@@ -123,11 +128,107 @@ def contrast_bias_scale(x, contrast, bias):
 
 
 def get_contrast_bias_reasonable_assumptions(value_at_min, bkg_color, scale_min, scale_max, scale):
+    """(contrast, bias) that put `value_at_min` at display value `bkg_color` and keep
+    1 at 1. When the background is already at the white point (bkg_level 1: nothing
+    above 0 in the centre box) there is no such line; leave the image as it is,
+    rather than divide by zero (BUGS 24). `bkg_color` is never 1."""
     bkg_level = clip_normalize(value_at_min, scale_min, scale_max)
     bkg_level = scale(bkg_level)
-    contrast = (bkg_color - 1) / (bkg_level - 1)  # with bkg_level != 1 and bkg_color != 1
+    if bkg_level == 1:
+        return 1.0, 0.5
+    contrast = (bkg_color - 1) / (bkg_level - 1)
     bias = 1 - (bkg_level - 1) / (2 * (bkg_color - 1))
     return contrast, bias
+
+
+# --- display scaling, shared by both viewers --------------------------------
+#
+# A FITS band is shown by picking a black and white point (scale_limits), then
+# stretching between them (rescale_image). An RGB composite stretches its three
+# bands together (composite_image). The two viewers differ in four details, kept on
+# purpose so that neither one's display changes (REFACTOR.md step 4): one Display
+# per viewer names them.
+
+# Stored names, in the mosaic's dropdown order. The 1-by-1 shows its own labels.
+SCALES = {'linear': identity, 'sqrt': np.sqrt, 'cbrt': np.cbrt, 'log': log, 'asinh': asinh2}
+# Names saved before 2026-10-06, read as their current ones.
+OLD_SCALE_NAMES = {'identity': 'linear', 'log10': 'log', 'asinh2': 'asinh'}
+
+
+@dataclass(frozen=True)
+class Display:
+    vmax_box_grows_above: int    # px: above it, the white point's box is 1% of the stamp's area
+    lift_zero_vmin: bool         # a black point of exactly 0 becomes 1e-3
+    max_is_white: bool           # pixels at the white point are 1.0, not scale(max)/scale(max-min)
+    composite_p_low: float       # percentile of the composite's black point
+    composite_bkg_level: float   # display value the composite's background maps to
+
+
+MOSAIC_DISPLAY = Display(vmax_box_grows_above=173, lift_zero_vmin=True, max_is_white=True,
+                         composite_p_low=1, composite_bkg_level=0.015)
+SINGLE_DISPLAY = Display(vmax_box_grows_above=170, lift_zero_vmin=False, max_is_white=False,
+                         composite_p_low=2, composite_bkg_level=-0.05)
+
+
+def scale_limits(image, display, pixel_scale_arcsec=None):
+    """(black, white) points of one band: the noise in its corners (1 sigma), and
+    1.3 times the brightest pixel in a box at its centre."""
+    if image.shape[0] > display.vmax_box_grows_above:
+        box_size_vmax = np.round(np.sqrt(np.prod(image.shape) * 0.01)).astype(int)
+    else:
+        box_size_vmax = 14
+    box_size_vmin = corner_box_size(image.shape, pixel_scale_arcsec)
+    vmin = np.nanmin(background_rms_image(box_size_vmin, image))
+    if vmin == 0 and display.lift_zero_vmin:
+        vmin += 1e-3
+    xmin, xmax, ymin, ymax = _central_box(image.shape, box_size_vmax)
+    vmax = np.nanmax(image[xmin:xmax, ymin:ymax])
+    return vmin * 1.0, vmax * 1.3
+
+
+def rescale_image(image, scale_min, scale_max, scale, display):
+    """`image` clipped to [scale_min, scale_max], then scale(x) / scale(max - min).
+    Clipping first is what keeps bright noise from washing the stamp out. NaNs stay."""
+    image = image.clip(min=scale_min, max=scale_max)
+    # Below scale_min after the clip only when the limits are inverted (a black point
+    # above the white point): the clip then puts every pixel at scale_max. The 1-by-1
+    # shows those as 0, the mosaic as 1.
+    below = image < scale_min
+    if display.max_is_white:
+        at_max = image >= scale_max
+        inside = (image >= scale_min) & ~at_max
+    else:
+        at_max = np.zeros_like(below)
+        inside = (image >= scale_min) & (image <= scale_max)
+    image[below] = 0.0
+    image[at_max] = 1.0
+    # An empty range has nothing to stretch, and scale() of it warns (BUGS 47): inverted
+    # limits leave nothing inside, and a flat band's pixels (an all-zero blank stamp in
+    # the 1-by-1) stay NaN, which is what the 0/0 here always made them.
+    if scale_max > scale_min:
+        image[inside] = scale(image[inside]) / scale(scale_max - scale_min)
+    else:
+        image[inside] = np.nan
+    return image
+
+
+def _composite_channel(image, scale_min, scale_max, scale, bkg_level):
+    "One band of a composite: normalised to [0, 1], scaled, then contrast and bias applied."
+    image = clip_normalize(image, scale_min, scale_max)
+    image = scale(image)
+    contrast, bias = get_contrast_bias_reasonable_assumptions(
+        max(0, scale_min), bkg_level, scale_min, scale_max, scale)
+    return contrast_bias_scale(image, contrast, bias)
+
+
+def composite_image(images, scale, display):
+    "RGB in [0, 1] from an (ny, nx, 3) stack, all three bands sharing one black and white point."
+    composite = np.zeros_like(images, dtype=float)
+    scale_min, scale_max = get_value_range_asymmetric(images, display.composite_p_low, 0.1)
+    for i in range(images.shape[-1]):
+        composite[:, :, i] = _composite_channel(images[:, :, i], scale_min, scale_max, scale,
+                                                display.composite_bkg_level)
+    return composite
 
 
 def open_rendered_image(filepath):
@@ -181,8 +282,8 @@ def next_free_csv_path(path, marker, max_attempts=1000):
     parenthesis anywhere in the result: these files get typed at a shell, and
     `-(1)` is a syntax error in bash and zsh unless it is quoted or escaped.
 
-    The marker is introduced by `-`, which is load-bearing. Both viewers glob
-    `{base}-*.csv` minus `{base}_*.csv` to find a seedless dataset's files, so a
+    The marker is introduced by `-`, which is load-bearing. Every tool finds a
+    session's files with `classification_csvs`, which globs `{base}-*.csv`, so a
     marker spelled with a leading `_` would read as a seed and hide the fork
     from every tool that goes looking for it.
     """
@@ -193,6 +294,65 @@ def next_free_csv_path(path, marker, max_attempts=1000):
         if not os.path.exists(candidate):
             return candidate
     raise RuntimeError('no free filename near {}'.format(path))
+
+
+# --- session CSV names -------------------------------------------------------
+#
+# A classification CSV is named after its dataset -- tool, --name, object count
+# and seed -- and nothing else. Both viewers open theirs by that name and the
+# lobby finds what they wrote by it, so all three go through the functions below:
+# the lobby's own copy of this naming drifted from the viewers' (BUGS.md 39, 40).
+
+MOSAIC_CSV_PREFIX = 'classification_mosaic_autosave'
+SINGLE_CSV_PREFIX = 'classification_single'
+
+
+def classification_csv_base(prefix, name, n_objects, seed=None):
+    """`{prefix}_{name}_{n_objects}`, plus `_{seed}` for a seeded session: the
+    session's CSV name without `.csv`. `_` introduces the seed and `-` a fork
+    (`next_free_csv_path`), so the two never meet in a glob."""
+    base = '{}_{}_{}'.format(prefix, name or '', n_objects)
+    return base if seed is None else '{}_{}'.format(base, seed)
+
+
+def classification_csvs(classifications_dir, base):
+    """`{base}.csv` and its `-`-suffixed forks in `classifications_dir`, natural-sorted.
+
+    Not `{base}*.csv`: for a seeded `base` that also matches every seed it is a
+    prefix of, so seed 7 would find seed 70's files (BUGS-DONE 11)."""
+    stem = join(glob.escape(classifications_dir), glob.escape(base))
+    return natural_sort(set(glob.glob(stem + '.csv')) | set(glob.glob(stem + '-*.csv')))
+
+
+def csv_holds(path, file_names):
+    "True if the CSV at `path` lists exactly `file_names`, in that order, in its `file_name` column."
+    try:
+        with open(path, newline='', encoding='utf-8') as f:
+            held = [row.get('file_name') for row in csv.DictReader(f)]
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return False
+    return held == list(file_names)
+
+
+def resume_csv(candidates, file_names=None):
+    """Which of a session's `classification_csvs` a viewer reopens, or None if there
+    are none.
+
+    Given the session's `file_names`, in order, only the CSVs holding exactly those
+    are considered, when there are any (BUGS 26). Two datasets can share a CSV name
+    (same --name, object count and seed): the second forks a `-new_dataset_N`, and
+    each must then reopen its own file. Picking by sort position alone, alternating
+    between the two forked again on every switch and never reopened the earlier
+    grades. A CSV with the same objects in another order is another session.
+
+    Among those, the only one, else the second-to-last: forks sort before the
+    unsuffixed file, so that is the newest fork. When none matches, the same rule
+    over all of them, and the viewer, finding a different dataset, forks."""
+    if file_names is not None:
+        candidates = [c for c in candidates if csv_holds(c, file_names)] or candidates
+    if not candidates:
+        return None
+    return candidates[-2] if len(candidates) > 1 else candidates[0]
 
 
 # --- classification autosave ------------------------------------------------

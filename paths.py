@@ -11,6 +11,7 @@ this repo, so that `state.py` can import it without creating a cycle
 (`state.py` already imports `imaging.atomic_write`).
 """
 
+import argparse
 import atexit
 import os
 import shutil
@@ -271,6 +272,14 @@ def scratch_dir(cache_root):
     return path
 
 
+def _state_dir_arg(value):
+    "argparse type for --state-dir: a path, never empty (BUGS 28)."
+    if not value.strip():
+        raise argparse.ArgumentTypeError("needs a directory; omit it for the default "
+                                         f"./{LOCAL_STATE_DIRNAME}")
+    return value
+
+
 def add_state_dir_args(parser):
     """Register `--state-dir`/`--global` on an argparse parser.
 
@@ -279,7 +288,7 @@ def add_state_dir_args(parser):
     a viewer started by hand has to understand the identical spelling.
     """
     group = parser.add_argument_group("state location")
-    group.add_argument("--state-dir", metavar="PATH", default=None,
+    group.add_argument("--state-dir", metavar="PATH", default=None, type=_state_dir_arg,
                        help="Directory holding this workspace's settings, presets and caches "
                             f"(default: ./{LOCAL_STATE_DIRNAME}, i.e. local to wherever you "
                             "started the tool).")

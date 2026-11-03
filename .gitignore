@@ -20,6 +20,11 @@ old/
 .config*.json.bak
 .predefined_configs/
 .temp/
+# Pre-2b-v cutout caches; a first run moves them into .qtstamp/cache/.
+Legacy_survey/
+PanSTARRS/
+# Classification output (CSVs and sessions.json) when run from the checkout.
+Classifications/
 
 # Python bytecode/cache
 __pycache__/
@@ -34,6 +39,7 @@ __pycache__/
 # Internal docs and agent working state, not for the public repo
 PLAN.md
 PLAN-DONE.md
+REFACTOR.md
 BUGS.md
 BUGS-DONE.md
 CLAUDE.md

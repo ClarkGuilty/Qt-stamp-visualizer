@@ -181,6 +181,14 @@ def resolve(source: BandSource, stem: str) -> Optional[Locator]:
     return None
 
 
+def locate(band_sources: Dict[str, BandSource], band: str, stem: str) -> Locator:
+    "Where object `stem`'s data lives for `band`; MissingBandError if nowhere."
+    locator = resolve(band_sources[band], stem)
+    if locator is None:
+        raise MissingBandError(band)
+    return locator
+
+
 # --- reading -----------------------------------------------------------------
 
 class FITSReadError(Exception):
