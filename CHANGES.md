@@ -149,6 +149,18 @@ fails on the new name. `--reset-config` clears it.
 The 1-by-1's scale menu now offers Asinh, as the mosaic's does. A saved asinh setting
 used to show as "Log" there, and picking Log then did nothing.
 
+The 1-by-1's Legacy Survey and PanSTARRS panels now share one code path, and the
+pre-fetch thread and the cutout sizes moved to `workers.py`. The panels request the same
+cutouts, cache the same files and show the same titles as before. The two viewers'
+start-up code is split into named steps, and the mosaic's Panels menu is now the 1-by-1's
+picker with one row. Neither tool looks or behaves differently.
+
+The lobby and the 1-by-1 now use one rule for the classifications in a saved file that
+the scheme has no button for. The lobby's check before launch now also flags labels
+from a scheme row with no key (the viewer makes no button for it), and compares labels
+exactly as written, as the viewer does. The 1-by-1 no longer reports a blank cell as a
+label.
+
 ## Fixed: `--mef` showed the wrong band when one file's extensions differed
 
 With `--mef`, each band was read from the same extension *position* in every file,

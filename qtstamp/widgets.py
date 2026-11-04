@@ -128,33 +128,10 @@ class CheckableSubMenu(QtWidgets.QMenu):
         checkbox.blockSignals(False)
 
 
-class PanelOrderPicker(QtWidgets.QWidget):
-    "Dropdown letting the user choose which of the fixed per-thumbnail panels are shown."
-    selectionChanged = Signal()
-
-    def __init__(self, panel_keys, panel_labels, parent=None):
-        super().__init__(parent)
-        self.panel_keys = panel_keys
-        self.button = QtWidgets.QToolButton()
-        self.button.setText("Panels")
-        self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu = CheckableSubMenu("Panels", self.button)
-        self.button.setMenu(self.menu)
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
-        layout.addWidget(self.button)
-        for panel_key in panel_keys:
-            checkbox = self.menu.add_check_item(panel_key, panel_labels[panel_key], checked=True)
-            checkbox.toggled.connect(lambda checked: self.selectionChanged.emit())
-
-    def selected_panels(self):
-        "Currently-checked panels, in the fixed canonical order."
-        checked = self.menu.checked_keys()
-        return [key for key in self.panel_keys if key in checked]
-
-
 class PanelRowPicker(QtWidgets.QWidget):
-    "Dropdown letting the user assign fixed panels to display rows, one row per menu."
+    """Dropdown letting the user assign fixed panels to display rows, one row per menu.
+    With one row, its checklist is the dropdown itself, with no "Row 1" submenu.
+    Every panel starts unchecked: set_row_panels sets them, without emitting rowChanged."""
     rowChanged = Signal(str, str, bool) #row_key, panel_key, checked
 
     def __init__(self, panel_keys, panel_labels, n_rows, parent=None):
@@ -164,7 +141,10 @@ class PanelRowPicker(QtWidgets.QWidget):
         self.button = QtWidgets.QToolButton()
         self.button.setText("Panels")
         self.button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu = QtWidgets.QMenu(self.button)
+        if n_rows == 1:
+            self.menu = CheckableSubMenu("Panels", self.button)
+        else:
+            self.menu = QtWidgets.QMenu(self.button)
         self.button.setMenu(self.menu)
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
@@ -172,8 +152,11 @@ class PanelRowPicker(QtWidgets.QWidget):
 
         self.rows = {}
         for row_key in self.row_keys:
-            submenu = CheckableSubMenu(row_key.replace('_',' ').title(), self.menu)
-            self.menu.addMenu(submenu)
+            if n_rows == 1:
+                submenu = self.menu
+            else:
+                submenu = CheckableSubMenu(row_key.replace('_',' ').title(), self.menu)
+                self.menu.addMenu(submenu)
             for panel_key in panel_keys:
                 checkbox = submenu.add_check_item(panel_key, panel_labels[panel_key])
                 checkbox.toggled.connect(partial(self._on_toggled, row_key, panel_key))

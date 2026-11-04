@@ -1197,28 +1197,19 @@ class LobbyWindow(QtWidgets.QMainWindow):
         return classifications_string
 
     def _unknown_classification_labels(self, csv_path):
-        """(unknown majors, unknown subs) found in `csv_path` but absent from
-        the scheme table -- sorted, sentinel values ('Empty'/'None'/blank)
-        excluded. Best-effort: an unreadable or malformed CSV yields nothing
-        rather than blocking the launch over it."""
+        """(unknown majors, unknown subs) found in `csv_path` that the 1-by-1 will
+        have no button for, under the scheme it is about to be given -- sorted.
+        The viewer reports by the same rule, `cli.unknown_labels`. Best-effort:
+        an unreadable or malformed CSV yields nothing rather than blocking the
+        launch over it."""
         try:
             df = pd.read_csv(csv_path, index_col=0)
         except (OSError, pd.errors.ParserError, UnicodeDecodeError):
             return [], []
-
-        rows = self._scheme_table_to_rows()
-        known_majors = {r['major'] for r in rows if r['type'] == 'major'}
-        # A major button writes its own name into subclassification too.
-        known_subs = {r['sub'] for r in rows if r['type'] == 'subclass'} | known_majors
-        sentinels = {'Empty', 'None', ''}
-
-        def unknown_values(column, known):
-            if column not in df.columns:
-                return []
-            values = {str(v).strip() for v in df[column].dropna()}
-            return sorted(values - known - sentinels)
-
-        return unknown_values('classification', known_majors), unknown_values('subclassification', known_subs)
+        classifications_string, _ = classifications_string_from_rows(self._scheme_table_to_rows())
+        unknown = cli.unknown_labels(df, cli.parse_classifications(classifications_string))
+        return (sorted(map(str, unknown['classification'])),
+                sorted(map(str, unknown['subclassification'])))
 
     def _prompt_unknown_classification(self, label, kind):
         "Asks whether to add `label` (a 'major' or 'subclass') to the scheme, or launch without it."

@@ -174,13 +174,14 @@ def test_single_dropdown_shows_a_saved_asinh(tmpdir):
 
 def test_panstarrs_large_fov_matches_legacy_survey():
     "BUGS 44: PanSTARRS's Large FoV was 6 px (1.5 arcsec), smaller than the stamp itself."
+    from qtstamp import workers
     for pixel_size, dim in [(0.1, 100), (0.262, 47), (0.1, 1500)]:
-        ps, ps_big = single_viewer.panstarrs_number_of_pixels(pixel_size, dim)
-        ls, ls_big = single_viewer.legacy_survey_number_of_pixels(pixel_size, dim)
+        ps, ps_big = workers.panstarrs_number_of_pixels(pixel_size, dim)
+        ls, ls_big = workers.legacy_survey_number_of_pixels(pixel_size, dim)
         assert ps_big > ps
-        ps_sky = ps_big*single_viewer.PANSTARRS_PIXEL_SIZE
-        ls_sky = ls_big*single_viewer.LEGACY_SURVEY_PIXEL_SIZE
-        assert abs(ps_sky - ls_sky) <= single_viewer.PANSTARRS_PIXEL_SIZE*2
+        ps_sky = ps_big*workers.PANSTARRS_PIXEL_SIZE
+        ls_sky = ls_big*workers.LEGACY_SURVEY_PIXEL_SIZE
+        assert abs(ps_sky - ls_sky) <= workers.PANSTARRS_PIXEL_SIZE*2
 
 
 
@@ -266,10 +267,10 @@ def test_fits_main_band_without_wcs_fetches_nothing(tmpdir):
     webbrowser.open = opened.append
     try:
         assert win.filetype == 'FITS' and np.isnan(win.ra)
-        win.set_panstarrs()
+        win.set_survey('PanSTARRS')
         assert win.ax['PanSTARRS'].get_title() == 'No RA/Dec:\nno sky WCS in r'
-        assert win.panstarrs_filename is None and getattr(win, 'workerThreadPS', None) is None
-        win.set_legacy_survey()
+        assert win.survey_filename['PanSTARRS'] is None and 'PanSTARRS' not in win.survey_threads
+        win.set_survey('Legacy Survey')
         assert win.ax['Legacy Survey'].get_title() == 'No RA/Dec:\nno sky WCS in r'
         win.viewPanSTARRS(); win.viewls(); win.viewESASky()
         assert opened == []

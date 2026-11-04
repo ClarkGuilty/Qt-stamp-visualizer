@@ -16,6 +16,8 @@ import sys
 from collections import namedtuple
 from os.path import join
 
+import pandas as pd
+
 from . import paths
 from . import state
 
@@ -222,6 +224,27 @@ def duplicate_keys(entries):
     for e in entries:
         seen.setdefault(e.key, []).append(f"{e.major}:{e.sub}" if e.sub else e.major)
     return {key: labels for key, labels in seen.items() if len(labels) > 1}
+
+
+def unknown_labels(df, entries):
+    """{column: {label: rows}}: the labels in a classification CSV's `classification`
+    and `subclassification` columns that the scheme `entries` makes no button for.
+    A major's button writes its own name into subclassification too, so majors are
+    known subclasses. Blank cells, 'None' and 'Empty' are not labels. Compared as
+    stored, since a button lights up only for its exact name."""
+    majors = {e.major for e in entries if not e.sub}
+    known = {'classification': majors,
+             'subclassification': majors | {e.sub for e in entries if e.sub}}
+    unknown = {}
+    for column, names in known.items():
+        counts = unknown[column] = {}
+        if column not in df.columns:
+            continue
+        for label in df[column]:
+            if pd.isna(label) or label in names or str(label).strip() in ('', 'None', 'Empty'):
+                continue
+            counts[label] = counts.get(label, 0) + 1
+    return unknown
 
 
 def duplicate_subclasses(entries):

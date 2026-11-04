@@ -30,7 +30,7 @@ from . import paths
 from . import state
 from .widgets import (
     AlignDelegate, ClickableComboBox, LabelledIntField, MissingBandsNote, NamedLabel,
-    PanelOrderPicker,
+    PanelRowPicker,
 )
 
 
@@ -304,45 +304,10 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.main_band = args.main_band
         self.color_bands = args.color_bands
 
-        # Scratch renders live with the workspace (2b-v), under the state dir's
-        # cache/. `paths.cache_dir` has already made it and confirmed it is
-        # writable -- falling back to the per-user cache dir if not, since a
-        # mosaic with nowhere to render cannot run at all. `scratch_dir` then
-        # carves out a per-process subdirectory, so two mosaics sharing one
-        # workspace no longer wipe each other's tiles.
-        cache_root = paths.cache_dir(override=args.state_dir_override)
-        # Before `scratch_dir`, which sweeps the root: the legacy dir lands there
-        # as loose tiles and is swept on this same run, which is what used to
-        # happen to it anyway (`clean_dir` wiped it immediately). The point of the
-        # migration is only to get `.temp` out of the CWD.
-        paths.migrate_once(os.path.join(os.curdir, '.temp'), os.path.join(cache_root, 'temp'))
-        self.scratchpath = paths.scratch_dir(cache_root)
-        self.classifications_dir = state.open_classifications_dir(args.classifications_dir)
-        self.clean_dir(self.scratchpath)
+        self._open_workspace_dirs()
+        self._load_dataset()
+        self._set_grid_shape()
 
-        try:
-            dataset = load_dataset(self.stampspath, self.main_band, self.color_bands,
-                                   args.composite_bands, args.composite_band_members,
-                                   args.mef, self.random_seed)
-        except DatasetError as e:
-            print(e)
-            sys.exit(1)
-        self.listimage = dataset.listimage
-        self.filetype = dataset.filetype
-        self.band_filetype = dataset.band_filetype
-        self.composite_bands = dataset.composite_bands
-        self.composite_band_members = dataset.composite_band_members
-        self.all_single_bands = dataset.all_single_bands
-        self.band_sources = dataset.band_sources
-        self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
-
-        self.ncols = args.ncols
-        if args.nrows is None:
-            self.nrows = self.ncols
-        else:
-            self.nrows = args.nrows
-        self.gridarea = self.nrows*self.ncols
-        self.PAGE_MAX = int(np.ceil(len(self.listimage) / self.gridarea))
         self.cmname2cm = {
                             'gray':'gist_gray',
                             'gist_gray':'gist_gray',
@@ -371,6 +336,69 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             self.name = ''
         self.setWindowTitle(' - '.join(title_strings))
 
+        self._open_session()
+        self._prepare_page()
+
+        self.fontsize = 18
+        self._build_controls()
+        self._build_shortcuts()
+        self._assemble_layout()
+        if not any(self.band_filetype.get(b) == 'FITS' for b in self.all_single_bands):
+            self.cbscale.setEnabled(False)
+            self.cbcolormap.setEnabled(False)
+        self.time_0 = time()
+
+    def _open_workspace_dirs(self):
+        "This process's scratch dir for rendered tiles, and the classifications dir."
+        args = self.args
+        # Scratch renders live with the workspace (2b-v), under the state dir's
+        # cache/. `paths.cache_dir` has already made it and confirmed it is
+        # writable -- falling back to the per-user cache dir if not, since a
+        # mosaic with nowhere to render cannot run at all. `scratch_dir` then
+        # carves out a per-process subdirectory, so two mosaics sharing one
+        # workspace no longer wipe each other's tiles.
+        cache_root = paths.cache_dir(override=args.state_dir_override)
+        # Before `scratch_dir`, which sweeps the root: the legacy dir lands there
+        # as loose tiles and is swept on this same run, which is what used to
+        # happen to it anyway (`clean_dir` wiped it immediately). The point of the
+        # migration is only to get `.temp` out of the CWD.
+        paths.migrate_once(os.path.join(os.curdir, '.temp'), os.path.join(cache_root, 'temp'))
+        self.scratchpath = paths.scratch_dir(cache_root)
+        self.classifications_dir = state.open_classifications_dir(args.classifications_dir)
+        self.clean_dir(self.scratchpath)
+
+    def _load_dataset(self):
+        "The objects, their bands and where each band is read from; exits on a bad dataset."
+        args = self.args
+        try:
+            dataset = load_dataset(self.stampspath, self.main_band, self.color_bands,
+                                   args.composite_bands, args.composite_band_members,
+                                   args.mef, self.random_seed)
+        except DatasetError as e:
+            print(e)
+            sys.exit(1)
+        self.listimage = dataset.listimage
+        self.filetype = dataset.filetype
+        self.band_filetype = dataset.band_filetype
+        self.composite_bands = dataset.composite_bands
+        self.composite_band_members = dataset.composite_band_members
+        self.all_single_bands = dataset.all_single_bands
+        self.band_sources = dataset.band_sources
+        self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
+
+    def _set_grid_shape(self):
+        args = self.args
+        self.ncols = args.ncols
+        if args.nrows is None:
+            self.nrows = self.ncols
+        else:
+            self.nrows = args.nrows
+        self.gridarea = self.nrows*self.ncols
+        self.PAGE_MAX = int(np.ceil(len(self.listimage) / self.gridarea))
+
+    def _open_session(self):
+        "The classification CSV, preferences, resume page and panel order for this dataset."
+        args = self.args
         # Preferences only: they follow the *user*, so they survive a change of
         # --path/--name/--seed. The resume page follows the *dataset* and lives
         # in the session store instead (see state.py). Neither nrows/ncols nor
@@ -409,6 +437,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
             default_panel_order = [self.main_band, *self.composite_bands]
             self.config_dict['panel_order'] = ';'.join(default_panel_order)
 
+    def _prepare_page(self):
+        "Tile backgrounds, the page counter, and this page's tiles rendered."
         self.interesting_background_pixmap = _letter_pixmap('I')
         self.lens_background_pixmap = _letter_pixmap('L')
         self.deactivated_pixmap = _solid_pixmap(Qt.black)
@@ -429,20 +459,8 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
 
         self.prepare_pngs(self.gridarea)
 
-        main_layout = QtWidgets.QVBoxLayout(self._main)
-        stamp_grid_layout = QtWidgets.QGridLayout()
-        bottom_bar_layout = QtWidgets.QHBoxLayout()
-        button_bar_layout = QtWidgets.QHBoxLayout()
-        page_counter_layout = QtWidgets.QHBoxLayout()
-
-
-        bottom_bar_layout.addLayout(button_bar_layout,10)
-        bottom_bar_layout.addLayout(page_counter_layout,1)
-        main_layout.addLayout(stamp_grid_layout, 8)
-        main_layout.addLayout(bottom_bar_layout, )
-
-        self.fontsize = 18
-        
+    def _build_controls(self):
+        "The bottom bar's dropdowns and buttons, and the click counter."
         #### Buttons
         self.cbscale = ClickableComboBox()
         delegate = AlignDelegate(self.cbscale)
@@ -465,12 +483,11 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.cbcolormap.currentIndexChanged.connect(self.change_colormap)
 
         panel_labels = {band: band for band in self.bands_to_plot}
-        self.panel_picker = PanelOrderPicker(self.bands_to_plot, panel_labels)
+        self.panel_picker = PanelRowPicker(self.bands_to_plot, panel_labels, n_rows=1)
         self.panel_picker.button.setFont(QFont("Arial",self.fontsize))
         self.panel_picker.button.setStyleSheet('background-color: gray')
-        for panel_key, checkbox in self.panel_picker.menu._checkboxes.items():
-            checkbox.setChecked(panel_key in self.config_dict['panel_order'].split(';'))
-        self.panel_picker.selectionChanged.connect(self.change_panel_order)
+        self.panel_picker.set_row_panels('row_1', self.config_dict['panel_order'].split(';'))
+        self.panel_picker.rowChanged.connect(lambda *_: self.change_panel_order())
 
 
         self.bprev = QtWidgets.QPushButton('Prev')
@@ -486,6 +503,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.bclickcounter = NamedLabel('Clicks', (self.df['classification'] == C_LENS).sum().astype(int))
         self.bclickcounter.setStyleSheet('background-color: black; color: gray')
 
+    def _build_shortcuts(self):
         ##### Keyboard shortcuts
         self.knext = QShortcut(QKeySequence('j'), self)
         self.knext.activated.connect(self.next)
@@ -499,6 +517,20 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.kprev = QShortcut(QKeySequence('d'), self)
         self.kprev.activated.connect(self.prev)
 
+    def _assemble_layout(self):
+        "The stamp grid over the bottom bar, then this page's tiles in the grid."
+        args = self.args
+        main_layout = QtWidgets.QVBoxLayout(self._main)
+        stamp_grid_layout = QtWidgets.QGridLayout()
+        bottom_bar_layout = QtWidgets.QHBoxLayout()
+        button_bar_layout = QtWidgets.QHBoxLayout()
+        page_counter_layout = QtWidgets.QHBoxLayout()
+
+
+        bottom_bar_layout.addLayout(button_bar_layout,10)
+        bottom_bar_layout.addLayout(page_counter_layout,1)
+        main_layout.addLayout(stamp_grid_layout, 8)
+        main_layout.addLayout(bottom_bar_layout, )
 
         button_bar_layout.addWidget(self.cbscale)
         button_bar_layout.addWidget(self.cbcolormap)
@@ -534,11 +566,6 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 button, i % self.nrows, i // self.nrows)
             self.buttons.append(button)
             button.setAlignment(Qt.AlignCenter) #TODO CHECK HOW TO REACTIVATE THIS. (OR IF IT'S NEEDED)
-        if not any(self.band_filetype.get(b) == 'FITS' for b in self.all_single_bands):
-            self.cbscale.setEnabled(False)
-            self.cbcolormap.setEnabled(False)
-        
-        self.time_0 = time()
 
     def go_to_page(self, target_page):
         range_low = self.page*self.gridarea
@@ -611,7 +638,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.save_preferences()
 
     def change_panel_order(self):
-        self.config_dict['panel_order'] = ';'.join(self.panel_picker.selected_panels())
+        self.config_dict['panel_order'] = ';'.join(self.panel_picker.row_panels('row_1'))
         self.update_grid(single_band_only=True,change_panel_order=True)
         self.save_preferences()
 

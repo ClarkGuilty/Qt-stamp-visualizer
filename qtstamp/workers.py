@@ -1,6 +1,6 @@
 # This Python file uses the following encoding: utf-8
 """Survey cutout fetching: cache protocol, downloads, and the background
-QObject workers that drive them. Used by single_viewer.py.
+QObject workers that drive them, and the cutout sizes. Used by single_viewer.py.
 
 Cache protocol
 --------------
@@ -29,9 +29,12 @@ import time
 import urllib.error
 import urllib.request
 
+import numpy as np
+import pandas as pd
 from PIL import Image
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
+from . import fits_io
 from .imaging import atomic_write
 
 PS1_FILENAMES_URL = 'https://ps1images.stsci.edu/cgi-bin/ps1filenames.py'
@@ -68,6 +71,37 @@ MISS_SUFFIX = '.miss'
 REJECT_UNIFORM_LEGACY_SURVEY_CUTOUTS = True
 
 
+# --------------------------------------------------------------------------
+# Cutout sizes, in survey pixels, for a stamp of `image_dim` px at
+# `image_pixel_size` arcsec/px: (same field as the stamp, Large FoV).
+# --------------------------------------------------------------------------
+
+LEGACY_SURVEY_PIXEL_SIZE = 0.262
+LEGACY_SURVEY_PIXSCALE = str(LEGACY_SURVEY_PIXEL_SIZE)   # as the cutout URL takes it
+LEGACY_SURVEY_BIG_FOV_PIXELS = 488
+PANSTARRS_PIXEL_SIZE = 0.25
+
+
+def legacy_survey_number_of_pixels(image_pixel_size,
+                                    image_dim,
+                                    pixels_big_fov_ls=LEGACY_SURVEY_BIG_FOV_PIXELS): #sizes in ARCSECONDS
+    n_pixels_in_ls = int(np.ceil(image_pixel_size*image_dim/LEGACY_SURVEY_PIXEL_SIZE))
+    if n_pixels_in_ls >= pixels_big_fov_ls:
+        pixels_big_fov_ls = 2*n_pixels_in_ls
+    return n_pixels_in_ls, pixels_big_fov_ls
+
+# One "Large FoV" toggle drives both survey panels, so PanSTARRS covers the same
+# ~2.1' as Legacy Survey's 488 px, and doubles the stamp when that is wider (BUGS 44).
+PANSTARRS_BIG_FOV_ARCSEC = LEGACY_SURVEY_BIG_FOV_PIXELS*LEGACY_SURVEY_PIXEL_SIZE
+
+def panstarrs_number_of_pixels(image_pixel_size, image_dim): #sizes in ARCSECONDS
+    n_pixels_in_ps1 = int(np.ceil(image_pixel_size*image_dim/PANSTARRS_PIXEL_SIZE))
+    pixels_big_fov_ps1 = int(np.ceil(PANSTARRS_BIG_FOV_ARCSEC/PANSTARRS_PIXEL_SIZE))
+    if n_pixels_in_ps1 >= pixels_big_fov_ps1:
+        pixels_big_fov_ps1 = 2*n_pixels_in_ps1
+    return n_pixels_in_ps1, pixels_big_fov_ps1
+
+
 class FetchResult(enum.Enum):
     "Outcome of a cutout fetch (or of consulting the cache for one)."
     OK = 'ok'                    # a usable image is on disk
@@ -96,7 +130,7 @@ def panstarrs_cache_name(ra, dec, size):
     return 'P' + '_' + str(ra) + '_' + str(dec) + f"_{size}" + 'ps1-grz.jpg'
 
 
-def legacy_survey_url(ra, dec, size, residual=False, pixscale='0.262'):
+def legacy_survey_url(ra, dec, size, residual=False, pixscale=LEGACY_SURVEY_PIXSCALE):
     res = '-resid' if residual else '-grz'
     return (f'{LEGACY_SURVEY_CUTOUT_URL}?ra={ra}&dec={dec}'
             f'&layer=ls-dr10{res}&size={size}&pixscale={pixscale}')
@@ -278,7 +312,7 @@ def _finish_fetch(savefile, verbose=False, reject_uniform=False):
 
 
 def fetch_legacy_survey(savefile, ra, dec, size, residual=False,
-                        pixscale='0.262', verbose=False):
+                        pixscale=LEGACY_SURVEY_PIXSCALE, verbose=False):
     """Ensure a Legacy Survey cutout for ra/dec is cached at `savefile`.
 
     Never raises: every failure is recorded as a miss marker and reported
@@ -384,37 +418,31 @@ def purge_placeholder_cutouts(*directories):
 
 
 # --------------------------------------------------------------------------
-# Qt workers. Both run one fetch on a worker thread and report back by signal.
-# Neither may raise: a slot that dies takes has_finished with it and leaves the
-# panel stuck on "Waiting for data" forever.
+# Qt workers. FetchWorker runs one fetch on a worker thread and reports back by
+# signal. It may not raise: a slot that dies takes has_finished with it and leaves
+# the panel stuck on "Waiting for data" forever. FetchThread is the prefetch pass.
 # --------------------------------------------------------------------------
 
-class SingleFetchWorker(QObject):
-    "Fetches one Legacy Survey cutout off the GUI thread."
+class FetchWorker(QObject):
+    """Runs one cutout fetch off the GUI thread. `fetch` is a fetch_* call with its
+    arguments bound. For PanSTARRS that includes the ps1filenames.py lookup -- a
+    network call too, which used to run on the GUI thread and froze the UI for up
+    to 10s whenever a stamp had no PS1 coverage."""
     successful_download = Signal()
     failed_download = Signal()
     has_finished = Signal()
 
-    def __init__(self, savefile, ra, dec, size, residual=False,
-                 pixscale='0.262', verbose=False):
-        super(SingleFetchWorker, self).__init__()
-        self.savefile = savefile
-        self.ra = ra
-        self.dec = dec
-        self.size = size
-        self.residual = residual
-        self.pixscale = pixscale
-        self.verbose = verbose
+    def __init__(self, survey, fetch):
+        super().__init__()
+        self.survey = survey
+        self.fetch = fetch
 
     @Slot()
     def run(self):
         try:
-            result = fetch_legacy_survey(self.savefile, self.ra, self.dec,
-                                         self.size, residual=self.residual,
-                                         pixscale=self.pixscale,
-                                         verbose=self.verbose)
+            result = self.fetch()
         except Exception as E:  # defensive: fetch_* is not supposed to raise
-            print("Unexpected error fetching the Legacy Survey cutout:", E)
+            print(f"Unexpected error fetching the {self.survey} cutout:", E)
             result = FetchResult.TRANSIENT
         if result is FetchResult.OK:
             self.successful_download.emit()
@@ -423,33 +451,79 @@ class SingleFetchWorker(QObject):
         self.has_finished.emit()
 
 
-class PanstarrsFetchWorker(QObject):
-    """Fetches one PanSTARRS cutout off the GUI thread, including the
-    ps1filenames.py lookup -- that lookup is a network call too, and must not
-    run on the GUI thread (it used to, and froze the UI for up to 10s whenever
-    a stamp had no PS1 coverage)."""
-    successful_download = Signal()
-    failed_download = Signal()
-    has_finished = Signal()
+class FetchThread(QThread):
+    "The prefetch pass: every cutout wanted for each object from `initial_counter` on."
+    def __init__(self, df, initial_counter, main_band_source, listimage,
+                 legacy_survey_path, panstarrs_path,
+                 fetch_panstarrs=True, fetch_legacysurvey=True,
+                 fetch_big_fov_residuals=False, verbose=False, parent=None):
+            QThread.__init__(self, parent)
 
-    def __init__(self, ra, dec, savefile, size, verbose=False):
-        super(PanstarrsFetchWorker, self).__init__()
-        self.ra = ra
-        self.dec = dec
-        self.savefile = savefile
-        self.size = size
-        self.verbose = verbose
+            self.df = df
+            self.initial_counter = initial_counter
+            self.legacy_survey_path = legacy_survey_path
+            self.panstarrs_path = panstarrs_path
+            self.verbose = verbose
+            # Passed in rather than rediscovered here, so this thread's view of "the
+            # main band's file for object N" can never drift from ApplicationWindow's.
+            self.main_band_source = main_band_source
+            self.listimage = listimage
+            self.fetch_panstarrs = fetch_panstarrs
+            self.fetch_legacysurvey = fetch_legacysurvey
+            self.fetch_big_fov_residuals = fetch_big_fov_residuals
+            # interrupt() can arrive before run() has started (isRunning() is
+            # already true by then), so this must exist from construction.
+            self._active = True
 
-    @Slot()
-    def run(self):
-        try:
-            result = fetch_panstarrs(self.savefile, self.ra, self.dec,
-                                     self.size, verbose=self.verbose)
-        except Exception as E:  # defensive: fetch_* is not supposed to raise
-            print("Unexpected error fetching the PanSTARRS cutout:", E)
-            result = FetchResult.TRANSIENT
-        if result is FetchResult.OK:
-            self.successful_download.emit()
+    def download_legacy_survey(self,ra,dec,size=47,residual=False,pixscale=LEGACY_SURVEY_PIXSCALE):
+        savefile = os.path.join(self.legacy_survey_path,
+                                legacy_survey_cache_name(ra, dec, size, residual=residual))
+        return fetch_legacy_survey(savefile, ra, dec, size, residual=residual,
+                                   pixscale=pixscale, verbose=self.verbose)
+
+    def download_panstarrs(self,ra,dec,size=240):
+        savefile = os.path.join(self.panstarrs_path,
+                                panstarrs_cache_name(ra, dec, size))
+        return fetch_panstarrs(savefile, ra, dec, size, verbose=self.verbose)
+
+    def interrupt(self):
+        self._active = False
+
+    def fetch_one(self, index):
+        "Download every cutout wanted for the object at `index`."
+        stamp = self.df.iloc[index]
+        if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
+            stem = os.path.splitext(self.listimage[index])[0]
+            locator = fits_io.resolve(self.main_band_source, stem)
+            ra,dec,image_pixel_size,image_dim = fits_io.get_ra_dec(fits_io.read_header(locator))
         else:
-            self.failed_download.emit()
-        self.has_finished.emit()
+            ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
+        if any(pd.isna(v) for v in (ra, dec, image_pixel_size, image_dim)):
+            return  # no sky WCS in the main band, or a CSV row missing its scale: nothing to fetch
+        if self.fetch_panstarrs:
+            n_pixels_ps1, n_pixels_big_ps1 = panstarrs_number_of_pixels(image_pixel_size, image_dim)
+            self.download_panstarrs(ra,dec,size=n_pixels_ps1)
+            self.download_panstarrs(ra,dec,size=n_pixels_big_ps1)
+
+        if self.fetch_legacysurvey:
+            n_pixels_ls, n_pixels_big_ls = legacy_survey_number_of_pixels(image_pixel_size,
+                                    image_dim)
+            self.download_legacy_survey(ra,dec,size=n_pixels_ls)
+            self.download_legacy_survey(ra,dec,size=n_pixels_ls,residual=True)
+            self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
+            if self.fetch_big_fov_residuals:
+                self.download_legacy_survey(ra,dec,size=n_pixels_big_ls,residual=True)
+
+    def run(self):
+        index = self.initial_counter
+        self._active = True
+        while self._active and index < len(self.df):
+            # One unreadable header or malformed survey response must not end
+            # the prefetch pass: everything after this index would silently
+            # never be prefetched, for the rest of the session.
+            try:
+                self.fetch_one(index)
+            except Exception as E:
+                print(f"Skipping pre-fetch for object {index}: {type(E).__name__}: {E}")
+            index+=1
+        return 0

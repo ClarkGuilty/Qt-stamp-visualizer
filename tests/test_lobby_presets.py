@@ -176,6 +176,27 @@ def test_lens_type_preset_resumes_its_csv_without_unknown_labels(tmpdir):
     assert w._unknown_classification_labels(csv_path) == ([], [])
 
 
+def test_lobby_and_viewer_report_the_same_unknown_labels(tmpdir):
+    "REFACTOR step 6: both go through cli.unknown_labels, given the scheme the viewer is launched with."
+    w = _lobby(tmpdir, _dataset(tmpdir, 'pngs', ['png']))
+    w._populate_scheme_table([
+        {'type': 'major', 'major': 'A', 'sub': '', 'key': '1'},
+        {'type': 'major', 'major': 'B', 'sub': '', 'key': ''},          # no key: no button made
+        {'type': 'subclass', 'major': 'A', 'sub': 'Ring', 'key': 'r'}])
+    csv_path = os.path.join(tmpdir, 'c.csv')
+    with open(csv_path, 'w') as f:
+        f.write(',file_name,classification,subclassification\n'
+                '0,a.png,A,Ring\n1,b.png,B,B\n2,c.png,Q,Spiral\n3,d.png,Empty,None\n')
+    assert w._unknown_classification_labels(csv_path) == (['B', 'Q'], ['B', 'Spiral'])
+    classifications, _ = w.build_classifications_string()
+    from qtstamp import cli
+    import pandas as pd
+    viewer_view = cli.unknown_labels(pd.read_csv(csv_path, index_col=0),
+                                     cli.parse_classifications(classifications))
+    assert (sorted(viewer_view['classification']), sorted(viewer_view['subclassification'])) == \
+        (['B', 'Q'], ['B', 'Spiral'])
+
+
 if __name__ == '__main__':
     import inspect
     import traceback

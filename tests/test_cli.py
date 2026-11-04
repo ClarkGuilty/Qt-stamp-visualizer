@@ -321,6 +321,26 @@ def test_effective_main_band():
     assert lobby.effective_main_band('', ['g']) == cli.DEFAULT_MAIN_BAND
 
 
+
+def test_unknown_labels_is_what_no_button_lights_up_for():
+    "One rule for the lobby's pre-launch check and the 1-by-1's startup report."
+    import numpy as np
+    import pandas as pd
+    entries = cli.parse_classifications('A=1;B=2;A,B:Ring=r')
+    df = pd.DataFrame({
+        'classification':    ['A', 'Q', 'Q', 'Ring', 'Empty', 'None', np.nan, ' ', ' A'],
+        'subclassification': ['A', 'B', 'Ring', 'Spiral', 'Empty', np.nan, 'None', '', 'Ring'],
+    })
+    assert cli.unknown_labels(df, entries) == {
+        'classification': {'Q': 2, 'Ring': 1, ' A': 1},   # a subclass is no major; exact names
+        'subclassification': {'Spiral': 1},               # majors are known subclasses
+    }
+    assert cli.unknown_labels(df.drop(columns='subclassification'), entries)['subclassification'] == {}
+    assert cli.unknown_labels(df, []) == {
+        'classification': {'A': 1, 'Q': 2, 'Ring': 1, ' A': 1},
+        'subclassification': {'A': 1, 'B': 1, 'Ring': 2, 'Spiral': 1}}
+
+
 if __name__ == '__main__':
     import inspect
     import traceback
