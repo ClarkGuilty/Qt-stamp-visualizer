@@ -18,14 +18,17 @@ from os.path import join
 
 import pandas as pd
 
+from . import fits_io
 from . import paths
 from . import state
 
-# What a viewer uses when -b/-B/--rgb-composites are not given. The lobby omits
-# -b when no main band is set, so it needs the first of these too.
+# What a viewer looks for when -b/-B/--rgb-composites are not given (see
+# resolve_bands for what it does when they are not there). The lobby omits -b when
+# no main band is set, so it needs the first of these too.
 DEFAULT_MAIN_BAND = 'VIS'
 DEFAULT_COLOR_BANDS = 'Y,J,H'
 DEFAULT_RGB_COMPOSITES = 'H,Y,I;H,J,Y'
+FLAT_BAND = fits_io.FLAT_BAND      # -b . : the images directly under --path
 
 
 def add_dataset_args(parser):
@@ -36,21 +39,26 @@ def add_dataset_args(parser):
                         default=None)
     parser.add_argument('-s', "--seed", help="Seed used to shuffle the images.", type=int,
                         default=None)
-    parser.add_argument('-b', "--main_band", help='High resolution band. Example: "VIS". This is also the '
-                        "tool's default band: the panel that's always individually shown and pre-selected. "
-                        "Pass -b '' for no main band (PNG/JPG sets, which have no WCS): the first -B "
-                        "band then takes its place.",
-                        default=DEFAULT_MAIN_BAND)
+    parser.add_argument('-b', "--main_band", help='The default band: the panel shown first and '
+                        'pre-selected. Example: "VIS". No band needs every object: an object is '
+                        "listed when any band has it, and a band it lacks shows as \"no data\". "
+                        f"Default: {DEFAULT_MAIN_BAND} if --path has it, else the first -B band "
+                        "(pass -b '' to ask for that), else the first band found under --path.",
+                        default=None)
     parser.add_argument('-B', "--color_bands", help='Comma-separated bands to make individually selectable as '
-                        'their own panel (in addition to the RGB composites). Example: "Y,J,H"',
-                        default=DEFAULT_COLOR_BANDS)
+                        'their own panel (in addition to the RGB composites). Example: "Y,J,H". '
+                        f'Default: those of {DEFAULT_COLOR_BANDS} that --path has; with no band '
+                        'argument at all and none of the default bands there, every other '
+                        'band found under --path.',
+                        default=None)
     parser.add_argument('--rgb-composites',
                         help='RGB composites: semicolon-separated R,G,B band-name triples (any directory name '
                         "under --path can be a band -- not just VIS/Y/J/H/I). A composite's own name/label is "
                         'simply its comma-joined member list. Example: "H,Y,I;H,J,Y". '
-                        'All three bands in a composite must have the exact same image dimensions '
-                        '(and ideally the same zero-point) -- mismatched bands cannot be stacked into one RGB image.',
-                        default=DEFAULT_RGB_COMPOSITES)
+                        'A composite is made for an object only when all three bands have a FITS stamp '
+                        'of the same dimensions for it; otherwise its panel reads "no data". '
+                        f'Default: those of {DEFAULT_RGB_COMPOSITES} whose bands --path has.',
+                        default=None)
     parser.add_argument("--mef", help="Treat --path as a directory of multi-extension FITS "
                         "files -- one file per object, with bands as HDU extensions "
                         "(identified by EXTNAME) inside it, instead of one subdirectory per "
@@ -111,23 +119,78 @@ def parse_rgb_composites(text):
     return composites
 
 
+def resolve_bands(path, main_band, color_bands, composites, mef, note=print):
+    """`(main_band, color_bands, composites)` to run with, each given as its argument's
+    text or None when the argument was not passed. Raises ValueError, with the message
+    to exit on, when no usable setup comes out.
+
+    What was passed is taken as it is. What was not is the default *if the data has
+    it*, so a dataset that is not laid out as VIS/Y/J/H/I opens without naming its
+    bands:
+
+    - With no band argument at all and no default main band under `path`, the bands
+      are whatever is there: every subdirectory holding stamps, the first as the
+      default band; or, when the stamps sit directly under `path`, that one flat
+      directory (`FLAT_BAND`). No composites.
+    - Otherwise an unpassed -B keeps the default color bands that exist, an unpassed
+      --rgb-composites the default composites whose three bands exist, and an
+      unpassed -b is the default main band if it exists, else the first color band.
+
+    Under `mef` bands are extensions inside the files, which are not opened here:
+    unpassed arguments are simply the defaults, checked when the window opens."""
+    passed_any = not (main_band is None and color_bands is None and composites is None)
+    colors = split_bands(DEFAULT_COLOR_BANDS if color_bands is None else color_bands)
+    triples = parse_rgb_composites(DEFAULT_RGB_COMPOSITES if composites is None else composites)
+    if mef:
+        main, colors = resolve_main_band(DEFAULT_MAIN_BAND if main_band is None else main_band, colors)
+        if not main:
+            raise ValueError('-b "" (no main band) needs at least one -B color band to take its place.')
+        return main, colors, triples
+
+    def exists(band):
+        return os.path.isdir(join(path, band))
+
+    if not passed_any and not exists(DEFAULT_MAIN_BAND):
+        found = fits_io.list_band_dirs(path)
+        if found:
+            note(f"No band arguments and no {DEFAULT_MAIN_BAND} under {path}: using the bands "
+                 f"found there -- {', '.join(found)} ({found[0]} shown first).")
+            return found[0], found[1:], []
+        if fits_io.has_stamps(path):
+            note(f"No band directories under {path}: showing the images directly in it.")
+            return FLAT_BAND, [], []
+        raise ValueError(f"No FITS, PNG, or JPG stamps found under {path}, nor in a subdirectory of it.")
+
+    if color_bands is None:
+        colors = [b for b in colors if exists(b)]
+    if composites is None:
+        triples = [t for t in triples if all(exists(b) for b in t)]
+    if main_band is None:
+        main, colors = resolve_main_band(DEFAULT_MAIN_BAND if exists(DEFAULT_MAIN_BAND) else '', colors)
+        if not main:
+            raise ValueError(f"No default band: -b was not passed, there is no {DEFAULT_MAIN_BAND} "
+                             f"under {path}, and no -B band to take its place. Pass -b.")
+    else:
+        main, colors = resolve_main_band(main_band, colors)
+        if not main:
+            raise ValueError('-b "" (no main band) needs at least one -B color band to take its place.')
+    return main, colors, triples
+
+
 def finish_dataset_args(parser, args):
     """Normalises the parsed dataset arguments in place, into what both viewers use.
 
-    `color_bands` becomes a list; `main_band` is filled in when -b '' asked for
-    none; `composite_bands` (ordered keys, "H,Y,I") and `composite_band_members`
-    (key -> (r, g, b)) come from --rgb-composites; `state_dir_override` from
-    --state-dir/--global. Exits, the way argparse does, on arguments that cannot
-    work -- including a band with no directory under --path.
+    `main_band`, `color_bands` (a list) and the composites come from `resolve_bands`,
+    which fills in the ones not passed from what --path holds; `composite_bands`
+    (ordered keys, "H,Y,I") and `composite_band_members` (key -> (r, g, b)) are the
+    composites; `state_dir_override` comes from --state-dir/--global. Exits, the way
+    argparse does, on arguments that cannot work -- including a band that was asked
+    for and has no directory under --path.
     """
     args.state_dir_override = paths.resolve_state_dir_override(args)
-    args.main_band, args.color_bands = resolve_main_band(args.main_band,
-                                                         split_bands(args.color_bands))
-    if not args.main_band:
-        parser.error('-b "" (no main band) needs at least one -B color band to take its place.')
-
     try:
-        composites = parse_rgb_composites(args.rgb_composites)
+        args.main_band, args.color_bands, composites = resolve_bands(
+            args.path, args.main_band, args.color_bands, args.rgb_composites, args.mef)
     except ValueError as e:
         parser.error(str(e))
     args.composite_bands = [','.join(members) for members in composites]
@@ -145,11 +208,13 @@ def _exit_on_missing_band_dirs(args):
     missing = [b for b in referenced if not os.path.isdir(join(args.path, b))]
     if not missing:
         return
-    available = sorted(d for d in os.listdir(args.path) if os.path.isdir(join(args.path, d))) \
-        if os.path.isdir(args.path) else []
+    available = fits_io.list_band_dirs(args.path)
     print(f"Band director{'y' if len(missing) == 1 else 'ies'} not found under {args.path}: "
           f"{', '.join(sorted(missing))}")
     print(f"Available subdirectories: {', '.join(available) if available else '(none found)'}")
+    if fits_io.has_stamps(args.path):
+        print(f"There are images directly in {args.path}: leave out -b/-B/--rgb-composites "
+              f"to show those, or pass -b {fits_io.FLAT_BAND}")
     sys.exit(1)
 
 
@@ -226,6 +291,17 @@ def duplicate_keys(entries):
     return {key: labels for key, labels in seen.items() if len(labels) > 1}
 
 
+# What an ungraded row holds in the CSV, so never a class: a button with one of these
+# names writes it, and the row then reads as ungraded.
+RESERVED_LABELS = ('None', 'Empty')
+
+
+def reserved_labels(entries):
+    "The majors and subclasses in `entries` named with a RESERVED_LABELS word, in order."
+    names = [e.sub if e.sub else e.major for e in entries]
+    return list(dict.fromkeys(n for n in names if n in RESERVED_LABELS))
+
+
 def unknown_labels(df, entries):
     """{column: {label: rows}}: the labels in a classification CSV's `classification`
     and `subclassification` columns that the scheme `entries` makes no button for.
@@ -241,7 +317,7 @@ def unknown_labels(df, entries):
         if column not in df.columns:
             continue
         for label in df[column]:
-            if pd.isna(label) or label in names or str(label).strip() in ('', 'None', 'Empty'):
+            if pd.isna(label) or label in names or str(label).strip() in ('', *RESERVED_LABELS):
                 continue
             counts[label] = counts.get(label, 0) + 1
     return unknown

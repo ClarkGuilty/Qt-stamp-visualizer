@@ -2,7 +2,7 @@
 single_viewer.py.
 
 Covers both dataset layouts it supports: directory-per-band (DirBandSource,
-resolve/find_band_file, detect_band_filetype/list_objects) and multi-extension
+resolve, scan_stamps/detect_band_filetype/list_band_dirs) and multi-extension
 FITS (ExtensionBandSource, discover_mef_bands, is_mef_dataset), plus the reading
 layer (read_pixels/read_header/read_pixels_and_header, FITSReadError) and RA/Dec
 extraction (get_ra_dec, pixel_scale_arcsec), built against synthetic in-test FITS data -- no fixture
@@ -74,40 +74,91 @@ def test_detect_band_filetype(tmpdir):
     assert fits_io.detect_band_filetype(join(tmpdir, 'does_not_exist')) is None
 
 
-def test_list_objects_prefers_fits(tmpdir):
+def test_fits_and_rendered_stamps_are_listed_together(tmpdir):
+    "Every valid image is an object: a FITS file in the directory no longer hides the PNGs."
     _write_fits(tmpdir, 'b.fits', np.zeros((2, 2)))
     _write_fits(tmpdir, 'a.fits', np.zeros((2, 2)))
-    open(join(tmpdir, 'z.png'), 'wb').close()   # ignored -- FITS present
-    names, filetype = fits_io.list_objects(tmpdir)
-    assert names == ['a.fits', 'b.fits']
-    assert filetype == 'FITS'
-
-
-def test_list_objects_falls_back_to_compressed_combined(tmpdir):
-    # png/jpg/jpeg are combined into one sorted list, not tried one at a time.
-    open(join(tmpdir, 'b.jpg'), 'wb').close()
-    open(join(tmpdir, 'a.png'), 'wb').close()
+    open(join(tmpdir, 'z.png'), 'wb').close()
+    open(join(tmpdir, 'a.png'), 'wb').close()   # same object as a.fits: the FITS file is its stamp
     open(join(tmpdir, 'c.jpeg'), 'wb').close()
-    names, filetype = fits_io.list_objects(tmpdir)
-    assert names == ['a.png', 'b.jpg', 'c.jpeg']
-    assert filetype == 'COMPRESSED'
+    open(join(tmpdir, 'c.jpg'), 'wb').close()   # and .jpg before .jpeg
+    stamps = fits_io.scan_stamps(tmpdir)
+    assert stamps == {'a': 'a.fits', 'b': 'b.fits', 'c': 'c.jpg', 'z': 'z.png'}
+    assert fits_io.stamps_filetype(stamps) == 'FITS'
+    assert fits_io.stamps_filetype({'z': 'z.png'}) == 'COMPRESSED'
+    assert fits_io.stamps_filetype({}) is None
 
 
-def test_list_objects_empty(tmpdir):
-    names, filetype = fits_io.list_objects(tmpdir)
-    assert names == []
-    assert filetype == 'COMPRESSED'
+def test_stamps_are_found_by_extension_in_any_case(tmpdir):
+    "And nothing hidden is one: macOS leaves ._name resource forks and .DS_Store beside the files."
+    for name in ('A.JPG', 'b.Png', 'c.JPEG', 'd.FITS', 'e.fit', 'f.fts',
+                 '._d.FITS', '.DS_Store', 'notes.txt', 'g.fits.gz', 'h.tif'):
+        open(join(tmpdir, name), 'wb').close()
+    os.makedirs(join(tmpdir, 'dir.png'))
+    assert fits_io.scan_stamps(tmpdir) == {'A': 'A.JPG', 'b': 'b.Png', 'c': 'c.JPEG',
+                                           'd': 'd.FITS', 'e': 'e.fit', 'f': 'f.fts'}
+    assert fits_io.list_fits_files(tmpdir) == ['d.FITS', 'e.fit', 'f.fts']
+    assert fits_io.detect_band_filetype(tmpdir) == 'FITS'
+    assert fits_io.is_mef_dataset(tmpdir)
+    assert fits_io.scan_stamps(join(tmpdir, 'nope')) == {}
 
 
-def test_find_band_file(tmpdir):
-    band_dir = join(tmpdir, 'Y')
-    os.makedirs(band_dir)
-    _write_fits(band_dir, 'obj1.fits', np.zeros((2, 2)))
-    open(join(band_dir, 'obj2.png'), 'wb').close()
+def test_band_dirs_are_the_subdirectories_holding_stamps(tmpdir):
+    for band, name in (('VIS', 'a.fits'), ('rgb', 'a.JPG'), ('.qtstamp', 'a.png'),
+                       ('Classifications', 'c.csv'), ('__MACOSX', '._a.fits')):
+        os.makedirs(join(tmpdir, band))
+        open(join(tmpdir, band, name), 'wb').close()
+    os.makedirs(join(tmpdir, 'empty'))
+    assert fits_io.list_band_dirs(tmpdir) == ['VIS', 'rgb']
+    assert not fits_io.has_stamps(tmpdir) and fits_io.has_stamps(join(tmpdir, 'rgb'))
+    assert fits_io.list_band_dirs(join(tmpdir, 'nope')) == []
 
-    assert fits_io.find_band_file(tmpdir, 'Y', 'obj1') == join(band_dir, 'obj1.fits')
-    assert fits_io.find_band_file(tmpdir, 'Y', 'obj2') == join(band_dir, 'obj2.png')
-    assert fits_io.find_band_file(tmpdir, 'Y', 'missing') is None
+
+def test_resolve_reads_each_file_as_what_it_is(tmpdir):
+    "One band directory, FITS for one object and PNG for another."
+    _write_fits(tmpdir, 'a.FITS', np.ones((2, 2)))
+    open(join(tmpdir, 'b.png'), 'wb').close()
+    source = fits_io.DirBandSource(tmpdir, 'FITS')
+    a, b = fits_io.resolve(source, 'a'), fits_io.resolve(source, 'b')
+    assert a == fits_io.Locator(join(tmpdir, 'a.FITS'), 0) and a.is_fits
+    assert b == fits_io.Locator(join(tmpdir, 'b.png'), None) and not b.is_fits
+    assert fits_io.resolve(source, 'c') is None
+    # --mef: only FITS files are objects, found whatever the case of their extension.
+    assert fits_io.resolve(fits_io.ExtensionBandSource(tmpdir, 'VIS'), 'a') == \
+        fits_io.Locator(join(tmpdir, 'a.FITS'), 'VIS')
+    assert fits_io.resolve(fits_io.ExtensionBandSource(tmpdir, 'VIS'), 'b') is None
+
+
+def test_empty_primary_reads_the_first_image_extension(tmpdir):
+    "A directory band asks for HDU 0; a stamp saved with an empty primary HDU has its image in HDU 1."
+    path = _write_mef(tmpdir, 'a.fits', [('SCI', np.full((3, 3), 7.)), ('RMS', np.ones((3, 3)))])
+    locator = fits_io.resolve(fits_io.DirBandSource(tmpdir, 'FITS'), 'a')
+    np.testing.assert_array_equal(fits_io.read_pixels(locator), np.full((3, 3), 7.))
+    assert fits_io.read_header(locator)['EXTNAME'] == 'SCI'
+    assert fits_io.read_pixels_and_header(locator)[1]['EXTNAME'] == 'SCI'
+    # With no image anywhere it is still a missing band.
+    fits.HDUList([fits.PrimaryHDU()]).writeto(join(tmpdir, 'b.fits'))
+    try:
+        fits_io.read_pixels(fits_io.Locator(join(tmpdir, 'b.fits'), 0))
+    except fits_io.MissingBandError:
+        pass
+    else:
+        raise AssertionError('no MissingBandError')
+
+
+def test_only_a_2d_image_is_a_stamp(tmpdir):
+    "A 1 x ny x nx stamp is its plane; a real cube is refused, not handed to the viewers."
+    plane = _write_fits(tmpdir, 'plane.fits', np.arange(12.).reshape(1, 3, 4))
+    assert fits_io.read_pixels(fits_io.Locator(plane, 0)).shape == (3, 4)
+    assert fits_io.read_pixels_and_header(fits_io.Locator(plane, 0))[0].shape == (3, 4)
+    cube = _write_fits(tmpdir, 'cube.fits', np.zeros((3, 4, 4)))
+    for read in (fits_io.read_pixels, fits_io.read_pixels_and_header):
+        try:
+            read(fits_io.Locator(cube, 0))
+        except fits_io.FITSReadError as e:
+            assert 'not a 2-D image' in str(e)
+        else:
+            raise AssertionError('no FITSReadError')
 
 
 # --- resolve() / BandSource ---------------------------------------------------
@@ -376,6 +427,10 @@ def test_missing_bands_note():
     assert fits_io.missing_bands_note(mef) == "no J, J_RMS -- file has: VIS, H"
     # Directory-per-band: no single file to ask what it has.
     assert fits_io.missing_bands_note({'Y': fits_io.MissingBandError('Y')}) == "no Y"
+    bad = fits_io.MissingBandError('H', 'a.fits', unreadable=True, detail='truncated')
+    assert str(bad) == "Could not read 'H' in a.fits: truncated"
+    assert fits_io.missing_bands_note({'Y': fits_io.MissingBandError('Y'), 'H': bad}) == \
+        "no Y; unreadable H"
 
 
 def test_is_mef_dataset(tmpdir):
@@ -387,6 +442,29 @@ def test_is_mef_dataset(tmpdir):
     os.makedirs(flat)
     _write_fits(flat, 'obj1.fits', np.zeros((2, 2)))
     assert fits_io.is_mef_dataset(flat) is True
+
+
+def test_sky_position_is_the_first_stamp_with_a_wcs(tmpdir):
+    "Headers only, default band first; the same answer for the viewer and the pre-fetch."
+    for band in ('png', 'nowcs', 'wcs', 'other'):
+        os.makedirs(join(tmpdir, band))
+    open(join(tmpdir, 'png', 'a.png'), 'wb').close()
+    _write_fits(join(tmpdir, 'nowcs'), 'a.fits', np.zeros((10, 10)))
+    _write_fits(join(tmpdir, 'wcs'), 'a.fits', np.zeros((10, 10)),
+                _synthetic_wcs_header(crval=(150.0, 2.0)))
+    _write_fits(join(tmpdir, 'other'), 'a.fits', np.zeros((10, 10)),
+                _synthetic_wcs_header(crval=(10.0, -5.0)))
+    sources = [fits_io.DirBandSource(join(tmpdir, b)) for b in ('png', 'nowcs', 'wcs', 'other')]
+    radec = fits_io.find_sky_position(sources, 'a')
+    assert abs(radec.ra - 150.0) < 1e-3 and abs(radec.dec - 2.0) < 1e-3 and radec.image_dim == 10
+    assert fits_io.find_sky_position(sources[:2], 'a') is None
+    assert fits_io.find_sky_position(sources, 'absent') is None
+    # A header already in hand is used instead of opening the file again.
+    given = fits_io.read_header(fits_io.resolve(sources[3], 'a'))
+    radec = fits_io.find_sky_position(sources, 'a', [None, given, None, None])
+    assert abs(radec.ra - 10.0) < 1e-3
+    assert fits_io.sky_position(fits.Header()) is None
+    assert fits_io.sky_position('not a header') is None
 
 
 if __name__ == '__main__':

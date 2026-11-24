@@ -204,60 +204,75 @@ def load_config_dict(path=None, state_dir_override=None):
     return merged
 
 
-def count_band_images(source_path, band, mef=False):
-    "How many objects a viewer lists for `band` as its main band: the count in its CSV name."
-    return len(dataset.list_dataset_objects(source_path, band, mef)[0])
+def count_band_images(source_path, bands, mef=False):
+    """How many objects a viewer lists for `bands`: the count in its CSV name. `bands`
+    is the viewer's single bands in order (see viewer_bands), or one band's name."""
+    return len(dataset.list_dataset_objects(source_path, bands, mef))
 
 
-def effective_main_band(main_band, color_bands):
-    """The band a viewer launched with these settings lists objects from, resolved
-    by the viewers' own rule from the -b/-B that build_band_argv sends them."""
-    main_band = (main_band or '').strip()
-    # NO_MAIN_BAND goes out as -b ''; an unset one is left out, so the viewer's default applies.
-    sent = '' if main_band == NO_MAIN_BAND else (main_band or cli.DEFAULT_MAIN_BAND)
-    return cli.resolve_main_band(sent, cli.split_bands(','.join(color_bands)))[0]
+def viewer_bands(source_path, main_band, color_bands, composites, mef=False):
+    """The single bands a viewer launched with this band setup reads, in its order: what
+    it lists its objects from. A viewer lists every object with a stamp in any of its
+    bands, so finding the CSV it wrote -- named after that count -- takes all of them.
+    Resolved by the viewers' own code from the very arguments build_band_argv sends
+    them; [] for a setup the viewer would refuse."""
+    parser = argparse.ArgumentParser()
+    cli.add_dataset_args(parser)
+    args = parser.parse_args(['-p', source_path,
+                              *build_band_argv(main_band, color_bands, composites, mef=mef)])
+    try:
+        main, colors, triples = cli.resolve_bands(
+            source_path, args.main_band, args.color_bands, args.rgb_composites, mef,
+            note=lambda _note: None)
+    except ValueError:
+        return []
+    return dataset.viewer_bands(source_path, main, colors, triples, mef)
 
 
 def discover_bands(path):
     """Available band names under path.
 
-    For an MEF dataset (path holds *.fits files directly, one multi-extension file
-    per object) these are the first file's HDU extension names. Otherwise they're
-    subdirectories directly under path -- the same notion of 'band' the
-    directory-per-band viewer tools use.
+    For an MEF dataset (path holds FITS files directly, one multi-extension file
+    per object) these are the first file's HDU extension names. Otherwise they are
+    the subdirectories of path that hold stamps -- the same notion of 'band' the
+    directory-per-band viewer tools use; hidden directories and ones with no image
+    in them (a Classifications or .qtstamp directory inside the data) are not bands.
+    A directory of PNG/JPGs with no band subdirectories is one band, `fits_io.FLAT_BAND`.
     """
     if not path or not os.path.isdir(path):
         return []
     if fits_io.is_mef_dataset(path):
         sample = join(path, fits_io.list_fits_files(path)[0])
         return sorted(fits_io.discover_mef_bands(sample))
-    return sorted(d for d in os.listdir(path) if os.path.isdir(join(path, d)))
+    bands = fits_io.list_band_dirs(path)
+    if not bands and fits_io.has_stamps(path):
+        return [fits_io.FLAT_BAND]
+    return bands
 
 
-def _session_csvs(prefix, source_path, name, seed, main_band, mef, classifications_dir):
+def _session_csvs(prefix, source_path, name, seed, bands, mef, classifications_dir):
     """Every CSV a viewer session for this dataset may have written, found exactly as
-    the viewer's own obtain_df() finds them, with `main_band` the band the viewer
-    lists objects from (see effective_main_band)."""
-    n_images = count_band_images(source_path, main_band, mef=mef)
+    the viewer's own obtain_df() finds them, with `bands` the bands the viewer lists
+    objects from (see viewer_bands)."""
+    n_images = count_band_images(source_path, bands, mef=mef)
     return classification_csvs(classifications_dir,
                                classification_csv_base(prefix, name, n_images, seed))
 
 
-def predict_mosaic_csv_path(source_path, name, seed, main_band, mef, classifications_dir):
+def predict_mosaic_csv_path(source_path, name, seed, bands, mef, classifications_dir):
     """The CSV the mosaic just wrote, for chained-mode extraction: the newest of the
     session's files, since the mosaic rewrites its CSV on every click, fork or not.
     None if there is none, so the caller can fall back to asking the user."""
-    candidates = _session_csvs(MOSAIC_CSV_PREFIX, source_path, name, seed, main_band, mef,
+    candidates = _session_csvs(MOSAIC_CSV_PREFIX, source_path, name, seed, bands, mef,
                                classifications_dir)
     return max(candidates, key=os.path.getmtime) if candidates else None
 
 
-def predict_single_csv_path(source_path, name, seed, main_band, mef, classifications_dir):
+def predict_single_csv_path(source_path, name, seed, bands, mef, classifications_dir):
     """The CSV the 1-by-1 viewer will reopen for this dataset -- its own pick,
     imaging.resume_csv over its own object order -- so a pre-launch scheme check
     (BUGS.md #15/#14) can look at it before the viewer does."""
-    listimage = dataset.shuffle(dataset.list_dataset_objects(source_path, main_band, mef)[0],
-                                seed)
+    listimage = dataset.shuffle(dataset.list_dataset_objects(source_path, bands, mef), seed)
     return resume_csv(classification_csvs(classifications_dir, classification_csv_base(
         SINGLE_CSV_PREFIX, name, len(listimage), seed)), listimage)
 
@@ -357,6 +372,9 @@ def classifications_string_from_rows(rows, log=None):
     for key, labels in cli.duplicate_keys(entries).items():
         warn(f"Warning: keyboard shortcut '{key}' is assigned to more than "
              f"one button: {', '.join(labels)}")
+    for label in cli.reserved_labels(entries):
+        warn(f"Warning: '{label}' is what an ungraded row holds, so a class with that name "
+             "is saved but reads as ungraded -- give it another name.")
     for sub, count in cli.duplicate_subclasses(entries).items():
         warn(f"Warning: subclass '{sub}' is in {count} rows -- use one row and "
              "tick all its majors instead, or only one of its buttons lights up "
@@ -604,6 +622,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.available_bands = []
         self.fits_bands = []
         self.mef = False
+        # None until the saved config is on the widgets: applying it changes the
+        # identity widgets, and there is no identity to compare with yet (BUGS 51).
+        self._applied_identity = None
 
         self._build_ui()
         self._apply_config_to_widgets()
@@ -864,8 +885,13 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     # ---------------------------------------------------------------- bands
 
-    def _rescan_bands(self):
+    def _data_path(self):
+        "The data path as typed, with a leading ~ expanded; '' when the field is empty."
         path = self.path_edit.text().strip()
+        return os.path.expanduser(path) if path else ''
+
+    def _rescan_bands(self):
+        path = self._data_path()
         self.mef = bool(path) and fits_io.is_mef_dataset(path)
         self.available_bands = discover_bands(path)
         # MEF bands are always FITS (every listed extension holds image data);
@@ -885,8 +911,11 @@ class LobbyWindow(QtWidgets.QMainWindow):
             self.bands_status_label.setText(f"{label}: " + ", ".join(self.available_bands))
         elif self.mef:
             self.bands_status_label.setText(f"No image extensions found in the first FITS file under {path}.")
+        elif not os.path.isdir(path):
+            self.bands_status_label.setText(f"{path} is not a directory.")
         else:
-            self.bands_status_label.setText(f"No subdirectories found under {path}.")
+            self.bands_status_label.setText(
+                f"No FITS, PNG or JPG stamps found in {path} or in a subdirectory of it.")
 
     def _reconcile_main_band(self):
         """If the current main band no longer exists under the (re)scanned path, fall back to
@@ -908,6 +937,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         """Clears any composite-table cell referencing a band no longer found under the path --
         same crash risk as a stale main band, since build_band_argv only skips a composite row
         when a cell is empty, not when it names a nonexistent directory."""
+        if not self.available_bands:
+            return      # nothing scanned: nothing to check the composites against (BUGS 50)
         pruned = set()
         for row in range(self.composites_table.rowCount()):
             for col in range(3):
@@ -926,7 +957,12 @@ class LobbyWindow(QtWidgets.QMainWindow):
         enough_fits = len(self.fits_bands) >= 3
         self.composites_table.setEnabled(enough_fits)
         self.add_composite_btn.setEnabled(enough_fits)
-        if enough_fits:
+        if not self.available_bands:
+            # No path scanned yet (a first start, a path that is gone): the composites
+            # are kept for the path to come, not thrown away (BUGS 50).
+            self.composites_hint_label.setText(
+                "RGB composites need at least 3 FITS-format bands -- rescan a path to check.")
+        elif enough_fits:
             self.composites_hint_label.setText(
                 "FITS bands available for composites: " + ", ".join(self.fits_bands))
         else:
@@ -975,9 +1011,10 @@ class LobbyWindow(QtWidgets.QMainWindow):
         main_band = self.main_band_combo.currentText().strip()
         return main_band or (NO_MAIN_BAND if self.available_bands else '')
 
-    def _effective_main_band(self):
-        "The band the viewer will treat as main: with NO_MAIN_BAND, the first ticked color band."
-        return effective_main_band(self._main_band_choice(), self._checked_color_bands())
+    def _viewer_bands(self, path):
+        "The bands a viewer launched now on `path` lists its objects from (see viewer_bands)."
+        return viewer_bands(path, self._main_band_choice(), self._checked_color_bands(),
+                            self._composite_rows(), mef=self.mef)
 
     def _populate_color_bands_list(self, bands, checked):
         self.color_bands_list.clear()
@@ -1185,8 +1222,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         viewer itself can only report that the label it found isn't in its
         scheme (see single_viewer.py's ApplicationWindow._button_for_grade).
         """
-        main_band = self._effective_main_band()
-        csv_path = predict_single_csv_path(path, name, seed, main_band, self.mef, classifications_dir)
+        csv_path = predict_single_csv_path(path, name, seed, self._viewer_bands(path), self.mef,
+                                           classifications_dir)
         if csv_path:
             unknown_majors, unknown_subs = self._unknown_classification_labels(csv_path)
             for label in unknown_majors:
@@ -1203,7 +1240,9 @@ class LobbyWindow(QtWidgets.QMainWindow):
         an unreadable or malformed CSV yields nothing rather than blocking the
         launch over it."""
         try:
-            df = pd.read_csv(csv_path, index_col=0)
+            # Labels as text: pandas would otherwise read NA, None, null... as missing.
+            df = pd.read_csv(csv_path, index_col=0,
+                             converters={'classification': str, 'subclassification': str})
         except (OSError, pd.errors.ParserError, UnicodeDecodeError):
             return [], []
         classifications_string, _ = classifications_string_from_rows(self._scheme_table_to_rows())
@@ -1370,7 +1409,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         proc.setArguments(argv)
         self._wire_process_output_logging(proc)
         proc.finished.connect(lambda code, status: self.log(f"Process exited (code {code})."))
-        self.log(f"Launching: {sys.executable} {' '.join(argv)}")
+        self.log("Launching: " + shlex.join([sys.executable, *argv]))
         proc.start()
         self._launched_process = proc
 
@@ -1385,7 +1424,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
             'source_path': path,
             'name': name,
             'seed': seed,
-            'main_band': self._effective_main_band(),
+            'bands': self._viewer_bands(path),
             'mef': self.mef,
             'ncols': ncols,
             'nrows': nrows,
@@ -1398,7 +1437,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
         self.stage1_proc.finished.connect(self.on_stage1_finished)
         self._set_controls_enabled(False)
         self.stage_status_label.setText("Stage 1 (mosaic) running...")
-        self.log(f"Launching: {sys.executable} {' '.join(argv)}")
+        self.log("Launching: " + shlex.join([sys.executable, *argv]))
         self.stage1_proc.start()
 
     def on_stage1_finished(self, exit_code, exit_status):
@@ -1412,7 +1451,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
         csv_path = predict_mosaic_csv_path(
             source_path, context.get('name'), context.get('seed'),
-            context.get('main_band', self._effective_main_band()),
+            context.get('bands') or self._viewer_bands(source_path),
             context.get('mef', self.mef), classifications_dir)
         if csv_path:
             self.log(f"Auto-detected classification CSV: {csv_path}")
@@ -1647,7 +1686,7 @@ class LobbyWindow(QtWidgets.QMainWindow):
 
     def _identity_tuple(self):
         "The (path, name, seed, classifications_dir) the widgets currently show."
-        return (self.path_edit.text().strip(), self.name_edit.text().strip(),
+        return (self._data_path(), self.name_edit.text().strip(),
                 self._current_seed(), self._classifications_dir())
 
     def _session_id(self):
@@ -1706,6 +1745,8 @@ class LobbyWindow(QtWidgets.QMainWindow):
         answer. Two datasets with different bands is exactly the case this
         record exists for, so it is also exactly the case that broke.
         """
+        if self._applied_identity is None:
+            return      # still starting up: see __init__
         identity = self._identity_tuple()
         if identity == self._applied_identity:
             return
@@ -1848,7 +1889,7 @@ def run_headless(config, classifications_override=None, print_command_only=False
     path = os.path.abspath(os.path.expanduser(path)) if path else path
     name = config['session_name']
     seed = config['seed_value'] if config['seed_enabled'] else None
-    mef = fits_io.is_mef_dataset(path)
+    mef = bool(path) and fits_io.is_mef_dataset(path)
     band_argv = build_band_argv(config['main_band'], config['color_bands'],
                                 config['rgb_composites'], mef=mef)
     classifications_dir = resolve_classifications_dir(config['classifications_path'])
@@ -1916,7 +1957,8 @@ def run_headless(config, classifications_override=None, print_command_only=False
         return code
 
     csv_path = predict_mosaic_csv_path(
-        path, name, seed, effective_main_band(config['main_band'], config['color_bands']),
+        path, name, seed,
+        viewer_bands(path, config['main_band'], config['color_bands'], config['rgb_composites'], mef),
         mef, classifications_dir)
     if not csv_path:
         log("Could not auto-detect the mosaic classification CSV -- run the chained "

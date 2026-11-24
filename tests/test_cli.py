@@ -105,6 +105,50 @@ def test_missing_band_directory_exits_1_but_not_under_mef(tmpdir):
     assert _parse(['-p', path, '--mef', '-b', 'g', '-B', 'nope']).color_bands == ['nope']
 
 
+def test_no_band_arguments_uses_the_bands_found(tmpdir):
+    "-p DIR alone opens a dataset that is not laid out as VIS/Y/J/H/I."
+    path = _dataset(os.path.join(tmpdir, 'any'), ['grey', 'rgb', 'Y'])   # Y: a default name, by chance
+    os.makedirs(os.path.join(path, 'Classifications'))      # no stamps in it: not a band
+    os.makedirs(os.path.join(path, '.qtstamp'))
+    args = _parse(['-p', path])
+    assert (args.main_band, args.color_bands, args.composite_bands) == ('Y', ['grey', 'rgb'], [])
+
+
+def test_no_band_arguments_on_a_flat_directory_shows_the_images_in_it(tmpdir):
+    path = os.path.join(tmpdir, 'flat')
+    for name in ('a.JPG', 'b.png', 'c.fits'):
+        _touch(os.path.join(path, name))
+    args = _parse(['-p', path])
+    assert (args.main_band, args.color_bands, args.composite_bands) == (cli.FLAT_BAND, [], [])
+    # Nothing to show at all is still an error, and says so.
+    empty = os.path.join(tmpdir, 'empty')
+    os.makedirs(empty)
+    assert _exit_code(lambda: _parse(['-p', empty])) == 2
+
+
+def test_defaults_not_passed_are_kept_only_where_the_data_has_them(tmpdir):
+    "The Euclid defaults still apply to a Euclid layout, whole or partial."
+    full = _dataset(os.path.join(tmpdir, 'full'), ['VIS', 'Y', 'J', 'H', 'I'])
+    args = _parse(['-p', full])
+    assert (args.main_band, args.color_bands) == ('VIS', ['Y', 'J', 'H'])
+    assert args.composite_bands == ['H,Y,I', 'H,J,Y']
+    partial = _dataset(os.path.join(tmpdir, 'partial'), ['VIS', 'Y', 'J', 'H'])
+    args = _parse(['-p', partial])
+    assert (args.main_band, args.color_bands, args.composite_bands) == \
+        ('VIS', ['Y', 'J', 'H'], ['H,J,Y'])
+    # One argument passed: the others fall back to what exists, not to an error.
+    other = _dataset(os.path.join(tmpdir, 'other'), ['g', 'r'])
+    args = _parse(['-p', other, '-b', 'r'])
+    assert (args.main_band, args.color_bands, args.composite_bands) == ('r', [], [])
+    args = _parse(['-p', other, '-B', 'r,g'])
+    assert (args.main_band, args.color_bands) == ('r', ['g'])
+    # What was passed is never dropped quietly.
+    assert _exit_code(lambda: _parse(['-p', other, '-b', 'r', '-B', 'Y'])) == 1
+    assert _exit_code(lambda: _parse(['-p', other, '-b', 'VIS'])) == 1
+    # Nor is a default band guessed once any band argument was passed.
+    assert _exit_code(lambda: _parse(['-p', other, '--rgb-composites', ''])) == 2
+
+
 def test_state_dir_override_is_resolved(tmpdir):
     path = _dataset(tmpdir, ['g'])
     args = _parse(['-p', path, '-b', 'g', '-B', '', '--rgb-composites', '',
@@ -302,6 +346,24 @@ def test_predicted_single_csv_is_the_one_the_viewer_reopens(tmpdir):
     assert lobby.predict_single_csv_path(data, None, None, 'VIS', False, cls) == fork
 
 
+def test_lobby_counts_the_objects_as_the_viewer_lists_them(tmpdir):
+    "Every object with a stamp in any band the viewer reads, composite members included."
+    data = os.path.join(tmpdir, 'data')
+    for band, stems in (('VIS', 'ab'), ('Y', 'abc'), ('J', 'abcd'), ('H', 'ab'), ('unused', 'xyz')):
+        for stem in stems:
+            _touch(os.path.join(data, band, stem + '.fits'))
+    bands = lobby.viewer_bands(data, 'VIS', ['Y'], [('H', 'J', 'Y'), ('', '', '')])
+    assert bands == ['VIS', 'Y', 'H', 'J']
+    assert lobby.count_band_images(data, bands) == 4
+    assert lobby.viewer_bands(data, lobby.NO_MAIN_BAND, [' ', 'Y', 'VIS'], []) == ['Y', 'VIS']
+    assert lobby.viewer_bands(data, '', ['Y'], []) == ['VIS', 'Y']     # unset: VIS, as it is there
+    assert lobby.viewer_bands(data, lobby.NO_MAIN_BAND, [], []) == []   # the viewer would refuse
+    cls = os.path.join(tmpdir, 'cls')
+    written = _touch(os.path.join(cls, classification_csv_base(MOSAIC_CSV_PREFIX, 'n', 4) + '.csv'))
+    assert lobby.predict_mosaic_csv_path(data, 'n', None, bands, False, cls) == written
+    assert lobby.predict_mosaic_csv_path(data, 'n', None, 'VIS', False, cls) is None
+
+
 def test_lobby_cli_rejects_a_composite_that_is_not_a_triple():
     args = lobby._build_arg_parser().parse_args(['--no-gui', '--rgb-composites', 'H,Y;H,J,Y'])
     try:
@@ -314,12 +376,10 @@ def test_lobby_cli_rejects_a_composite_that_is_not_a_triple():
     assert lobby.config_from_cli(args)['rgb_composites'] == [['H', 'Y', 'I']]
 
 
-def test_effective_main_band():
-    assert lobby.effective_main_band('r', ['g']) == 'r'
-    assert lobby.effective_main_band(lobby.NO_MAIN_BAND, [' ', 'g', 'z']) == 'g'
-    assert lobby.effective_main_band(lobby.NO_MAIN_BAND, []) == ''
-    assert lobby.effective_main_band('', ['g']) == cli.DEFAULT_MAIN_BAND
-
+def test_reserved_labels_are_reported():
+    entries = cli.parse_classifications('A=1;None=2;A:Empty=e;A:ok=o;None=3')
+    assert cli.reserved_labels(entries) == ['None', 'Empty']
+    assert cli.reserved_labels(cli.parse_classifications('A=1;NA=2')) == []
 
 
 def test_unknown_labels_is_what_no_button_lights_up_for():

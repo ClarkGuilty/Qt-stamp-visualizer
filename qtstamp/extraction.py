@@ -7,6 +7,7 @@ Used by lobby.py; kept free of any Qt imports so it can be exercised with a
 plain `python` interpreter, no `QT_QPA_PLATFORM=offscreen` needed.
 """
 
+import errno
 import os
 import shutil
 from os.path import join
@@ -28,6 +29,14 @@ class ExtractionResult:
                 f"Missing: {len(self.missing)}, Bands: {', '.join(self.bands_processed)}")
 
 
+def _symlinks_refused(error):
+    """True when an os.symlink failure means the filesystem (exFAT, FAT) or the
+    platform (Windows without the privilege) does not do symlinks at all -- not one
+    file's own trouble, which is reported for that file and leaves the rest linked."""
+    return (error.errno in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP)
+            or getattr(error, 'winerror', None) == 1314)
+
+
 def select_positive_filenames(csv_path, positive_values):
     """Return the file_name values whose 'classification' matches positive_values.
 
@@ -36,7 +45,9 @@ def select_positive_filenames(csv_path, positive_values):
     `astype(str).isin(...)` would silently match nothing for the numeric case,
     since str(1.0) == "1.0", not "1".
     """
-    df = pd.read_csv(csv_path)
+    # Read as text, then tested for being numeric: left to pandas, a class named NA,
+    # N/A, None or null is a missing value and matches nothing.
+    df = pd.read_csv(csv_path, converters={'classification': str, 'file_name': str})
     col = df['classification']
     numeric = pd.to_numeric(col, errors='coerce')
     if numeric.notna().mean() > 0.5:
@@ -52,10 +63,19 @@ def extract(csv_path, source_root, output_root, positive_values,
     every band subfolder of source_root into output_root, symlinking by
     default (use_symlink=False to copy instead). Returns an ExtractionResult.
 
+    An object is matched in each band by its filename stem, not its full name:
+    the CSV names its file in one band, and another band may hold it in another
+    format (`obj.fits` beside `obj.jpg`). Only directories that hold stamps are
+    bands (`fits_io.list_band_dirs`).
+
     A multi-extension FITS dataset (`fits_io.is_mef_dataset`: FITS files directly
     under source_root, one per object, as the lobby detects it) has no band
     subfolders: its matching files land directly in output_root, where the next
-    stage's --mef finds them (BUGS 41). Reported as one band, '(MEF)'.
+    stage's --mef finds them (BUGS 41). Reported as one band, '(MEF)'. So does a
+    flat directory of PNG/JPGs, reported as '(flat)'.
+
+    Where the filesystem refuses symlinks (exFAT and FAT drives), the files are
+    copied instead, and `on_progress` is told once.
 
     Raises ValueError, before touching anything, when output_root is source_root.
     """
@@ -76,31 +96,41 @@ def extract(csv_path, source_root, output_root, positive_values,
         groups = [('(MEF)', source_root, output_root)]
     else:
         groups = [(b, join(source_root, b), join(output_root, b))
-                  for b in sorted(os.listdir(source_root)) if os.path.isdir(join(source_root, b))]
+                  for b in fits_io.list_band_dirs(source_root)]
+        if not groups and fits_io.has_stamps(source_root):
+            groups = [('(flat)', source_root, output_root)]
     result.bands_processed = [band for band, _, _ in groups]
 
     for band, src_band_dir, out_band_dir in groups:
         os.makedirs(out_band_dir, exist_ok=True)
+        stamps = fits_io.scan_stamps(src_band_dir)
 
         for filename in filenames:
-            src = join(src_band_dir, filename)
-            dst = join(out_band_dir, filename)
-
-            if not os.path.exists(src):
+            name = stamps.get(os.path.splitext(filename)[0])
+            if name is None:
                 result.missing.append((band, filename))
-                progress(f"Missing: {src}")
+                progress(f"Missing: {os.path.splitext(filename)[0]} in {src_band_dir}")
                 continue
+            src = join(src_band_dir, name)
+            dst = join(out_band_dir, name)
 
             if os.path.lexists(dst):
                 os.remove(dst)
 
             try:
                 if use_symlink:
-                    os.symlink(os.path.abspath(src), dst)
-                    result.linked += 1
-                else:
-                    shutil.copy2(src, dst)
-                    result.copied += 1
+                    try:
+                        os.symlink(os.path.abspath(src), dst)
+                        result.linked += 1
+                        continue
+                    except OSError as e:
+                        if not _symlinks_refused(e):
+                            raise
+                        progress(f"Symlinks are not possible in {out_band_dir} ({e}) -- "
+                                 "copying the files instead.")
+                        use_symlink = False
+                shutil.copy2(src, dst)
+                result.copied += 1
             except OSError as e:
                 progress(f"Error linking/copying {src} -> {dst}: {e}")
 

@@ -453,7 +453,7 @@ class FetchWorker(QObject):
 
 class FetchThread(QThread):
     "The prefetch pass: every cutout wanted for each object from `initial_counter` on."
-    def __init__(self, df, initial_counter, main_band_source, listimage,
+    def __init__(self, df, initial_counter, band_sources, listimage,
                  legacy_survey_path, panstarrs_path,
                  fetch_panstarrs=True, fetch_legacysurvey=True,
                  fetch_big_fov_residuals=False, verbose=False, parent=None):
@@ -464,9 +464,12 @@ class FetchThread(QThread):
             self.legacy_survey_path = legacy_survey_path
             self.panstarrs_path = panstarrs_path
             self.verbose = verbose
-            # Passed in rather than rediscovered here, so this thread's view of "the
-            # main band's file for object N" can never drift from ApplicationWindow's.
-            self.main_band_source = main_band_source
+            # The viewer's band sources, default band first, passed in rather than
+            # rediscovered here, so this thread's view of "object N's files" can never
+            # drift from ApplicationWindow's. One source alone is taken as a list of one.
+            if isinstance(band_sources, (fits_io.DirBandSource, fits_io.ExtensionBandSource)):
+                band_sources = [band_sources]
+            self.band_sources = list(band_sources)
             self.listimage = listimage
             self.fetch_panstarrs = fetch_panstarrs
             self.fetch_legacysurvey = fetch_legacysurvey
@@ -492,10 +495,8 @@ class FetchThread(QThread):
     def fetch_one(self, index):
         "Download every cutout wanted for the object at `index`."
         stamp = self.df.iloc[index]
-        if np.isnan(stamp['ra']) or np.isnan(stamp['dec']): #TODO: add smt for when there is no RADec.
-            stem = os.path.splitext(self.listimage[index])[0]
-            locator = fits_io.resolve(self.main_band_source, stem)
-            ra,dec,image_pixel_size,image_dim = fits_io.get_ra_dec(fits_io.read_header(locator))
+        if pd.isna(stamp['ra']) or pd.isna(stamp['dec']):
+            ra,dec,image_pixel_size,image_dim = self.radec_from_files(index)
         else:
             ra,dec,image_pixel_size,image_dim = stamp[['ra','dec','pixel_size','image_dim']]
         if any(pd.isna(v) for v in (ra, dec, image_pixel_size, image_dim)):
@@ -513,6 +514,13 @@ class FetchThread(QThread):
             self.download_legacy_survey(ra,dec,size=n_pixels_big_ls)
             if self.fetch_big_fov_residuals:
                 self.download_legacy_survey(ra,dec,size=n_pixels_big_ls,residual=True)
+
+    def radec_from_files(self, index):
+        """RA/Dec, pixel size and stamp size of the object at `index`, as the viewer
+        finds them (fits_io.find_sky_position). All NaN when it has none."""
+        stem = os.path.splitext(self.listimage[index])[0]
+        radec = fits_io.find_sky_position(self.band_sources, stem)
+        return radec if radec is not None else fits_io.RaDec(np.nan, np.nan, np.nan, 0)
 
     def run(self):
         index = self.initial_counter

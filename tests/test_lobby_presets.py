@@ -30,10 +30,11 @@ APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 def _dataset(root, name, bands):
-    "A directory-per-band dataset; empty band directories are enough for discovery."
+    "A directory-per-band dataset; one (empty) PNG per band is enough for discovery."
     path = os.path.join(root, name)
     for band in bands:
         os.makedirs(os.path.join(path, band))
+        open(os.path.join(path, band, 'obj.png'), 'wb').close()
     return path
 
 
@@ -119,7 +120,7 @@ def test_matching_preset_raises_no_alert(tmpdir):
 def test_preset_rescans_before_ticking(tmpdir):
     a = _dataset(tmpdir, 'A', ['I', 'J'])
     w = _lobby(tmpdir, a)
-    os.makedirs(os.path.join(a, 'Y'))  # appears after the lobby's last scan
+    _dataset(tmpdir, 'A', ['Y'])  # appears after the lobby's last scan
     with _Alerts() as alerts:
         _pick_preset(w, 'mine', {'main_band': 'I', 'color_bands': ['J', 'Y'],
                                  'rgb_composites': []})
@@ -211,6 +212,62 @@ def test_chained_run_without_output_path_refuses_before_the_mosaic(tmpdir):
     w.output_path_edit.setText(os.path.join(tmpdir, 'out'))
     w.on_run_clicked()
     assert len(launched) == 1
+
+
+def test_starting_without_a_data_path_keeps_the_composites(tmpdir):
+    """BUGS 50: with nothing scanned, every composite band counted as "not found under the
+    data path" and the table was emptied -- and stayed empty once a path was set."""
+    w = lobby.LobbyWindow(state_dir_override=os.path.join(tmpdir, 'state'))
+    assert w._composite_rows() == [('H', 'Y', 'I'), ('H', 'J', 'Y')]
+    assert 'cleared' not in w.log_view.toPlainText()
+    w.close()
+
+
+def test_starting_from_a_seeded_config_raises_nothing(tmpdir):
+    "BUGS 51: applying the saved seed fired the identity slot before there was an identity."
+    state_dir = os.path.join(tmpdir, 'state')
+    os.makedirs(state_dir)
+    with open(os.path.join(state_dir, lobby.LOBBY_CONFIG_NAME), 'w') as f:
+        json.dump({'seed_enabled': True, 'seed_value': 7}, f)
+    raised = []
+    real_hook, sys.excepthook = sys.excepthook, lambda *exc: raised.append(exc)
+    try:
+        w = lobby.LobbyWindow(state_dir_override=state_dir)
+    finally:
+        sys.excepthook = real_hook
+    assert raised == []
+    assert w._current_seed() == 7 and w._applied_identity[2] == 7
+    w.close()
+
+
+def test_bands_are_found_for_a_path_typed_with_a_tilde(tmpdir):
+    data = _dataset(os.path.join(tmpdir, 'home'), 'stamps', ['g', 'r'])
+    os.makedirs(os.path.join(data, 'Classifications'))      # in the data, but not a band
+    os.makedirs(os.path.join(data, '.qtstamp'))
+    real_home = os.environ.get('HOME')
+    os.environ['HOME'] = os.path.join(tmpdir, 'home')
+    try:
+        w = _lobby(tmpdir, '~/stamps')
+        assert w.available_bands == ['g', 'r']
+        w.close()
+    finally:
+        if real_home is None:
+            del os.environ['HOME']
+        else:
+            os.environ['HOME'] = real_home
+
+
+def test_a_flat_directory_of_images_is_one_band(tmpdir):
+    data = os.path.join(tmpdir, 'flat')
+    os.makedirs(data)
+    for name in ('a.JPG', 'b.png'):
+        open(os.path.join(data, name), 'wb').close()
+    w = _lobby(tmpdir, data)
+    assert w.available_bands == [lobby.fits_io.FLAT_BAND] and not w.mef
+    w.main_band_combo.setCurrentText(lobby.fits_io.FLAT_BAND)
+    assert w._band_argv() == ['-b', '.', '-B', '', '--rgb-composites', '']
+    assert lobby.count_band_images(data, w._viewer_bands(data)) == 2
+    w.close()
 
 
 if __name__ == '__main__':

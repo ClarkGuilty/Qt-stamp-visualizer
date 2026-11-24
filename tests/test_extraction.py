@@ -82,6 +82,64 @@ def test_string_codes_from_the_single_viewer(tmpdir):
     assert extraction.select_positive_filenames(path, {'A', 'B'}) == ['a.png', 'b.png']
 
 
+def test_objects_are_matched_by_stem_across_formats(tmpdir):
+    "The CSV names the object's file in one band; another band may hold it as a JPG."
+    src = join(tmpdir, 'src')
+    for name in ('a.fits', 'b.fits', 'c.fits'):
+        _touch(join(src, 'VIS', name))
+    for name in ('a.JPG', 'b.JPG', 'c.png'):
+        _touch(join(src, 'rgb', name))
+    _touch(join(src, 'Classifications', 'old.csv'))     # not a band: no stamps in it
+    _touch(join(src, '.qtstamp', 'cache', 'x.png'))
+    result = extraction.extract(_csv(join(tmpdir, 'm.csv'), ROWS), src, join(tmpdir, 'out'), {1})
+    assert result.bands_processed == ['VIS', 'rgb'] and result.missing == []
+    assert sorted(os.listdir(join(tmpdir, 'out', 'VIS'))) == ['a.fits', 'c.fits']
+    assert sorted(os.listdir(join(tmpdir, 'out', 'rgb'))) == ['a.JPG', 'c.png']
+    assert sorted(os.listdir(join(tmpdir, 'out'))) == ['VIS', 'rgb']
+
+
+def test_files_are_copied_where_symlinks_are_refused(tmpdir):
+    "exFAT and FAT drives: every symlink fails, and nothing used to be extracted."
+    src = join(tmpdir, 'src')
+    for name in ('a.fits', 'b.fits', 'c.fits'):
+        _touch(join(src, 'VIS', name))
+    messages = []
+    real_symlink = os.symlink
+
+    def refuse(*args, **kwargs):
+        raise OSError(1, 'Operation not permitted')
+    os.symlink = refuse
+    try:
+        result = extraction.extract(_csv(join(tmpdir, 'm.csv'), ROWS), src, join(tmpdir, 'out'),
+                                    {1}, on_progress=messages.append)
+    finally:
+        os.symlink = real_symlink
+    assert (result.linked, result.copied) == (0, 2)
+    assert sorted(os.listdir(join(tmpdir, 'out', 'VIS'))) == ['a.fits', 'c.fits']
+    assert not os.path.islink(join(tmpdir, 'out', 'VIS', 'a.fits'))
+    assert sum('copying the files instead' in m for m in messages) == 1
+
+
+def test_a_flat_directory_of_images_is_extracted_flat(tmpdir):
+    src = join(tmpdir, 'src')
+    for name in ('a.png', 'b.png', 'c.jpg'):
+        _touch(join(src, name))
+    rows = [('a.png', 1), ('b.png', 0), ('c.jpg', 1)]
+    result = extraction.extract(_csv(join(tmpdir, 'm.csv'), rows), src, join(tmpdir, 'out'), {1})
+    assert result.bands_processed == ['(flat)']
+    assert sorted(os.listdir(join(tmpdir, 'out'))) == ['a.png', 'c.jpg']
+
+
+def test_a_class_pandas_reads_as_missing_is_still_selected(tmpdir):
+    "NA, None, null... are missing values to pandas, and matched no positive class."
+    path = join(tmpdir, 'c.csv')
+    with open(path, 'w') as f:
+        f.write(',file_name,classification,subclassification\n'
+                '0,a.fits,NA,NA\n1,b.fits,B,B\n2,c.fits,None,None\n3,d.fits,,\n')
+    assert extraction.select_positive_filenames(path, {'NA'}) == ['a.fits']
+    assert extraction.select_positive_filenames(path, {'None', 'B'}) == ['b.fits', 'c.fits']
+
+
 if __name__ == '__main__':
     import inspect
     import tempfile

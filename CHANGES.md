@@ -8,6 +8,75 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## Changed: every valid image is an object, and no band has to hold them all
+
+The viewers used to list the objects from the main band's directory alone. An object
+missing there was never shown, even when every other band had it. The list is now every
+stamp found in any of the bands in use, and `-b` is only the *default* band: the panel
+shown first. Whatever an object has is drawn; a band it lacks is a grey **no data** cell,
+named in the status bar.
+
+- **FITS and PNG/JPG can mix anywhere.** Each file is read as what it is, so one band
+  directory can hold `a.fits` beside `b.png`. Before, a single FITS file in a directory
+  hid all its PNGs, and a PNG in a band that also held FITS stopped the viewer.
+- **A composite is made only when the object has all of it**: three FITS stamps of the
+  same size. Otherwise its cell reads *no data*, with the reason. A composite whose bands
+  differed in size used to stop the mosaic before its window opened.
+- **A file that cannot be read is *no data* too**: a truncated FITS, a damaged PNG, a
+  data cube. Before, one such file stopped the mosaic, and in the 1-by-1 left the
+  counter and the lit buttons on the previous object.
+- **Extensions in any case**, plus `.fit` and `.fts`: `IMG_001.JPG` and `stamp.FITS` were
+  not seen at all. Hidden files are ignored (`.DS_Store`, the `._name` files macOS
+  writes on drives that are not its own).
+- **`-p DIR` alone is enough.** With no band arguments the viewers use the `VIS`/`Y`/`J`/`H`
+  layout where the data has it, otherwise every band directory they find, or the images
+  sitting directly in `DIR`. A band you name yourself must still exist.
+- RA/Dec for the survey panels come from the object's first FITS stamp with a sky WCS,
+  whichever band that is. A FITS file whose first HDU is empty shows its first image.
+
+One consequence: the classification CSV is named after the number of objects. For a
+dataset whose bands hold different objects that number is now the union, so an earlier
+session on such a dataset starts a new CSV (the old file is left as it was). Datasets
+whose bands all hold the same objects are listed, named and resumed exactly as before.
+
+## Fixed: a class named `NA`, `N/A`, `None` or `null` was erased on resume
+
+Reopening a session read those names as empty cells, showed the objects as ungraded, and
+the next save wrote them out blank: the grades were gone from the file. Labels are now
+read as the text they are, in the 1-by-1, the lobby's scheme check and the extraction.
+`None` and `Empty` are what an ungraded row holds, so a class with one of those names
+now gets a warning at startup.
+
+## Fixed: on a Mac
+
+- **Ctrl+click in the mosaic did nothing.** Qt reports the Mac's Control key under
+  another name. Ctrl+click, Cmd+click and Shift+click all mark *interesting* now.
+- **Mosaic stamps were drawn at half the screen's resolution** on Retina displays, then
+  stretched. They are scaled to the screen's real pixels.
+- **Closing the 1-by-1 while survey cutouts were downloading could abort it** ("Python
+  quit unexpectedly"). It now waits for every download still running, not only the
+  newest per survey.
+- The mosaic window is raised when it opens, as the 1-by-1's already was.
+
+## Fixed: chained mode lost bands and, on some drives, everything
+
+Extraction looked each object up by its file name in the main band. A band holding the
+same object in another format (`a.fits` in one, `a.jpg` in another) arrived empty in the
+1-by-1 stage. Objects are now matched by name without the extension. On drives that
+cannot hold symlinks (exFAT, FAT) nothing was extracted at all; the files are now copied
+there, and the log says so. Folders in the data path that hold no images are no longer
+mirrored into the output.
+
+## Fixed: in the lobby
+
+- A data path typed as `~/stamps` found no bands.
+- Hidden folders and folders without images (`.qtstamp`, `Classifications`, `__MACOSX`)
+  were offered as bands. A folder of PNG/JPGs with no band subfolders is now one band, `.`.
+- Opened without a data path, the lobby threw away the default RGB composites, and they
+  did not come back when a path was set.
+- A saved seed printed error tracebacks in the terminal at every start.
+- The "Launching:" line in the log is quoted, so it can be pasted when a path has spaces.
+
 ## A short README; the reference moved to `docs/`
 
 The README is now a front page that explains what the tools are, shows them on Euclid

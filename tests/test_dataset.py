@@ -21,7 +21,10 @@ from astropy.io import fits
 
 from qtstamp import cli
 from qtstamp import fits_io
-from qtstamp.dataset import DatasetError, load_dataset
+from PIL import Image
+
+from qtstamp import dataset
+from qtstamp.dataset import DatasetError, composite_stack, load_dataset, load_stamp
 from sample_data import write_band_dirs, write_mef_set
 
 
@@ -137,6 +140,100 @@ def test_locate_raises_for_a_missing_object(tmpdir):
         assert e.band == 'r'
     else:
         raise AssertionError('no MissingBandError')
+
+
+def _png(path, size=4):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.fromarray(np.zeros((size, size), np.uint8)).save(path)
+
+
+def test_objects_are_the_union_of_what_the_bands_hold(tmpdir):
+    "No band lists the objects: one with a stamp in any band is an object."
+    root = join(tmpdir, 'data')
+    _fits_band(root, 'VIS', ['a', 'b'])
+    for stem in ('a', 'b', 'c', 'd'):
+        _png(join(root, 'rgb', stem + '.JPG'))
+    ds = _load(['-p', root, '-b', 'VIS', '-B', 'rgb', '--rgb-composites', ''])
+    # Named by the default band's file where it has one, else by the next band's.
+    assert ds.listimage == ['a.fits', 'b.fits', 'c.JPG', 'd.JPG']
+    assert ds.single_bands == ['VIS', 'rgb'] and ds.filetype == 'FITS'
+    assert dataset.list_dataset_objects(root, ['VIS', 'rgb'], False) == ds.listimage
+    assert dataset.list_dataset_objects(root, 'VIS', False) == ['a.fits', 'b.fits']
+    # With the bands the other way round the same four, under the other band's names.
+    swapped = _load(['-p', root, '-b', 'rgb', '-B', 'VIS', '--rgb-composites', ''])
+    assert swapped.listimage == ['a.JPG', 'b.JPG', 'c.JPG', 'd.JPG']
+
+
+def test_bands_holding_the_same_objects_list_as_the_default_band_did(tmpdir):
+    "The CSV is named after the count and checked against the names: neither may move."
+    root = join(tmpdir, 'data')
+    stems = ['b-1', 'b', 'a', 'B']
+    for band in ('r', 'g'):
+        _fits_band(root, band, stems)
+    ds = _load(['-p', root, '-b', 'r', '-B', 'g', '--rgb-composites', ''])
+    assert ds.listimage == sorted(stem + '.fits' for stem in stems)
+
+
+def test_one_band_directory_may_mix_fits_and_png(tmpdir):
+    root = join(tmpdir, 'data')
+    _fits_band(root, 'r', ['a'])
+    _png(join(root, 'r', 'b.png'))
+    ds = _load(['-p', root, '-b', 'r', '-B', '', '--rgb-composites', ''])
+    assert ds.listimage == ['a.fits', 'b.png'] and ds.band_filetype == {'r': 'FITS'}
+    a, b = load_stamp(ds.band_sources, 'r', 'a'), load_stamp(ds.band_sources, 'r', 'b')
+    assert a.is_fits and a.pixels.shape == (4, 4) and a.header is not None
+    assert not b.is_fits and b.pixels.size == (4, 4) and b.header is None
+
+
+def test_a_file_that_cannot_be_read_is_no_data_not_an_exception(tmpdir):
+    root = join(tmpdir, 'data')
+    _fits_band(root, 'r', ['a'])
+    for name in ('bad.fits', 'bad2.png'):
+        with open(join(root, 'r', name), 'wb') as f:
+            f.write(b'not an image')
+    fits.PrimaryHDU(np.zeros((3, 4, 4), np.float32)).writeto(join(root, 'r', 'cube.fits'))
+    ds = _load(['-p', root, '-b', 'r', '-B', '', '--rgb-composites', ''])
+    for stem in ('bad', 'bad2', 'cube'):
+        try:
+            load_stamp(ds.band_sources, 'r', stem)
+        except fits_io.MissingBandError as e:
+            assert e.unreadable and e.band == 'r' and e.detail
+        else:
+            raise AssertionError(f'{stem}: no MissingBandError')
+    try:
+        load_stamp(ds.band_sources, 'r', 'absent')
+    except fits_io.MissingBandError as e:
+        assert not e.unreadable
+    else:
+        raise AssertionError('no MissingBandError')
+
+
+def test_composite_is_made_only_from_three_fits_stamps_of_one_size(tmpdir):
+    def stamp(shape=(4, 4), header=True):
+        return dataset.Stamp(np.zeros(shape), {} if header else None, 'x')
+    members = ('r', 'g', 'b')
+    full = {band: stamp() for band in members}
+    stacked, why = composite_stack(full, members)
+    assert stacked.shape == (4, 4, 3) and why is None
+    assert composite_stack({'r': stamp(), 'b': stamp()}, members) == (None, ['g'])
+    assert composite_stack({**full, 'g': stamp(header=False)}, members) == (None, ['g', 'not FITS'])
+    assert composite_stack({**full, 'g': stamp((5, 4))}, members) == (None, ['sizes differ'])
+
+
+def test_viewer_bands_are_the_bands_the_viewer_lists_from(tmpdir):
+    "Composite members count, unless the viewer drops the composite."
+    root = join(tmpdir, 'data')
+    for band in ('r', 'g', 'b'):
+        _fits_band(root, band, ['a'])
+    _png(join(root, 'jpg', 'only_here.jpg'))
+    _fits_band(root, 'i', ['only_i'])
+    assert dataset.viewer_bands(root, 'r', ['g'], [('r', 'g', 'b'), ('r', 'g', 'jpg')], False) == \
+        ['r', 'g', 'b']
+    ds = _load(['-p', root, '-b', 'r', '-B', 'g', '--rgb-composites', 'r,g,i;r,g,jpg'])
+    assert ds.single_bands == dataset.viewer_bands(
+        root, 'r', ['g'], [('r', 'g', 'i'), ('r', 'g', 'jpg')], False) == ['r', 'g', 'i']
+    assert ds.listimage == ['a.fits', 'only_i.fits'] == \
+        dataset.list_dataset_objects(root, ds.single_bands, False)
 
 
 if __name__ == '__main__':

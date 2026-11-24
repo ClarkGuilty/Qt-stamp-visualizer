@@ -14,14 +14,14 @@ import os
 from os.path import join
 
 import sys
+import traceback
 from time import time
 
 from . import cli
-from .dataset import DatasetError, load_dataset
+from .dataset import DatasetError, composite_stack, load_dataset, load_stamp
 from . import fits_io
 from .imaging import (
     SCALES, MOSAIC_DISPLAY, scale_limits, rescale_image, composite_image,
-    open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
     MOSAIC_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
@@ -39,6 +39,9 @@ C_LENS = 1
 C_UNINTERESTING = 0
 
 SESSION_TOOL = 'mosaic'
+# What a stamp's own pixels can make scaling or drawing raise. Anything else (a full
+# scratch disk, a bug) is not the data's fault and is not drawn as "no data".
+DRAW_ERRORS = (ValueError, TypeError, IndexError, ArithmeticError)
 # Pre-split config file. Read once, at the first startup after the split, then
 # kept as a .bak -- see state.migrate_legacy_config.
 LEGACY_CONFIG_FILE = '.config_mosaic.json'
@@ -92,20 +95,22 @@ def _letter_pixmap(letter, size=128):
     return pixmap
 
 
-def _missing_band_pixmap(bands, size=128):
-    "Dark grey tile naming the band(s) an object has no data for (BUGS 36)."
+def _no_data_pixmap(detail=(), size=128):
+    """Dark grey tile reading "no data", for a panel that cannot be drawn (BUGS 36): under
+    it, smaller, `detail` -- the band(s) the object lacks, or why a composite was not made."""
     pixmap = _solid_pixmap(QColor(48, 48, 48), size)
     painter = QPainter(pixmap)
     painter.setPen(Qt.lightGray)
     font = painter.font()
+    lines = ['no data', *detail]
     pixel_size = int(size * 0.2)
     font.setPixelSize(pixel_size)
-    widest = max(bands, key=len)
+    widest = max(lines, key=len)
     while pixel_size > 6 and QFontMetrics(font).horizontalAdvance(widest) > size * 0.9:
         pixel_size -= 1
         font.setPixelSize(pixel_size)
     painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignCenter, '\n'.join(['no', *bands]))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, '\n'.join(lines))
     painter.end()
     return pixmap
 
@@ -130,11 +135,19 @@ class MiniMosaicLabels(QtWidgets.QLabel):
         self.setScaledContents(False)
         self.updateGeometry()
 
+    def show_scaled(self, width, height):
+        """Shows the tile's pixmap fitted to width x height. Scaled to the screen's
+        device pixels, not the widget's logical ones: on a Retina display (2 device
+        pixels per logical one) a stamp scaled to the logical size is drawn at half
+        the resolution the screen has, then stretched."""
+        ratio = self.devicePixelRatioF()
+        scaled = self._pixmap.scaled(max(1, round(width * ratio)), max(1, round(height * ratio)),
+                                     self.aspectRatioPolicy)
+        scaled.setDevicePixelRatio(ratio)
+        self.setPixmap(scaled)
+
     def resizeEvent(self, event):
-        self.setPixmap(self._pixmap.scaled(
-                            self.width(), self.height(),
-                            self.aspectRatioPolicy
-                            ))
+        self.show_scaled(self.width(), self.height())
 
 class MiniMosaics(QtWidgets.QLabel):
     clicked = Signal(str)
@@ -200,10 +213,8 @@ class MiniMosaics(QtWidgets.QLabel):
         else:
             self.change_pixmaps([self.deactivated_pixmap]*self.n_bands)
 
-        for qlabel in self.qlabels:   
-            qlabel.setPixmap(qlabel._pixmap.scaled(
-                self.target_width, self.target_height,
-                self.aspectRatioPolicy))
+        for qlabel in self.qlabels:
+            qlabel.show_scaled(self.target_width, self.target_height)
             self.mini_layout.addWidget(qlabel, 1)
 
         self.mini_layout.addStretch()
@@ -226,10 +237,8 @@ class MiniMosaics(QtWidgets.QLabel):
             self.repaint_pixmaps()
             
     def repaint_pixmaps(self):
-        for qlabel in self.qlabels:        
-            qlabel.setPixmap(qlabel._pixmap.scaled( 
-                qlabel.width(), qlabel.height(),
-                self.aspectRatioPolicy))
+        for qlabel in self.qlabels:
+            qlabel.show_scaled(qlabel.width(), qlabel.height())
 
     def deactivate(self):
         self.change_and_paint_pixmap([self.deactivated_pixmap] * self.n_bands)
@@ -261,14 +270,16 @@ class MiniMosaics(QtWidgets.QLabel):
                 self.change_and_paint_pixmap(self.filepaths)
                 new_class = C_UNINTERESTING
             else:
-                if modifiers in [Qt.ControlModifier, Qt.ShiftModifier]:
+                # Meta too: on macOS Qt reports the Command key as Control and the
+                # Control key as Meta, so Ctrl+click arrives here as Meta.
+                if modifiers in [Qt.ControlModifier, Qt.ShiftModifier, Qt.MetaModifier]:
                     self.paint_background_pixmap(self.interesting_background_pixmap)
                     new_class = C_INTERESTING
                 elif modifiers == Qt.NoModifier:
                     self.paint_background_pixmap(self.lens_background_pixmap)
                     new_class = C_LENS
                 else:
-                    # Any other modifier (Ctrl+Shift, Alt, Meta, and the
+                    # Any other modifier (Ctrl+Shift, Alt, and the
                     # combinations) is not a grade. `modifiers` is compared for
                     # equality, not tested bitwise, so these reach here rather
                     # than any branch above -- leave the stamp untouched instead
@@ -383,6 +394,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         self.composite_bands = dataset.composite_bands
         self.composite_band_members = dataset.composite_band_members
         self.all_single_bands = dataset.all_single_bands
+        self.single_bands = dataset.single_bands
         self.band_sources = dataset.band_sources
         self.bands_to_plot = [self.main_band, *self.composite_bands, *self.color_bands]
 
@@ -825,60 +837,58 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                          for stem, missing in missing_by_object.items())
         self.missing_bands_note.set_note(text)
 
-    def _save_missing_band_png(self, bands, path):
+    def _save_no_data_png(self, detail, path):
         "Placeholder tile for a panel with no data (BUGS 36), where its PNG would have gone."
-        _missing_band_pixmap(bands).save(path, 'PNG')
+        _no_data_pixmap(detail).save(path, 'PNG')
 
     def prepare_png(self, i, single_band_only):
         """Renders object i's panels. Returns {band: MissingBandError} for every band it
-        has no data for -- those panels, and any composite needing one, get a placeholder."""
-        # self.composite_bands only ever contains composites whose 3 members are all FITS
-        # bands (filtered at startup), so no per-composite format branching is needed below.
-        fits_bands = [band for band in self.all_single_bands if self.band_filetype.get(band) == 'FITS']
+        has no data for -- those panels, and any composite needing one, get a placeholder.
+        Nothing an object's files can do stops the page: a panel that cannot be drawn
+        is a placeholder too."""
         stem = os.path.splitext(self.listimage[i])[0]
-        band_images, headers, missing = {}, {}, {}
-        for band in fits_bands:
+        stamps, missing = {}, {}
+        for band in self.single_bands:
             try:
-                locator = fits_io.locate(self.band_sources, band, stem)
-                band_images[band], headers[band] = fits_io.read_pixels_and_header(locator)
+                stamps[band] = load_stamp(self.band_sources, band, stem)
             except fits_io.MissingBandError as e:
                 missing[band] = e
 
         for band in [self.main_band, *self.color_bands]:
             out = self.filepath(i, self.page, band=band)
-            if band in missing:
-                self._save_missing_band_png([band], out)
-            elif self.band_filetype.get(band) == 'FITS':
-                pixel_scale = fits_io.pixel_scale_arcsec(headers[band])
-                image = self.prepare_single_band(band_images[band], pixel_scale)
-                plt.imsave(out, image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
-            else:
+            if band in stamps:
                 try:
-                    src = fits_io.locate(self.band_sources, band, stem).filepath
-                except fits_io.MissingBandError as e:
-                    missing[band] = e
-                    self._save_missing_band_png([band], out)
+                    self._save_band_png(stamps[band], out)
                     continue
-                open_rendered_image(src).save(out)
+                except DRAW_ERRORS as e:    # pixels no scaling can take
+                    traceback.print_exc()
+                    missing[band] = fits_io.MissingBandError(
+                        band, stamps.pop(band).filepath, unreadable=True, detail=str(e))
+            self._save_no_data_png([band], out)
 
         if not single_band_only:
             for composite_band in self.composite_bands:
-                bands = self.composite_band_members[composite_band]
-                absent = [band for band in bands if band in missing]
-                if absent:
-                    self._save_missing_band_png(absent, self.filepath(i, self.page, band=composite_band))
-                    continue
-                try:
-                    stacked = np.stack([band_images[band] for band in bands],axis=-1)
-                except ValueError:
-                    shapes = {band: band_images[band].shape for band in bands}
-                    raise ValueError(
-                        f"RGB composite '{composite_band}' requires all member bands to have the exact "
-                        f"same image dimensions -- got {shapes}")
-                plt.imsave(self.filepath(i, self.page, band=composite_band),
-                    composite_image(stacked, SCALES[self.config_dict['scale']], MOSAIC_DISPLAY),
-                    origin="lower")
+                out = self.filepath(i, self.page, band=composite_band)
+                stacked, why = composite_stack(stamps, self.composite_band_members[composite_band])
+                if stacked is not None:
+                    try:
+                        plt.imsave(out, composite_image(stacked, SCALES[self.config_dict['scale']],
+                                                        MOSAIC_DISPLAY), origin="lower")
+                        continue
+                    except DRAW_ERRORS:
+                        why = ['could not be drawn']
+                        print(f"RGB composite '{composite_band}' of {stem} could not be drawn:")
+                        traceback.print_exc()
+                self._save_no_data_png(why, out)
         return missing
+
+    def _save_band_png(self, stamp, out):
+        "One band's tile: a FITS stamp scaled and colour-mapped, a PNG/JPG one as it is."
+        if stamp.is_fits:
+            image = self.prepare_single_band(stamp.pixels, fits_io.pixel_scale_arcsec(stamp.header))
+            plt.imsave(out, image, cmap=self.cmname2cm[self.config_dict['colormap']], origin="lower")
+        else:
+            stamp.pixels.save(out)
 
     def prepare_single_band(self, image, pixel_scale_arcsec=None):
         scale_min, scale_max = scale_limits(image, MOSAIC_DISPLAY, pixel_scale_arcsec)
@@ -906,6 +916,7 @@ def main(argv=None):
     app = MosaicVisualizer(args)
     app.show()
     app.activateWindow()
+    app.raise_()    # as the 1-by-1 does: macOS opens a new process's window behind the others
     qapp.exec()
 
 

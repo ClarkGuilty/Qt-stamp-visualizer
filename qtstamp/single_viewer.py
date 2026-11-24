@@ -25,6 +25,7 @@ from matplotlib import image as mpimg
 
 import filecmp
 import os
+import traceback
 from os.path import join
 import shutil
 
@@ -34,11 +35,10 @@ from typing import Callable, NamedTuple
 import webbrowser
 
 from . import cli
-from .dataset import DatasetError, load_dataset
+from .dataset import DatasetError, composite_stack, load_dataset, load_stamp
 from . import fits_io
 from .imaging import (
     SCALES, SINGLE_DISPLAY, scale_limits, rescale_image, composite_image,
-    open_rendered_image,
     ClassificationWriter,
     next_free_csv_path, NEW_DATASET_FORK,
     SINGLE_CSV_PREFIX, classification_csv_base, classification_csvs, resume_csv,
@@ -84,6 +84,10 @@ _SURVEYS = {
 }
 
 SESSION_TOOL = 'single'
+LABEL_COLUMNS = {'file_name': str, 'classification': str, 'subclassification': str}
+# What a stamp's own pixels can make scaling or drawing raise. Anything else (a full
+# scratch disk, a bug) is not the data's fault and is not reported as "no data".
+DRAW_ERRORS = (ValueError, TypeError, IndexError, ArithmeticError)
 # Pre-split config file. Read once, at the first startup after the split, then
 # kept as a .bak -- see state.migrate_legacy_config.
 LEGACY_CONFIG_FILE = ".config.json"
@@ -128,6 +132,9 @@ def parse_args(argv=None):
     args.major_classes, args.subclasses = cli.scheme_buttons(entries)
     for key, labels in cli.duplicate_keys(entries).items():
         print(f"Warning: keyboard shortcut '{key}' is assigned to more than one button: {', '.join(labels)}")
+    for label in cli.reserved_labels(entries):
+        print(f"Warning: '{label}' is what an ungraded row holds, so a class with that name "
+              "is saved but reads as ungraded -- give it another name.")
     for sub, count in cli.duplicate_subclasses(entries).items():
         print(f"Warning: subclass '{sub}' is declared {count} times -- declare it once "
               f"with its majors comma-separated (e.g. \"A,B:{sub}=KEY\") instead.")
@@ -239,6 +246,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.survey_filename = {}
         self.survey_threads = {}
         self.survey_workers = {}
+        self.fetch_threads = set()      # every fetch still running, not only each survey's newest
         self.prefetch_threads = {}
         self.prefetch_buttons = {}
         self.random_seed = args.seed
@@ -256,6 +264,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.composite_bands = dataset.composite_bands
         self.composite_band_members = dataset.composite_band_members
         self.all_single_bands = dataset.all_single_bands
+        self.single_bands = dataset.single_bands
         self.band_sources = dataset.band_sources
 
         self.external_bands = [_LEGACY_SURVEY_KEY] if args.legacysurvey else []
@@ -364,6 +373,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.images = {}
         self.scale_mins = {}
         self.scale_maxs = {}
+        # {band: Stamp} read so far for the object on screen: what a composite is made
+        # from, and what a change of scale redraws, without reading a file twice.
+        self.stamps = {}
+        self._clear_radec()
         # {band: MissingBandError} for the object on screen (BUGS 36), and the note that
         # names them where the page messages go.
         self.missing_bands = {}
@@ -640,7 +653,8 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.config_dict[config_key] = False
         else:
             thread = self.prefetch_threads[key] = FetchThread(
-                self.df, self.counter, self.band_sources[self.main_band], self.listimage,
+                self.df, self.counter, [self.band_sources[b] for b in self.single_bands],
+                self.listimage,
                 self.legacy_survey_path, self.panstarrs_path,
                 fetch_panstarrs=key == _PANSTARRS_KEY, fetch_legacysurvey=key == _LEGACY_SURVEY_KEY,
                 fetch_big_fov_residuals=key == _LEGACY_SURVEY_KEY and self.args.ls_big_fov_residuals,
@@ -669,11 +683,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                     thread.wait(5000)
             except RuntimeError:
                 pass
-        # survey_threads run a single one-shot network call (Legacy Survey /
-        # PanSTARRS lookup+download) with no loop to cooperatively interrupt -- just wait for them so Qt doesn't destroy a still-running
-        # QThread (which aborts the process with "QThread: Destroyed while
-        # thread is still running").
-        for thread in self.survey_threads.values():
+        # A fetch is one network call with no loop to interrupt, so wait for it: Qt
+        # aborts the process on a QThread destroyed while running ("QThread: Destroyed
+        # while thread is still running"). Every fetch still running, not only each
+        # survey's newest -- moving through objects starts one per object (BUGS 49).
+        for thread in list(self.fetch_threads):
             try:
                 if thread.isRunning():
                     thread.wait(5000)
@@ -758,10 +772,14 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             self.df.at[cnt,'ra'] = self.ra
             self.df.at[cnt,'dec'] = self.dec
             self.df.at[cnt,'pixel_size'] = self.image_pixel_size #Arcsec/pixel comes from the WCS, so FITS only.
-        #The image itself is loaded for every filetype, so its size is always known.
-        #PNG/JPG arrays carry a trailing channel axis -- only the first two axes are the stamp.
+        #The size of the stamp the RA/Dec came from, which is what the pre-fetch pairs it with.
+        #Without one, the default band's: PNG/JPG arrays carry a trailing channel axis, so only
+        #the first two axes are the stamp.
         main_image = self.images.get(self.main_band)
-        self.df.at[cnt,'image_dim'] = np.max(main_image.shape[:2]) if main_image is not None else pd.NA
+        if self.radec_image_dim is not None:
+            self.df.at[cnt,'image_dim'] = self.radec_image_dim
+        else:
+            self.df.at[cnt,'image_dim'] = np.max(main_image.shape[:2]) if main_image is not None else pd.NA
         self.df.at[cnt,'time'] += (time() - self.timer_0)
         self.timer_0 = time()
         self.df_name = self.csv_writer.save(self.df)
@@ -863,7 +881,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def _survey_size(self, key):
         "Survey `key`'s cutout size in its own pixels: this object's stamp, or the Large FoV."
         n_pixels, n_pixels_big_fov = _SURVEYS[key].number_of_pixels(
-            self.image_pixel_size, np.max(self.images[self.main_band].shape))
+            self.image_pixel_size, self.radec_image_dim)
         return n_pixels_big_fov if self.config_dict['legacybigarea'] else n_pixels
 
     def plot_survey(self, key, savefile, title):
@@ -946,6 +964,9 @@ class ApplicationWindow(QtWidgets.QMainWindow):
             worker.failed_download.connect(partial(self._on_fetch_failed, key, savefile))
             thread.finished.connect(thread.deleteLater)
             thread.setTerminationEnabled(True)
+            # Held until it ends, so closeEvent can wait for every fetch (BUGS 49).
+            self.fetch_threads.add(thread)
+            thread.finished.connect(partial(self.fetch_threads.discard, thread))
 
             thread.start()
             thread.quit()
@@ -1048,12 +1069,11 @@ class ApplicationWindow(QtWidgets.QMainWindow):
                                 {b for members in self.composite_band_members.values() for b in members})
         arguments = ["ds9", '-fits']
         for band in sorted(all_referenced_bands):
-            band_filetype = self.band_filetype.get(band)
-            if band_filetype != 'FITS': #ds9 only understands FITS -- skip any non-FITS band.
-                continue
             try:
                 located = fits_io.locate(self.band_sources, band, self.stem)
-            except fits_io.MissingBandError:
+            except (fits_io.MissingBandError, KeyError):
+                continue
+            if not located.is_fits: #ds9 only understands FITS -- skip this object's PNG/JPG bands.
                 continue
             filename = located.filepath
             if located.hdu:   # an --mef extension: ds9's file[EXTNAME], or it opens the empty primary
@@ -1085,7 +1105,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     def viewESASky(self):
         if self._radec_unavailable("Open ESASky"):
             return
-        fov = (self.image_pixel_size * np.max(self.images[self.main_band].shape)) / 3600
+        fov = (self.image_pixel_size * self.radec_image_dim) / 3600
         website = f"https://sky.esa.int/esasky/?target={self.ra}%20{self.dec}&hips=PanSTARRS+DR1+color+(i%2C+r%2C+g)&fov={fov}&cooframe=J2000&sci=true&lang=en&"
         webbrowser.open(website)
 
@@ -1102,17 +1122,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.replot()
         self.save_preferences()
 
-    def load_fits(self, locator, get_radec=False):
-        "Pixels and header. With get_radec, also records the object's RA/Dec and pixel size."
-        image, header = fits_io.read_pixels_and_header(locator)
-        if get_radec:
-            radec = fits_io.get_ra_dec(header)
-            self.ra, self.dec = radec.ra, radec.dec
-            self.image_pixel_size = radec.pixel_size_arcsec
-        return image, header
+    def _clear_radec(self):
+        "No RA/Dec known for the object on screen: the previous object's must not carry over."
+        self.ra = self.dec = self.image_pixel_size = np.nan
+        self.radec_image_dim = None
+
+    def _find_radec(self):
+        """The object's RA/Dec, pixel size and stamp size, from the first of its FITS
+        stamps with a sky WCS, the default band's first (fits_io.find_sky_position, as
+        the pre-fetch finds them). No band is required to be the one with the WCS."""
+        bands = self.single_bands
+        headers = [self.stamps[b].header if b in self.stamps else None for b in bands]
+        radec = fits_io.find_sky_position([self.band_sources[b] for b in bands], self.stem, headers)
+        if radec is None:
+            self._clear_radec()
+            return
+        self.ra, self.dec = radec.ra, radec.dec
+        self.image_pixel_size = radec.pixel_size_arcsec
+        self.radec_image_dim = radec.image_dim
 
     def plot(self):
         self.label_plot[self.main_band].setText(f"{self.listimage[self.counter]}")
+        new_object = not self.bottom_row_bands_already_plotted
+        if new_object:
+            self._clear_radec()     # before anything is drawn: never the last object's
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.plot_band(band)
@@ -1120,9 +1153,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         else:
             self.color_bands_already_plotted = False
 
-        if not self.bottom_row_bands_already_plotted:
+        if new_object:
             for band in [self.main_band]:
                 self.plot_band(band)
+            self._find_radec()
             for band in self.composite_bands:
                 self.plot_composite_band(band)
             self.bottom_row_bands_already_plotted = True
@@ -1145,32 +1179,30 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.missing_bands_note.set_note(
             f"{self.stem}: {fits_io.missing_bands_note(self.missing_bands)}" if self.missing_bands else '')
 
-    def _draw_missing_band(self, panel_key, bands):
-        "Placeholder panel naming the band(s) this object has no data for (BUGS 36)."
+    def _draw_missing_band(self, panel_key, detail):
+        """Placeholder panel reading "no data" (BUGS 36): under it `detail`, the band(s)
+        this object lacks or why a composite was not made."""
         ax = self.ax[panel_key]
         ax.cla()
         ax.imshow([[0.19]], cmap='gray', vmin=0, vmax=1)
-        ax.text(0.5, 0.5, '\n'.join(['no', *bands]), transform=ax.transAxes,
+        ax.text(0.5, 0.5, '\n'.join(['no data', *detail]), transform=ax.transAxes,
                 ha='center', va='center', color='lightgray', fontsize=11)
         ax.set_axis_off()
         self.canvas[panel_key].draw()
 
     def _record_missing_band(self, band, error):
         self.missing_bands[band] = error
+        self.stamps.pop(band, None)
         self.images[band] = None
-        if band == self.main_band:
-            # RA/Dec come from the main band's header. Without it they are unknown, and
-            # the previous object's must not carry over into the CSV or the cutouts.
-            self.ra = self.dec = self.image_pixel_size = np.nan
 
     def _no_radec_reason(self):
         "Why this object has no RA/Dec, or None when it has one."
         if self.filetype != 'FITS':
             return "PNG/JPG input (RA/Dec needs FITS)"
-        if self.main_band in self.missing_bands:
-            return f"no {self.main_band}"
-        if pd.isna(getattr(self, 'ra', np.nan)) or pd.isna(getattr(self, 'image_pixel_size', np.nan)):
-            return f"no sky WCS in {self.main_band}"
+        if pd.isna(self.ra) or pd.isna(self.image_pixel_size):
+            if self.main_band in self.missing_bands:
+                return f"no {self.main_band}"
+            return "no sky WCS in any of its bands"
         return None
 
     def _radec_unavailable(self, action):
@@ -1181,31 +1213,51 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.status.showMessage(f"{action} needs RA/Dec, but this object has {reason}.", 5000)
         return True
 
+    def _stamp(self, band):
+        """This object's stamp in `band`, read once per object; None, recording the
+        band as missing, when it has no data there."""
+        if band in self.missing_bands:
+            return None
+        if band not in self.stamps:
+            try:
+                self.stamps[band] = load_stamp(self.band_sources, band, self.stem)
+            except fits_io.MissingBandError as e:
+                self._record_missing_band(band, e)
+                return None
+        return self.stamps[band]
+
     def plot_band(self, band, scale_min = None, scale_max = None):
-        self.ax[band].cla()
-        get_radec = True if band == self.main_band else False
-        band_filetype = self.band_filetype.get(band)
-        try:
-            locator = fits_io.locate(self.band_sources, band, self.stem)
-            if band_filetype == 'FITS':
-                image, header = self.load_fits(locator, get_radec)
-        except fits_io.MissingBandError as e:
-            self._record_missing_band(band, e)
+        stamp = self._stamp(band)
+        if stamp is None:
             self._draw_missing_band(band, [band])
             return
-        if band_filetype == 'FITS':
-            self.images[band] = np.copy(image)
-            if scale_min is None or scale_max is None:
-                scale_min, scale_max = scale_limits(image, SINGLE_DISPLAY,
-                                                    fits_io.pixel_scale_arcsec(header))
-            self.scale_mins[band] = scale_min
-            self.scale_maxs[band] = scale_max
-            image = rescale_image(image, scale_min, scale_max, self.scale, SINGLE_DISPLAY)
+        try:
+            if stamp.is_fits:
+                image = stamp.pixels
+                self.images[band] = image
+                if scale_min is None or scale_max is None:
+                    scale_min, scale_max = scale_limits(image, SINGLE_DISPLAY,
+                                                        fits_io.pixel_scale_arcsec(stamp.header))
+                self.scale_mins[band] = scale_min
+                self.scale_maxs[band] = scale_max
+            else:
+                self.images[band] = np.asarray(stamp.pixels)
+            self._draw_band(band)
+        except DRAW_ERRORS as e:    # pixels no scaling can take: a "no data" panel, not a dead session
+            traceback.print_exc()
+            self._record_missing_band(band, fits_io.MissingBandError(
+                band, stamp.filepath, unreadable=True, detail=str(e)))
+            self._draw_missing_band(band, [band])
+
+    def _draw_band(self, band):
+        "Draws the stamp read for `band` at the current scale and colormap."
+        self.ax[band].cla()
+        if self.stamps[band].is_fits:
+            image = rescale_image(self.images[band], self.scale_mins[band], self.scale_maxs[band],
+                                  self.scale, SINGLE_DISPLAY)
             self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
         else:
-            image = np.asarray(open_rendered_image(locator.filepath))
-            self.images[band] = np.copy(image)
-            self._imshow_rendered(band, image)
+            self._imshow_rendered(band, self.images[band])
         self.ax[band].set_axis_off() #Always before .draw()!
         self.canvas[band].draw()
 
@@ -1215,37 +1267,24 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ax[band].imshow(image, cmap=cmap, origin='upper') #For pngs this is best.
 
     def plot_composite_band(self, composite_band, scale_min = None, scale_max = None):
-        # self.composite_bands only ever contains composites whose 3 members are all
-        # FITS bands (filtered at startup), so no format branching is needed here.
+        """An RGB composite of three of this object's FITS stamps. When they are not all
+        there -- a member missing, unreadable, not FITS for this object, or of another
+        size -- the composite is not made: its panel says "no data"."""
         base_bands = self.composite_band_members[composite_band]
-        self.ax[composite_band].cla()
-
-        cached_bands = {self.main_band}
-        if self.color_bands_already_plotted:
-            cached_bands |= set(self.color_bands)
-        absent = [band for band in base_bands if band in self.missing_bands]
-        if not absent and not set(base_bands).issubset(cached_bands):
-            images = {}
-            for band in base_bands:
-                try:
-                    images[band] = self.load_fits(fits_io.locate(self.band_sources, band, self.stem),
-                                                  get_radec=False)[0]
-                except fits_io.MissingBandError as e:
-                    self._record_missing_band(band, e)
-                    absent.append(band)
-        else:
-            images = self.images
-        if absent:
-            self._draw_missing_band(composite_band, absent)
+        stamps = {band: stamp for band in base_bands
+                  if (stamp := self._stamp(band)) is not None}
+        stacked, why = composite_stack(stamps, base_bands)
+        if stacked is not None:
+            try:
+                image = composite_image(stacked, self.scale, SINGLE_DISPLAY)
+            except DRAW_ERRORS:
+                print(f"RGB composite '{composite_band}' of {self.stem} could not be drawn:")
+                traceback.print_exc()
+                stacked, why = None, ['could not be drawn']
+        if stacked is None:
+            self._draw_missing_band(composite_band, why)
             return
-        try:
-            stacked = np.stack([images[band] for band in base_bands],axis=2)
-        except ValueError:
-            shapes = {band: images[band].shape for band in base_bands}
-            raise ValueError(
-                f"RGB composite '{composite_band}' requires all member bands to have the exact same "
-                f"image dimensions -- got {shapes}")
-        image = composite_image(stacked, self.scale, SINGLE_DISPLAY)
+        self.ax[composite_band].cla()
         self.ax[composite_band].imshow(image, origin='lower')
         self.ax[composite_band].set_axis_off() #Always before .draw()!
         self.canvas[composite_band].draw()
@@ -1254,30 +1293,18 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if self.config_dict['colorbandsvisible']:
             for band in self.color_bands:
                 self.replot_band(band)
-                self.color_bands_already_plotted = False
-        else:
-            self.color_bands_already_plotted = False
-
+        # Hidden color bands were not redrawn: showing them again must draw them afresh.
+        self.color_bands_already_plotted = False
         for band in [self.main_band]:
             self.replot_band(band)
         for band in self.composite_bands:
             self.plot_composite_band(band)
 
     def replot_band(self, band, scale_min = None, scale_max = None):
-        if band in self.missing_bands:
+        if band in self.missing_bands or band not in self.stamps:
             self._draw_missing_band(band, [band])
             return
-        self.ax[band].cla()
-        image = np.copy(self.images[band])
-        band_filetype = self.band_filetype.get(band)
-        if band_filetype == 'FITS':
-            image = rescale_image(image, self.scale_mins[band], self.scale_maxs[band], self.scale,
-                                  SINGLE_DISPLAY)
-            self.ax[band].imshow(image,cmap=self.config_dict['colormap'], origin='lower')
-        else:
-            self._imshow_rendered(band, image)
-        self.ax[band].set_axis_off()
-        self.canvas[band].draw()
+        self._draw_band(band)
 
 
     def obtain_df(self):
@@ -1290,7 +1317,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         if existing is not None:
             self.df_name = existing
             print('Reading '+ self.df_name)
-            df = pd.read_csv(self.df_name,index_col=0)
+            # Labels are read as the text they are. Left to pandas, a class named NA,
+            # N/A, None, null or nan comes back as a missing value, and the next save
+            # writes it out blank: the grade is gone from the file.
+            df = pd.read_csv(self.df_name, index_col=0, converters=LABEL_COLUMNS)
             keys_to_drop = []
             for key in df.keys():
                 if "Unnamed:" in key:
@@ -1332,14 +1362,26 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.filename = self.listimage[self.counter]
         self.bottom_row_bands_already_plotted = False
         self.missing_bands = {}
-        self.plot()
+        self.stamps = {}
+        # Before the panels are drawn: whatever an object's files turn out to hold,
+        # the counter and the lit buttons must be this object's, not the last one's.
+        self.update_classification_buttoms()
+        self.update_subclassification_buttoms()
+        self.update_counter()
+        try:
+            self.plot()
+        except Exception:
+            # Not expected: each panel already turns unusable data into "no data". Should
+            # it happen, the last object's stamps must not stay up under this one's name.
+            traceback.print_exc()
+            self._clear_radec()
+            for panel in [self.main_band, *self.composite_bands, *self.color_bands]:
+                self._draw_missing_band(panel, ['could not be drawn'])
+            self.status.showMessage(f"Could not draw {self.filename} -- see the terminal.", 10000)
         if self.config_dict['legacysurvey']:
             self.set_survey(_LEGACY_SURVEY_KEY)
         if self.config_dict['panstarrs']:
             self.set_survey(_PANSTARRS_KEY)
-        self.update_classification_buttoms()
-        self.update_subclassification_buttoms()
-        self.update_counter()
         self.save_preferences()
         self.save_position()
         cnt = self.counter# - 1
@@ -1495,7 +1537,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         keys to None already (a major with no subclass button, 'None' itself),
         so only a key genuinely absent from the dict is reported as unknown.
         """
-        if grade is None or grade in ('None', 'Empty'):
+        if grade is None or pd.isna(grade) or str(grade).strip() in ('', *cli.RESERVED_LABELS):
             return None
         if grade not in dict_grade2button:
             # Terminal already has the full list from startup; this one names
