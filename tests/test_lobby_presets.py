@@ -197,6 +197,22 @@ def test_lobby_and_viewer_report_the_same_unknown_labels(tmpdir):
         (['B', 'Q'], ['B', 'Spiral'])
 
 
+def test_chained_run_without_output_path_refuses_before_the_mosaic(tmpdir):
+    "BUGS 52: the out-of-the-box mode is chained and the output path empty."
+    w = _lobby(tmpdir, _dataset(tmpdir, 'pngs', ['png']))
+    assert w.mode_combo.currentIndex() == lobby.MODE_CHAINED
+    launched, logged = [], []
+    w._launch_stage1_chained = lambda *args: launched.append(args)
+    w.log = logged.append
+    w.output_path_edit.setText('  ')
+    w.on_run_clicked()
+    assert launched == []
+    assert any('output path' in line for line in logged)
+    w.output_path_edit.setText(os.path.join(tmpdir, 'out'))
+    w.on_run_clicked()
+    assert len(launched) == 1
+
+
 if __name__ == '__main__':
     import inspect
     import traceback

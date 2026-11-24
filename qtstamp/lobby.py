@@ -1317,6 +1317,12 @@ class LobbyWindow(QtWidgets.QMainWindow):
             return
         path = os.path.abspath(os.path.expanduser(path))
 
+        # Before the mosaic, not after it: on_stage1_finished needs it (BUGS 52).
+        if mode == MODE_CHAINED and not self.output_path_edit.text().strip():
+            self.log("Chained mode needs an output path for the extracted positives "
+                     "-- set one, or switch the run mode to Mosaic only.")
+            return
+
         if self._main_band_choice() == NO_MAIN_BAND and not self._checked_color_bands():
             self.log("No main band: tick at least one color band to show.")
             return

@@ -18,6 +18,13 @@ where settings live and which files are written. They moved unchanged apart from
 corrections, and `--mef` is documented there for the first time. The previous README is
 kept as [docs/archive/README-2026-11.md](docs/archive/README-2026-11.md).
 
+## Fixed: chained mode without an output path ran the mosaic for nothing
+
+The lobby's default run mode is chained, and the output path starts empty. Run used to
+start the mosaic anyway, then stop after you closed it, before extraction and the
+1-by-1. Your grades were saved, but the chain went no further. Run now asks for the
+output path before it launches anything, as `--no-gui` already did.
+
 ## The code moved into a `qtstamp/` package
 
 The top of the repo now holds only the three scripts you run (`lobby.py`, `mosaic.py`,
