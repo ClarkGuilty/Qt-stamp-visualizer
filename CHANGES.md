@@ -8,6 +8,16 @@ into `ERO_edition_2026` (multiband FITS, on-the-fly VIS / H+Y+I / H+J+Y color co
 plus a round of new features and fixes on top. Multiband FITS is the baseline going
 forward, but PNG/JPG input works again — see "PNG/JPG input, detected per band" below.
 
+## A short README; the reference moved to `docs/`
+
+The README is now a front page that explains what the tools are, shows them on Euclid
+ERO data, and walks through installing and a first run. The flag tables and the rest of
+the reference moved to [docs/usage.md](docs/usage.md), which covers the data layouts,
+the lobby and both viewers, and to [docs/settings.md](docs/settings.md), which covers
+where settings live and which files are written. They moved unchanged apart from a few
+corrections, and `--mef` is documented there for the first time. The previous README is
+kept as [docs/archive/README-2026-11.md](docs/archive/README-2026-11.md).
+
 ## The code moved into a `qtstamp/` package
 
 The top of the repo now holds only the three scripts you run (`lobby.py`, `mosaic.py`,

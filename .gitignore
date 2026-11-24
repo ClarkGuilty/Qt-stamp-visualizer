@@ -56,3 +56,7 @@ STEP.md
 # Wheel builds (`uv build`, `pip wheel .`)
 build/
 dist/
+
+# README screenshots (docs/make_screenshots.py): *.jpg above would hide them
+!docs/img/
+!docs/img/*

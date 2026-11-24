@@ -1,486 +1,172 @@
 # Qt-stamp-visualizer
 
-Qt tools for the visual inspection and classification of astronomical stamps.
+Qt-stamp-visualizer is a set of desktop tools for inspecting astronomical image stamps by
+eye and recording what you see in them. The usual way to work is to skim hundreds of
+cutouts on a grid, mark the ones worth a second look, and then go through those one at a
+time with a classification scheme of your own. The tools read multiband FITS and build RGB
+composites from it on the fly, handle PNG and JPG as well, and can show the same patch of
+sky in Legacy Survey, PanSTARRS, ESASky or ds9 while you look. The quickest way to start
+is the lobby, a launcher window that sets everything up for you. All of it is written
+in Python with PySide6 (Qt) and Astropy.
 
-A fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool), rebuilt on
-the Qt framework (PySide6).
+![The mosaic on Euclid ERO strong-lens candidates: each stamp shown as VIS plus two NISP colour composites, with one stamp marked as a lens candidate (L).](docs/img/mosaic.jpg)
 
-## Contents
+<sub>All the screenshots in this README show grade A and B strong-lens candidates from the
+[Euclid Early Release Observations](https://www.cosmos.esa.int/web/euclid/ero-public-release),
+found by [Acevedo Barroso et al. 2025](https://arxiv.org/abs/2408.06217) in the Perseus
+field and by [Nagam et al. 2025](https://arxiv.org/abs/2502.09802) in the other ERO fields.
+Data from ESA/Euclid/Euclid Consortium/NASA/ERO2024.</sub>
 
-The repo ships three programs that are meant to be used together:
+## The three tools
 
-| Tool | Script | What it's for |
+| Tool | Command | What it does |
 | --- | --- | --- |
-| **Lobby** | `lobby.py` | Launcher GUI that configures and chains the two viewers, with no CLI flags to type. Also runs headless. |
-| **Mosaic** | `mosaic.py` | Page-based grid of many stamps at once, for fast first-pass triage. |
-| **1-by-1** | `single_viewer.py` | One object at a time, for detailed classification. |
+| **Lobby** | `qtstamp-lobby` | The place to start. Sets up both viewers and launches either one, or both in sequence, so there are no flags to type. It can also run without a window. |
+| **Mosaic** | `qtstamp-mosaic` | Shows many stamps per page on a grid, for a quick first pass; clicking a stamp marks it. |
+| **1-by-1** | `qtstamp-single` | Shows one object at a time for detailed classification, with your own classes and keys. |
 
-Those three scripts are all you run. The code behind them is the `qtstamp/` package,
-and the tests are in `tests/`.
+A typical session uses all three, and the lobby is what ties them together. You mark
+candidates in the mosaic, the lobby copies or links everything you marked into a new
+directory, and you then grade that smaller set in the 1-by-1 viewer. Classifications are written to CSV as you go, and each tool picks up
+where you left off the next time you open it.
 
-Highlights:
+![The 1-by-1 viewer on a lens candidate in the Abell 2390 field: VIS and two colour composites, graded Lens with the subclass Arc, both buttons lit.](docs/img/single_viewer.png)
 
-* Multiband FITS with configurable bands and on-the-fly RGB composites — nothing is
-  hardcoded to VIS/Y/J/H/I.
-* PNG/JPG input works too, detected per band directory, so a session can mix formats.
-* Configurable classification schemes (major classes and subclasses) with keyboard
-  shortcuts.
-* Per-object lookups in ds9, Legacy Survey, PanSTARRS and ESASky.
-* Chained workflow: triage in the mosaic, extract what you marked, classify the subset
-  1-by-1 — all driven from the lobby.
+Nothing is tied to a particular survey. Any subdirectory of your data path counts as a
+band, any three FITS bands can be combined into an RGB composite, and the 1-by-1 viewer
+lets you arrange its panels in up to three rows. Each file is read as what it is, so one
+dataset can mix FITS with PNG or JPG, and no band has to hold every object: whatever an
+object has is shown, and the rest reads *no data*. Multi-extension FITS (one file per
+object, with the bands stored as named extensions) works too. The classification scheme is yours
+as well: major classes and subclasses, each bound to whichever key you choose.
 
-## Getting the code
+While you classify in the 1-by-1 viewer, Legacy Survey and PanSTARRS cutouts of the same
+object can sit next to your own images, optionally downloaded ahead of time for the next
+object, and ESASky, ds9 and the survey websites are a click away. Settings, presets and
+download caches are kept in the directory you work from rather than in a hidden per-user
+location, and a folder holding both the data and its classifications can be copied
+elsewhere and resumed there.
 
-For any given visual inspection it's usually better to get the tool together with the
-data. To inspect your own images, clone the repo directly:
+## Install
+
+You need Python 3.11 to 3.14. If you have [uv](https://docs.astral.sh/uv/), a single
+command fetches everything and opens the lobby, without cloning anything:
+
+```bash
+uvx --from git+https://github.com/ClarkGuilty/Qt-stamp-visualizer qtstamp-lobby
+```
+
+That is all most people need. You can replace `qtstamp-lobby` with `qtstamp-mosaic` or
+`qtstamp-single` to start one of the viewers directly, but the lobby will launch them for
+you anyway.
+
+If you want a copy to keep or to change, clone the repository and install it into a
+virtual environment:
 
 ```bash
 git clone https://github.com/ClarkGuilty/Qt-stamp-visualizer.git
 cd Qt-stamp-visualizer
+uv venv && uv pip install -e .            # or: python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
-The version from before the per-survey editions were merged into this one is kept on
-the [`classic_tool`](https://github.com/ClarkGuilty/Qt-stamp-visualizer/tree/classic_tool)
-branch. [CHANGES.md](CHANGES.md) lists what this version changed, and why.
+This adds the three `qtstamp-*` commands to the environment. Inside the checkout,
+`python lobby.py`, `python mosaic.py` and `python single_viewer.py` work just as well.
 
-## Installation
-
-### Requirements
-
-* Python >= 3.11, < 3.15 (the suite and all three tools are exercised on 3.14)
-* numpy, pandas, matplotlib, pyside6, pillow, pyparsing, astropy
-
-All of these are declared in `pyproject.toml` and installed for you below.
-
-### uv or pip (recommended)
-
-[uv](https://docs.astral.sh/uv/) is the fastest option and needs no separate Python
-install step. From the repo root:
+<details>
+<summary>With Conda instead</summary>
 
 ```bash
-uv venv
-uv pip install -e .
+conda create -n qtstamp -c conda-forge "python>=3.11,<3.15" \
+    numpy pandas matplotlib pyside6 pillow pyparsing astropy
+conda activate qtstamp
+pip install -e .        # from the checkout, for the qtstamp-* commands
 ```
 
-Plain `venv` + `pip` work just as well — `venv` ships with Python itself, so there's
-nothing extra to install:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-Either route also installs three console commands, usable from anywhere in the
-environment:
-
-| Command | Equivalent to |
-| --- | --- |
-| `qtstamp-lobby` | `python lobby.py` |
-| `qtstamp-mosaic` | `python mosaic.py` |
-| `qtstamp-single` | `python single_viewer.py` |
-
-If plain `pip`/`python` fail, try `pip3`/`python3`.
-
-### Conda (alternative)
-
-Reach for this only if you already manage your environments with Conda and would rather
-keep everything in one place. None of the dependencies need Conda's system-level package
-management, so the uv/pip route above does the same job more simply.
-
-1. Install a Conda distribution if you don't have one —
-   [Miniconda](https://docs.anaconda.com/free/miniconda) is the lightweight option.
-2. Create an [environment](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html)
-   with the required packages:
-
-   ```bash
-   conda create -n qt_classifier -c conda-forge "python<3.15,>=3.11" \
-       numpy pandas matplotlib pyside6 pillow pyparsing astropy
-   ```
-
-3. Activate it before using the app:
-
-   ```bash
-   conda activate qt_classifier
-   ```
-
-## Data layout
-
-Both viewers expect one subdirectory per band under `--path`, with the same objects
-matched across bands by file stem (the name without its extension):
-
-```
-my_stamps/
-├── VIS/          # main band (-b/--main_band)
-│   ├── source_001.fits
-│   └── source_002.fits
-├── Y/            # color bands (-B/--color_bands)
-├── J/
-├── H/
-└── I/
-```
-
-* **Any** directory name can be a band — not just VIS/Y/J/H/I. At startup each tool
-  checks that every band you reference (main band, color bands, and every RGB
-  composite's members) has a matching directory, and lists what's actually there if
-  one is missing.
-* The **main band's** directory decides the object list: FITS if it has any, otherwise
-  PNG/JPG. A PNG/JPG-only dataset can go without one (`-b ''`, or `(none)` in the
-  lobby): the first `-B` band then lists the objects. Format is detected per band directory, so `source_001.fits` in one band and
-  `source_001.png` in another is fine.
-* **RGB composites need all three member bands in FITS** — they're computed from pixel
-  values, which a display-ready PNG no longer carries. A composite naming a non-FITS
-  band is skipped at startup with a message saying which band disqualified it.
-* All three bands in a composite must have the exact same image dimensions (and ideally
-  the same zero-point).
-* For non-FITS input, everything that needs real pixel values or WCS coordinates — ds9,
-  Legacy Survey, PanSTARRS, ESASky, the pre-fetch toggles, copy RA/Dec, and the
-  scale/colormap controls — is disabled up front rather than failing when you reach for it.
+</details>
 
 ## Quick start
 
-```bash
-python lobby.py
+The tools expect one subdirectory per band, with each object saved under the same file
+name in every band:
+
+```
+my_stamps/
+├── VIS/    source_001.fits  source_002.fits  ...
+├── I/      source_001.fits  ...
+├── Y/
+├── J/
+└── H/
 ```
 
-Set the data path, a session name and a seed in the window, pick a run mode, hit **Run**.
-Everything below is detail.
+Then open the lobby with `qtstamp-lobby`, point it at that directory, choose an output
+directory for the stamps you will select, give the session a name, and press **Run**.
+That is the whole setup. The lobby scans the directory and offers
+the bands it finds, so you pick the main band, the colour bands and the RGB composites from
+lists instead of typing them. The classification scheme is edited in a table, and the
+shipped presets for Euclid, Legacy Survey and PanSTARRS fill in a whole setup in one
+click. In the default run mode the lobby opens the mosaic first, and when you close it,
+it gathers the stamps you marked into the output directory and opens them in the 1-by-1
+viewer, so a full session needs no command line at all. Everything you set is remembered
+for next time, and each session keeps its own classification scheme, which the
+**Recent sessions** list brings back when you return to it.
 
-## Lobby (launcher)
+![The lobby with the shipped Euclid ERO preset: bands and RGB composites, mosaic and extraction options, the session, and a classification scheme with Arc and Ring as subclasses of Lens.](docs/img/lobby.png)
 
-`lobby.py` is a launcher GUI that sits in front of the two viewers. It's the easiest way
-to run a full classification session without typing CLI flags by hand.
+### Running the viewers directly
 
-```bash
-python lobby.py       # or: qtstamp-lobby
-```
-
-Run it with no arguments — everything is set in the window, and it remembers your
-settings between runs. Workspace-wide things (data path, run mode, panel arrangement,
-extraction options, …) live in `.qtstamp/config_lobby.json` in whatever directory you
-launched it from; the **classification scheme, band setup and mosaic grid shape travel
-with the session** instead, so reopening an earlier session brings back the scheme it
-was graded with rather than whatever you used last — see
-[Where the tools keep their settings](#where-the-tools-keep-their-settings).
-
-In the window you can:
-
-* Pick the **path** to the images, plus an optional **session name** and **seed** — the
-  same values you'd otherwise pass as `-p`, `-N` and `-s`.
-* Choose a **run mode**: mosaic only, 1-by-1 only, or mosaic → 1-by-1 chained. In chained
-  mode the lobby runs the mosaic tool first; once you close it, the lobby auto-detects
-  the classification CSV it just wrote (or asks you to pick it), extracts everything you
-  marked as "positive" into the output path via symlink or copy, then launches the
-  1-by-1 tool on that extracted subset.
-* Set which **mosaic codes count as positive** for extraction: Uninteresting (0), Lens
-  candidate (1), Interesting (2), in any combination.
-* Configure **bands and RGB composites** for both tools.
-* Build the 1-by-1 tool's **classification scheme** — major and subclass buttons and their
-  keyboard shortcuts — in a table instead of writing the `--classifications` string by
-  hand, and mark which major classes count as positive for extraction. A subclass row
-  picks its major(s) from a multi-select dropdown, so one subclass can be shared by
-  several majors. They are offered in the order you tick them.
-* Pick an **output path** and whether extraction copies or symlinks files.
-* Use **Extract only…** to run just the CSV-to-extracted-subset step on its own, without
-  launching either tool afterward.
-
-Setup groups live in dockable panels (Session, Bands, Mosaic options, Extraction options,
-1-by-1 classification scheme, Log), so you can drag them side by side, stack them, tab
-them together or float them into their own window, and resize whichever one you're using.
-The **Run** button stays put in the top toolbar.
-
-The **Log** panel streams the output of whichever tool the lobby launches, live while it
-runs. The mosaic prints the file name of every stamp you click there — untick
-`Print name on click` to silence it.
-
-### Presets
-
-The toolbar carries a **Preset** dropdown alongside **Save as…** and **Restore previous**.
-Presets are plain JSON files, one per name, created by **Save as…**. The dropdown lists
-three sources at once, most specific first: `.qtstamp/presets/` in your working directory,
-then the per-user config directory, then the presets shipped with the tool — so the
-dropdown is useful before you have saved anything. Four ship: three per-survey band
-setups (Euclid ERO, Legacy Survey, PanSTARRS) and `ERO_edition_classic`, which
-reproduces the old `ERO_edition` scripts — VIS main band, Y/J/H colour bands, the
-H,Y,I and H,J,Y composites, a 5x8 mosaic with `Print name on click` off, and the
-`A` / `B` / `C` / `X` / `I` grades on keys 1-5, with `A` the one marked positive
-for extraction. Use it to resume a classification those scripts started: the labels
-match what they wrote into the CSV.
-
-Saving always writes to `.qtstamp/presets/`, so saving under a shipped preset's name
-shadows it locally rather than overwriting it. Picking one from the dropdown applies
-it immediately, and **Restore previous** undoes the swap.
-
-A preset holds the classification scheme, the band setup, the mosaic layout and the
-run options. It never holds the data path, the output or classifications paths, the
-session name or the seed, so loading one never changes which dataset or session you
-are on. An older preset that still has those keys loads, and the Log lists them as
-ignored. Loading a preset always rescans the current data path and shows only the
-bands found there. If the preset uses bands that aren't there, or there are bands the
-preset doesn't use, a warning lists both.
-
-### Headless
-
-The lobby also runs the whole workflow from the command line, chained extraction
-included, without ever opening its window. Anything you don't pass is read from the
-saved lobby config, so the usual pattern is to set a run up once in the GUI, then script
-the reruns.
+For scripting, or once you know the flags you want, the viewers also run on their own.
+Given only a path they show what is there: the layout above where the data has it (`VIS`
+first, `Y`, `J` and `H` as colour bands, `H,Y,I` and `H,J,Y` as composites), otherwise
+every band directory they find, or the images sitting directly in the path. To choose,
+name the bands with `-b`, `-B` and `--rgb-composites`:
 
 ```bash
-# Run the configured workflow headless
-python lobby.py --no-gui -m chained -p PATH_TO_FILES -o OUTPUT_PATH -N NAME -s SEED
-
-# Just print the viewer command(s) it would launch, then exit
-# (chained mode prints both the mosaic and the 1-by-1 stage)
-python lobby.py --print-command -m chained -p PATH_TO_FILES -o OUTPUT_PATH -N NAME
+qtstamp-mosaic -p my_stamps -N my_name -s 1234
+qtstamp-single -p my_stamps -N my_name -s 1234 -b r -B g,z --rgb-composites z,r,g
 ```
 
-| Option | Description |
-| --- | --- |
-| `--no-gui` | Run the configured workflow without opening the lobby window. |
-| `--print-command` | Print the viewer command line(s) that would run, then exit (implies `--no-gui`). |
-| `--config PATH` | Lobby config JSON to read defaults from (default: the first `config_lobby.json` found along the state-dir search path). |
+The lobby can also run a whole session from the command line without opening its window;
+see [Headless](docs/usage.md#headless) in the usage guide.
 
-Workflow overrides, valid only with `--no-gui` or `--print-command`:
+If you have no data at hand, running `python tests/sample_data.py demo_stamps` from an
+installed checkout writes a small set of fake stamps and prints the commands to open them.
 
-| Option | Description |
-| --- | --- |
-| `-m`, `--mode` | `mosaic`, `single`, or `chained`. |
-| `-p`, `--path` | Path to the images to inspect. |
-| `-o`, `--output` | Output path for chained-mode extraction. |
-| `-N`, `--name` | Session name. |
-| `-s`, `--seed` / `--no-seed` | Shuffle seed, or ignore any seed set in the config. |
-| `-b`, `--main-band` | Main / high-resolution band (e.g. `"VIS"`). |
-| `-B`, `--color-bands` | Comma-separated individually-selectable bands. |
-| `--rgb-composites` | Semicolon-separated `R,G,B` band-name triples. |
-| `--classifications` | 1-by-1 scheme string; overrides the scheme rows from the config. |
-| `--ncols`, `--nrows` | Mosaic columns and rows per page. |
-| `--printname` / `--no-printname` | Mosaic: print the filename on click. |
-| `--copy` / `--symlink` | Chained extraction copies or symlinks files (symlink is the default). |
-| `--classifications-dir` | Directory for the autosaved classification CSVs (default: `./Classifications`, relative to wherever the lobby is launched from). Passed straight through to the viewer(s). |
+### Controls
 
-See `python lobby.py --help` for the authoritative list.
+| Mosaic | | 1-by-1 | |
+| --- | --- | --- | --- |
+| *click* | mark as lens candidate, or clear | *1*–*5* | grade A, B, C, X, I (the default scheme) |
+| *shift+click*, *ctrl+click* (macOS: *cmd+click*) | mark as interesting | *PgDn* / *j* | next object |
+| *f* / *j* | next page | *PgUp* / *k* | previous object |
+| *d* / *k* | previous page | *c*, *ctrl+c* | copy the file name, the coordinates |
 
----
+## Documentation
 
-## Direct use (without the lobby)
+The full reference lives in `docs/`. [usage.md](docs/usage.md) covers the data layouts,
+the lobby with its presets and headless mode, and every flag and control of both viewers,
+including the grammar of `--classifications`. [settings.md](docs/settings.md) explains
+where settings, presets and caches are stored and lists every file the tools write.
+[CHANGES.md](CHANGES.md) describes what this version changed and why.
 
-Both viewers run straight from the command line too — useful for scripting, batch
-launches, or once you already know the flags you want.
-
-### Mosaic tool
-
-Page-based, grid-of-stamps view for quick first-pass triage. Click through many objects
-at once to mark lens candidates and flag interesting ones, then hand anything worth a
-closer look to the 1-by-1 tool.
-
-```bash
-python mosaic.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
-```
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `-h`, `--help` | | Show the help message and exit. |
-| `-p`, `--path` | `Color_stamps_to_inspect` | Path to the images to inspect. |
-| `-N`, `--name` | none | Name of the classifying session. |
-| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. `-b ''` for none (PNG/JPG data): the first `-B` band takes its place. |
-| `-B`, `--color_bands` | `Y,J,H` | Comma-separated bands made individually selectable as their own panel, in addition to the RGB composites. |
-| `--rgb-composites` | `H,Y,I;H,J,Y` | Semicolon-separated `R,G,B` band-name triples. A composite's label is its comma-joined band list. |
-| `-l`, `--ncols`, `--gridsize` | `5` | Columns per page. Find the right value **before** starting a classification. |
-| `-m`, `--nrows` | `8` | Rows per page. Same caveat. |
-| `-s`, `--seed` | none | Seed used to shuffle the images. |
-| `--minimum_size` | `66` | Minimum stamp size in the mosaic. Safe to change mid-classification; try smaller values if the mosaic doesn't fit your screen. |
-| `--printname` / `--no-printname` | on | Print the file name of every stamp you click (shown in the lobby's Log panel). |
-| `--page` | none | Initial page (1-based). Overrides the resume page. |
-| `--resize` / `--no-resize` | off | Let the stamps resize with the window. |
-| `--reset-config` | off | Forget the saved preferences (colormap, scale, panels). Resume positions are kept. |
-| `--reset-position` | off | Forget the resume page for this `--path`/`--name`/`--seed`, so the session restarts at the first page. Preferences are kept. |
-| `--classifications-dir` | `./Classifications` | Directory for the autosaved classification CSVs. Absolute, or relative to the directory you launch from; created if it doesn't exist. |
-
-**Controls**
-
-| Key | Alt | Action |
-| --- | --- | --- |
-| *left click* | | Mark as lens candidate, or clear the classification |
-| *shift+left click* | *ctrl+left click* | Mark as *interesting* |
-| *f* | *j* | Next page |
-| *d* | *k* | Previous page |
-
-Inside the app, the **Panels** dropdown chooses which bands show for each object: the
-main band, the RGB composites (`H,Y,I` and `H,J,Y` by default), and the individual color
-bands (`Y`, `J`, `H` by default). The color bands start unchecked, so the out-of-the-box
-view is the main band plus the two composites.
-
-> **`--ncols` / `--nrows` are safe to change mid-classification.** The grid shape is a
-> display choice — how many stamps fit comfortably on your screen — so it is no longer
-> part of the classification CSV's filename. Reshaping keeps the same file and the grades
-> already in it, and your *place* in the deck is kept too: the position is stored as a
-> filename, so the tool reopens on whichever page now holds the object you were on.
-> `--minimum_size` is equally safe, and is still the better knob if the stamps themselves
-> are too big.
->
-> What *does* start a new classification is a change of dataset identity: `-N/--name`,
-> `-s/--seed`, or the number of images under `--path`. Those are in the filename.
-
-### 1-by-1 sequential tool
-
-Detailed, one-object-at-a-time classification. Multiband FITS visualization (main band,
-configurable RGB composites, individual color bands), configurable major and subclass
-grading buttons with keyboard shortcuts, and optional per-object lookups in Legacy
-Survey, PanSTARRS, ds9 and ESASky.
-
-Replace `NAME` with your name and `SEED_NUMBER` with any number larger than 1000.
-
-```bash
-python single_viewer.py -p PATH_TO_FILES -N NAME -s SEED_NUMBER
-```
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `-h`, `--help` | | Show the help message and exit. |
-| `-p`, `--path` | `Color_stamps_to_inspect` | Path to the images to inspect. |
-| `-N`, `--name` | none | Name of the classifying session. |
-| `-b`, `--main_band` | `VIS` | High-resolution band: the panel that's always individually shown and pre-selected. `-b ''` for none (PNG/JPG data): the first `-B` band takes its place. |
-| `-B`, `--color_bands` | `Y,J,H` | Comma-separated bands to make individually selectable in the **Panels** dropdown. |
-| `--rgb-composites` | `H,Y,I;H,J,Y` | Semicolon-separated `R,G,B` band-name triples. A composite's label is its comma-joined band list. |
-| `--classifications` | `A=1;B=2;C=3;X=4;I=5` | Classification buttons — see below. |
-| `-s`, `--seed` | none | Seed used to shuffle the images. |
-| `--legacysurvey` / `--no-legacysurvey` | **on** | Legacy Survey panel and downloads. Pass `--no-legacysurvey` to drop the panel entirely (the LS server can be unreliable). |
-| `--ls-big-fov-residuals` / `--no-...` | off | Also pre-fetch the large-FoV Legacy Survey *residual* cutout, so **Large FoV** + **Residuals** shows a cached image instead of downloading on demand. Costs a fourth LS request per object. |
-| `--reset-config` | off | Forget the saved preferences (colormap, scale, panels, toggles). Resume positions are kept. |
-| `--reset-position` | off | Forget the resume position for this `--path`/`--name`/`--seed`, so the session restarts at the first image. Preferences are kept. |
-| `--verbose` | off | Log to the terminal. |
-| `--clean` | off | Empty the Legacy Survey and PanSTARRS cutout caches (`.qtstamp/cache/`, or under `--state-dir`) before starting. |
-| `--classifications-dir` | `./Classifications` | Directory for the autosaved classification CSVs. Absolute, or relative to the directory you launch from; created if it doesn't exist. |
-
-**Classification scheme.** `--classifications` takes one semicolon-separated string of
-`MAJOR=KEY` or `MAJOR:SUB=KEY` entries. A bare `MAJOR=KEY` (or an empty `SUB`) makes a
-major-class button; `MAJOR:SUB=KEY` makes a subclass button under that major, setting
-both the classification and the subclassification in one click. A subclass shared by
-several majors lists them comma-separated, `MAJOR1,MAJOR2:SUB=KEY`. Clicking it writes
-nothing yet: it highlights those majors and dims every other classification button, and
-the major you click next sets both fields, keeping the subclass (and auto-advances as
-usual). Clicking the subclass again cancels. For example:
+## Development
 
 ```
---classifications "A=1;B=2;C=3;X=4;I=5;X:Merger=a;A,B:Spiral=s"
+qtstamp/          the package: the three tools plus shared modules
+tests/            tests, on fake data only (tests/sample_data.py)
+docs/             reference docs; make_screenshots.py regenerates docs/img/ from ERO stamps
+lobby.py, mosaic.py, single_viewer.py     launchers, for running from a checkout
 ```
 
-**Panels and settings**
+The tests run under pytest, or one file at a time without it (`python tests/test_cli.py`).
+They need no display, because the Qt tests run offscreen.
 
-* The **Panels** dropdown assigns each panel — the main band, the RGB composites, the
-  individual color bands, Legacy Survey and PanSTARRS — to one of 3 display rows
-  (mutually exclusive across rows). A row appears as soon as you check a panel into it,
-  and the title bar shows a live summary of what's in each one.
-* The **Large FoV** checkbox, next to **Residuals**, switches the Legacy Survey and
-  PanSTARRS panels to wider cutouts.
-* The **Tools** dropdown holds *Open ds9*, *Open LS*, *Open PanSTARRS* and *Open ESASky*.
-* The **Settings** dropdown holds:
-  * **Pre-fetch PanSTARRS** and **Pre-fetch Legacy Survey** — independent toggles, each
-    with its own thread, downloading the next object's cutouts in the background while
-    you classify the current one.
-  * **Auto-next** — advance to the next stamp automatically after a classification.
-  * **Keyboard shortcuts** — enable the shortcuts below.
+## History and license
 
-**Controls**
+This project began as a fork of [Visualisation-tool](https://github.com/esavary/Visualisation-tool)
+by esavary and was later rebuilt on Qt. The version from before this rewrite is kept on the
+[`classic_tool`](https://github.com/ClarkGuilty/Qt-stamp-visualizer/tree/classic_tool)
+branch, and the previous, longer README is archived in
+[docs/archive/](docs/archive/README-2026-11.md).
 
-| Key | Alt | Action |
-| --- | --- | --- |
-| *1* | | Grade A |
-| *2* | | Grade B |
-| *3* | | Grade C |
-| *4* | | Grade X |
-| *5* | | Interesting |
-| *PgDn* | *j* | Next object |
-| *PgUp* | *k* | Previous object |
-| *c* | | Copy filename |
-| *ctrl+c* | | Copy coordinates |
-
-The grading keys above are just the default `--classifications` scheme; pass your own to
-change the classes, subclasses and keys.
-
-## Where the tools keep their settings
-
-**Everything is local by default.** All three tools keep their settings, presets and
-caches in a single `.qtstamp/` directory inside **whatever directory you launched them
-from** — not in a hidden per-user location. Two datasets worked on from two directories
-get two independent sets of settings, copying a working directory takes its settings
-along, and deleting `.qtstamp/` resets that workspace and nothing else.
-
-```
-<where you launched the tool>/
-├── Classifications/            <- your work product (see below)
-└── .qtstamp/
-    ├── config_lobby.json               preferences_mosaic.json
-    ├── preferences_single.json
-    ├── presets/                        named lobby presets
-    └── cache/
-        ├── Legacy_survey/  PanSTARRS/  downloaded cutouts
-        └── temp/                       mosaic scratch renders
-```
-
-**Reading falls back, writing does not.** A settings file is looked for in `.qtstamp/`
-first, then in the per-user config directory (`$XDG_CONFIG_HOME/qtstamp`,
-`~/Library/Application Support/qtstamp`, `%APPDATA%\qtstamp`), then in the defaults
-shipped with the tool. The first hit wins, so an existing per-user config from an older
-version still seeds a new working directory. But saving *only ever* writes to
-`.qtstamp/`: the copy further down the chain is left alone, because other working
-directories may be reading it too.
-
-If `.qtstamp/` cannot be created — a read-only directory, say — the tools run normally
-and simply do not remember anything between runs. They will not fall back to writing
-somewhere you did not point them at. (Caches are the one exception: they fall back to the
-per-user cache directory, since a mosaic with nowhere to render its scratch tiles cannot
-run at all.)
-
-To opt out of local-first, every tool takes:
-
-| Flag | Effect |
-| --- | --- |
-| `--state-dir PATH` | Use `PATH` instead of `./.qtstamp` — read *and* write. |
-| `--global` | Shorthand for `--state-dir <per-user config directory>`: settings shared by every working directory, the way versions before this one behaved. |
-
-`QTSTAMP_STATE_DIR` does the same through the environment, and is how the lobby tells the
-viewers it launches to agree with it. The `Classifications/` directory is **not** part of
-this — it is your work product, has its own `--classifications-dir` flag, and stays where
-you point it.
-
-### Files the tools write
-
-| Path | Contents |
-| --- | --- |
-| `Classifications/` | Classification CSVs, auto-saved as you work. Named after the session, the number of images and the seed — the same scheme in both viewers, and deliberately not the mosaic's grid shape, so reshaping the grid doesn't fork your classification. Defaults to `./Classifications` relative to wherever you launch the tool, and is created on demand; override with `--classifications-dir` (all three tools, same flag). |
-| `Classifications/sessions.json` | One entry per `(tool, path, name, seed)`. For the two viewers: where you are in each dataset — positions are stored as filenames, so they survive a mosaic reshape or files being added and removed (`--reset-position` clears the current one). For the lobby: that session's own classification scheme, band setup and mosaic grid shape, which is what the **Recent sessions...** picker lists. Capped at 50 sessions, least-recently-opened dropped first. Lives beside the CSVs, and records the data path *relative* to them — that is what lets you copy the whole tree elsewhere and resume where you left off. |
-| `.qtstamp/config_lobby.json` | Saved lobby settings that belong to the workspace rather than to one session: data path, run mode, output path, extraction options, panel layout. Also the scheme and band setup you last used, as the starting point for a session that has no record of its own yet. |
-| `.qtstamp/preferences_mosaic.json`, `.qtstamp/preferences_single.json` | Saved viewer preferences — colormap, scale, panels, toggles. They survive a change of `--path`/`--name`/`--seed` (`--reset-config` clears them). |
-| `.qtstamp/presets/` | Named lobby presets. |
-| `.qtstamp/cache/Legacy_survey/`, `.qtstamp/cache/PanSTARRS/` | Downloaded cutout caches (`--clean` empties both). |
-| `.qtstamp/cache/temp/` | Mosaic scratch renders. Safe to delete at any time. |
-| `.config_mosaic.json.bak`, `.config.json.bak` | The pre-split config files, kept after they are migrated. Safe to delete. |
-
-Classification CSVs are named `classification_mosaic_autosave_{name}_{n_stamps}[_{seed}].csv`
-(mosaic) and `classification_single_{name}_{n_stamps}[_{seed}].csv` (1-by-1), the seed part
-only when you pass one. When a name is already taken, the file that moves aside says why:
-
-- `-new_dataset_N`: the name was taken by a *different* dataset. Pass `-N name` to give your
-  sessions distinct names and avoid this.
-- `-simultaneous_N`: another viewer is grading this same session right now. Its file is left
-  untouched and this viewer's grades go here, so neither set is lost; reconcile them afterwards.
-
-Both count up (`_1`, `_2`, ...). Files with the older `-(N)` suffix are still found, read and
-resumed; that suffix is no longer written, since parentheses need quoting in a shell.
-
-Upgrading from an older version: a `.config_lobby.json`, `.predefined_configs/`,
-`.preferences_*.json`, `Legacy_survey/`, `PanSTARRS/` or `.temp/` left in your working
-directory is moved into `.qtstamp/` on first run. Copies in the per-user directory are
-read but never moved, since other working directories may still be using them.
-
-## License and contributors
-
-MIT — see [LICENSE](LICENSE).
-
-- Javier Acevedo Barroso ([@ClarkGuilty](https://github.com/ClarkGuilty)) — project lead
-- Karina Rojas ([@Krojas](https://github.com/Krojas))
-
-Originally forked from [Visualisation-tool](https://github.com/esavary/Visualisation-tool)
-by esavary.
+The code is released under the MIT license (see [LICENSE](LICENSE)). The screenshots are
+made from Euclid ERO data and carry ESA's credit line, which is given under the first one.
