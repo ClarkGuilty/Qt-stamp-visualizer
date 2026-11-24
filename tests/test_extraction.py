@@ -98,6 +98,20 @@ def test_objects_are_matched_by_stem_across_formats(tmpdir):
     assert sorted(os.listdir(join(tmpdir, 'out'))) == ['VIS', 'rgb']
 
 
+def test_a_compressed_fits_object_matches_its_other_bands(tmpdir):
+    "BUGS 60: the CSV names a.fits.gz; the object is a, as a.png in the other band."
+    src = join(tmpdir, 'src')
+    for name in ('a.fits.gz', 'b.fits.fz', 'c.fits.gz'):
+        _touch(join(src, 'VIS', name))
+    for name in ('a.png', 'b.JPG', 'c.png'):
+        _touch(join(src, 'rgb', name))
+    rows = [('a.fits.gz', 1), ('b.fits.fz', 0), ('c.fits.gz', 1)]
+    result = extraction.extract(_csv(join(tmpdir, 'm.csv'), rows), src, join(tmpdir, 'out'), {1})
+    assert result.missing == []
+    assert sorted(os.listdir(join(tmpdir, 'out', 'VIS'))) == ['a.fits.gz', 'c.fits.gz']
+    assert sorted(os.listdir(join(tmpdir, 'out', 'rgb'))) == ['a.png', 'c.png']
+
+
 def test_files_are_copied_where_symlinks_are_refused(tmpdir):
     "exFAT and FAT drives: every symlink fails, and nothing used to be extracted."
     src = join(tmpdir, 'src')

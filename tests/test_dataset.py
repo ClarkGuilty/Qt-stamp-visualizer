@@ -185,6 +185,24 @@ def test_one_band_directory_may_mix_fits_and_png(tmpdir):
     assert not b.is_fits and b.pixels.size == (4, 4) and b.header is None
 
 
+def test_compressed_fits_are_objects(tmpdir):
+    "BUGS 60: a band holding only obj.fits.gz is no longer empty."
+    root = join(tmpdir, 'data')
+    os.makedirs(join(root, 'r'))
+    fits.PrimaryHDU(np.ones((4, 4))).writeto(join(root, 'r', 'a.fits.gz'))
+    fits.PrimaryHDU(np.ones((4, 4))).writeto(join(root, 'r', 'b.fits.fz'))
+    _png(join(root, 'rgb', 'a.png'))
+    _png(join(root, 'rgb', 'c.png'))
+    ds = _load(['-p', root, '-b', 'r', '-B', 'rgb', '--rgb-composites', ''])
+    assert ds.listimage == ['a.fits.gz', 'b.fits.fz', 'c.png']
+    assert ds.band_filetype == {'r': 'FITS', 'rgb': 'COMPRESSED'}
+    a = load_stamp(ds.band_sources, 'r', fits_io.stamp_stem(ds.listimage[0]))
+    assert a.is_fits and a.pixels.shape == (4, 4)
+    assert not load_stamp(ds.band_sources, 'rgb', 'a').is_fits
+    flat = _load(['-p', join(root, 'r')])   # a flat directory of compressed FITS
+    assert flat.listimage == ['a.fits.gz', 'b.fits.fz']
+
+
 def test_a_file_that_cannot_be_read_is_no_data_not_an_exception(tmpdir):
     root = join(tmpdir, 'data')
     _fits_band(root, 'r', ['a'])

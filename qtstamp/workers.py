@@ -518,7 +518,7 @@ class FetchThread(QThread):
     def radec_from_files(self, index):
         """RA/Dec, pixel size and stamp size of the object at `index`, as the viewer
         finds them (fits_io.find_sky_position). All NaN when it has none."""
-        stem = os.path.splitext(self.listimage[index])[0]
+        stem = fits_io.stamp_stem(self.listimage[index])
         radec = fits_io.find_sky_position(self.band_sources, stem)
         return radec if radec is not None else fits_io.RaDec(np.nan, np.nan, np.nan, 0)
 

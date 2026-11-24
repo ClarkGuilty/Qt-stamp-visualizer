@@ -1172,7 +1172,7 @@ class ApplicationWindow(QtWidgets.QMainWindow):
     @property
     def stem(self):
         "The current object's filename without its extension: its name in every band."
-        return os.path.splitext(self.filename)[0]
+        return fits_io.stamp_stem(self.filename)
 
     def show_missing_bands(self):
         "Names the bands this object has no data for in the status-bar note, or empties it."

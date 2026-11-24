@@ -96,11 +96,55 @@ def test_stamps_are_found_by_extension_in_any_case(tmpdir):
         open(join(tmpdir, name), 'wb').close()
     os.makedirs(join(tmpdir, 'dir.png'))
     assert fits_io.scan_stamps(tmpdir) == {'A': 'A.JPG', 'b': 'b.Png', 'c': 'c.JPEG',
-                                           'd': 'd.FITS', 'e': 'e.fit', 'f': 'f.fts'}
-    assert fits_io.list_fits_files(tmpdir) == ['d.FITS', 'e.fit', 'f.fts']
+                                           'd': 'd.FITS', 'e': 'e.fit', 'f': 'f.fts',
+                                           'g': 'g.fits.gz'}
+    assert fits_io.list_fits_files(tmpdir) == ['d.FITS', 'e.fit', 'f.fts', 'g.fits.gz']
     assert fits_io.detect_band_filetype(tmpdir) == 'FITS'
     assert fits_io.is_mef_dataset(tmpdir)
     assert fits_io.scan_stamps(join(tmpdir, 'nope')) == {}
+
+
+def test_a_double_extension_is_one_extension(tmpdir):
+    "BUGS 60: obj.fits.gz and obj.fits.fz are the object obj, so it matches obj.png in another band."
+    assert fits_io.split_stamp_name('obj.fits.gz') == ('obj', '.fits.gz')
+    assert fits_io.split_stamp_name('J1.2+3.FITS.FZ') == ('J1.2+3', '.FITS.FZ')
+    assert fits_io.split_stamp_name('obj.v2.fits') == ('obj.v2', '.fits')
+    assert fits_io.split_stamp_name('notes.tar.gz') == ('notes.tar', '.gz')
+    assert fits_io.split_stamp_name('.fits.gz') == ('.fits', '.gz')
+    assert fits_io.stamp_stem('obj.png') == 'obj'
+    for name in ('a.fits.fz', 'a.fits.gz', 'b.fit.gz', 'b.png', 'c.jpg', 'c.tif', 'd.gz', 'e.fz'):
+        open(join(tmpdir, name), 'wb').close()
+    # Plain FITS before fpacked before gzipped, all before the rendered formats; TIFF is no stamp.
+    assert fits_io.scan_stamps(tmpdir) == {'a': 'a.fits.fz', 'b': 'b.fit.gz', 'c': 'c.jpg'}
+    assert fits_io.stamp_kind('c.tif') is None and fits_io.stamp_kind('a.fits.gz') == 'FITS'
+
+
+def test_compressed_fits_reads_like_fits(tmpdir):
+    "Gzipped and tile-compressed (fpack) stamps, header and WCS included."
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    header = _synthetic_wcs_header()
+    fits.PrimaryHDU(data=data, header=header).writeto(join(tmpdir, 'g.fits.gz'))
+    fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(data=data, header=header,
+                                                       quantize_level=0.0)]
+                 ).writeto(join(tmpdir, 'f.fits.fz'))
+    source = fits_io.DirBandSource(tmpdir, 'FITS')
+    for stem in ('g', 'f'):
+        locator = fits_io.resolve(source, stem)
+        assert locator.is_fits
+        pixels, hdr = fits_io.read_pixels_and_header(locator)
+        np.testing.assert_array_equal(pixels, data)
+        assert fits_io.sky_position(hdr) is not None
+        assert fits_io.sky_position(fits_io.read_header(locator)) is not None
+    # --mef: a gzipped multi-extension file is an object too.
+    _write_mef(tmpdir, 'm.fits', [('VIS', data)])
+    with open(join(tmpdir, 'm.fits'), 'rb') as raw:
+        import gzip
+        with gzip.open(join(tmpdir, 'm.fits.gz'), 'wb') as gz:
+            gz.write(raw.read())
+    os.remove(join(tmpdir, 'm.fits'))
+    assert fits_io.discover_mef_bands(join(tmpdir, 'm.fits.gz')) == {'VIS': 'VIS'}
+    np.testing.assert_array_equal(fits_io.read_pixels(
+        fits_io.resolve(fits_io.ExtensionBandSource(tmpdir, 'VIS'), 'm')), data)
 
 
 def test_band_dirs_are_the_subdirectories_holding_stamps(tmpdir):

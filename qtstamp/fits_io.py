@@ -7,9 +7,9 @@ file, one memmap policy, and one answer to "what does a band mean" for either of
 the two dataset layouts the tools support:
 
 - directory-per-band (the original scheme): one directory under --path per band,
-  each holding one FITS or PNG/JPG file per object, matched across bands by
-  filename stem. A directory may hold both formats: each file is read as what it
-  is. See DirBandSource.
+  each holding one FITS (also gzipped or fpacked) or PNG/JPG file per object,
+  matched across bands by filename stem. A directory may hold both formats: each
+  file is read as what it is. See DirBandSource.
 - multi-extension FITS, --mef (additive): one directory of per-object files under
   --path, each file holding every band as an HDU extension. Bands are looked up
   by EXTNAME in each object's own file, so files may order their extensions
@@ -35,8 +35,12 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 
 FITS_EXT = '.fits'
-FITS_EXTS = (FITS_EXT, '.fit', '.fts')
+# Plain FITS, then tile-compressed (fpack), then gzipped: astropy opens all of them, and
+# this is also the preference order when one object has more than one (scan_stamps).
+FITS_EXTS = tuple(base + packing for packing in ('', '.fz', '.gz')
+                  for base in (FITS_EXT, '.fit', '.fts'))
 COMPRESSED_EXTS = ('.png', '.jpg', '.jpeg')
+STAMP_EXTS = (*FITS_EXTS, *COMPRESSED_EXTS)
 # A band name meaning "the stamps directly under --path", for a dataset that is one
 # flat directory of images: join(path, '.') is the path itself.
 FLAT_BAND = '.'
@@ -44,14 +48,30 @@ FLAT_BAND = '.'
 
 # --- what counts as a stamp ---------------------------------------------------
 
+def split_stamp_name(filename):
+    """(stem, extension) of a file name, a double extension counting as one:
+    `obj.fits.gz` is the object `obj`, as `obj.fits` and `obj.png` are. Any other
+    name splits as os.path.splitext does. The stem is an object's name in every band."""
+    lower = filename.lower()
+    for ext in STAMP_EXTS:
+        if '.' in ext[1:] and lower.endswith(ext) and len(filename) > len(ext):
+            return filename[:-len(ext)], filename[-len(ext):]
+    return os.path.splitext(filename)
+
+
+def stamp_stem(filename):
+    "An object's name from one of its stamps' file names: `split_stamp_name`'s stem."
+    return split_stamp_name(filename)[0]
+
+
 def stamp_kind(filename):
     """'FITS' or 'COMPRESSED' for a file a viewer can show, by its extension in any
-    case (`.JPG`, `.FITS`), else None. A hidden file is never a stamp: macOS leaves
-    `._name.fits` resource forks and `.DS_Store` beside the real files on drives that
-    are not its own."""
+    case (`.JPG`, `.FITS`, `.fits.gz`), else None. A hidden file is never a stamp:
+    macOS leaves `._name.fits` resource forks and `.DS_Store` beside the real files on
+    drives that are not its own."""
     if filename.startswith('.'):
         return None
-    ext = os.path.splitext(filename)[1].lower()
+    ext = split_stamp_name(filename)[1].lower()
     if ext in FITS_EXTS:
         return 'FITS'
     if ext in COMPRESSED_EXTS:
@@ -63,10 +83,10 @@ def scan_stamps(directory, fits_only=False):
     """{stem: filename} of the stamps directly in `directory`; {} if it is not one.
 
     One object per stem: where `obj.fits` and `obj.png` sit side by side, the FITS
-    file is the object's stamp, then PNG, JPG, JPEG; between two spellings of one
-    name (`obj.fits`, `obj.FITS`) the first in sorted order. A link to nothing is
-    not a stamp."""
-    rank = {ext: i for i, ext in enumerate((*FITS_EXTS, *COMPRESSED_EXTS))}
+    file is the object's stamp (plain, then `.fz`, then `.gz`), then PNG, JPG, JPEG;
+    between two spellings of one name (`obj.fits`, `obj.FITS`) the first in sorted
+    order. A link to nothing is not a stamp."""
+    rank = {ext: i for i, ext in enumerate(STAMP_EXTS)}
     try:
         with os.scandir(directory) as entries:
             names = sorted(e.name for e in entries
@@ -78,9 +98,9 @@ def scan_stamps(directory, fits_only=False):
         kind = stamp_kind(name)
         if fits_only and kind != 'FITS':
             continue
-        stem, ext = os.path.splitext(name)
+        stem, ext = split_stamp_name(name)
         held = found.get(stem)
-        if held is None or rank[ext.lower()] < rank[os.path.splitext(held)[1].lower()]:
+        if held is None or rank[ext.lower()] < rank[split_stamp_name(held)[1].lower()]:
             found[stem] = name
     return found
 

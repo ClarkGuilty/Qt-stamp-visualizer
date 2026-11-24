@@ -106,10 +106,10 @@ def extract(csv_path, source_root, output_root, positive_values,
         stamps = fits_io.scan_stamps(src_band_dir)
 
         for filename in filenames:
-            name = stamps.get(os.path.splitext(filename)[0])
+            name = stamps.get(fits_io.stamp_stem(filename))
             if name is None:
                 result.missing.append((band, filename))
-                progress(f"Missing: {os.path.splitext(filename)[0]} in {src_band_dir}")
+                progress(f"Missing: {fits_io.stamp_stem(filename)} in {src_band_dir}")
                 continue
             src = join(src_band_dir, name)
             dst = join(out_band_dir, name)

@@ -28,6 +28,8 @@ named in the status bar.
 - **Extensions in any case**, plus `.fit` and `.fts`: `IMG_001.JPG` and `stamp.FITS` were
   not seen at all. Hidden files are ignored (`.DS_Store`, the `._name` files macOS
   writes on drives that are not its own).
+- **Gzipped and fpacked FITS.** `obj.fits.gz` and `obj.fits.fz` are read as FITS and
+  are the object `obj`, matched with `obj.png` in another band.
 - **`-p DIR` alone is enough.** With no band arguments the viewers use the `VIS`/`Y`/`J`/`H`
   layout where the data has it, otherwise every band directory they find, or the images
   sitting directly in `DIR`. A band you name yourself must still exist.

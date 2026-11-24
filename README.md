@@ -35,10 +35,11 @@ where you left off the next time you open it.
 Nothing is tied to a particular survey. Any subdirectory of your data path counts as a
 band, any three FITS bands can be combined into an RGB composite, and the 1-by-1 viewer
 lets you arrange its panels in up to three rows. Each file is read as what it is, so one
-dataset can mix FITS with PNG or JPG, and no band has to hold every object: whatever an
-object has is shown, and the rest reads *no data*. Multi-extension FITS (one file per
-object, with the bands stored as named extensions) works too. The classification scheme is yours
-as well: major classes and subclasses, each bound to whichever key you choose.
+dataset can mix FITS (plain, gzipped or fpacked) with PNG or JPG, and no band has
+to hold every object: whatever an object has is shown, and the rest reads *no data*.
+Multi-extension FITS (one file per object, with the bands stored as named extensions)
+works too. The classification scheme is yours as well: major classes and subclasses,
+each bound to whichever key you choose.
 
 While you classify in the 1-by-1 viewer, Legacy Survey and PanSTARRS cutouts of the same
 object can sit next to your own images, optionally downloaded ahead of time for the next

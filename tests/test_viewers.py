@@ -427,6 +427,43 @@ def test_radec_comes_from_any_fits_band_with_a_wcs(tmpdir):
         win.close()
 
 
+def test_compressed_fits_stamps_are_shown(tmpdir):
+    """BUGS 60: VIS as gzipped and fpacked FITS, the composite's bands gzipped, rgb as
+    PNG. Every panel drawn, RA/Dec from the compressed headers."""
+    from astropy.io import fits
+    data = os.path.join(tmpdir, 'data')
+    _fits(os.path.join(data, 'VIS', 'a.fits.gz'), shape=(40, 40), wcs=True)
+    with fits.open(os.path.join(data, 'VIS', 'a.fits.gz')) as hdul:
+        fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(hdul[0].data, hdul[0].header)]
+                     ).writeto(os.path.join(data, 'VIS', 'b.fits.fz'))
+    for band in ('Y', 'J', 'H'):
+        for stem in 'ab':
+            _fits(os.path.join(data, band, stem + '.fits.gz'), shape=(40, 40))
+    os.makedirs(os.path.join(data, 'rgb'))
+    for stem in 'ab':
+        Image.fromarray(np.full((20, 20, 3), 90, np.uint8)).save(os.path.join(data, 'rgb', stem + '.png'))
+    argv = ['-p', data, '-b', 'VIS', '-B', 'Y,J,H,rgb', '--rgb-composites', 'H,J,Y',
+            '--classifications-dir', os.path.join(tmpdir, 'cls'),
+            '--state-dir', os.path.join(tmpdir, 'state')]
+    grid = mosaic.MosaicVisualizer(mosaic.parse_args(argv + ['-l', '2', '-m', '1']))
+    single = single_viewer.ApplicationWindow(
+        single_viewer.parse_args(argv + ['--no-legacysurvey']), clipboard=APP.clipboard())
+    try:
+        assert list(grid.listimage) == list(single.listimage) == ['a.fits.gz', 'b.fits.fz']
+        assert grid.missing_bands_note.text() == '' and grid.cbscale.isEnabled()
+        single.config_dict['autonext'] = False
+        for i in range(2):
+            single.plot_band('rgb')                     # hidden by default: drawn on demand
+            assert single.missing_bands_note.text() == '', i
+            assert all(not single.ax[b].texts for b in ('VIS', 'H,J,Y', 'rgb')), i
+            assert not single.stamps['rgb'].is_fits and single.stamps['VIS'].is_fits
+            assert abs(single.ra - 150.25) < 1e-3 and single.radec_image_dim == 40
+            single.next()
+    finally:
+        grid.close()
+        single.close()
+
+
 def test_a_class_named_like_a_missing_value_survives_a_resume(tmpdir):
     """pandas reads NA, N/A, None, null, nan as missing: the resumed session showed the
     object as ungraded, and its next save wrote the cell out empty."""

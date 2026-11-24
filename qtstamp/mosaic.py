@@ -824,7 +824,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
                 if i < len(self.listimage):
                     missing = self.prepare_png(i, single_band_only)
                     if missing:
-                        missing_by_object[os.path.splitext(self.listimage[i])[0]] = missing
+                        missing_by_object[fits_io.stamp_stem(self.listimage[i])] = missing
                 else:
                     image = np.zeros((66, 66))
                     plt.imsave(self.filepath(i, self.page),
@@ -846,7 +846,7 @@ class MosaicVisualizer(QtWidgets.QMainWindow):
         has no data for -- those panels, and any composite needing one, get a placeholder.
         Nothing an object's files can do stops the page: a panel that cannot be drawn
         is a placeholder too."""
-        stem = os.path.splitext(self.listimage[i])[0]
+        stem = fits_io.stamp_stem(self.listimage[i])
         stamps, missing = {}, {}
         for band in self.single_bands:
             try:

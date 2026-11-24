@@ -35,10 +35,12 @@ my_stamps/
   *no data* cell, and the status bar names the object and the band.
 * **The default band** (`-b`) is the panel shown first and pre-selected, nothing more.
   `-b ''` (or `(none)` in the lobby) hands that to the first `-B` band.
-* FITS (`.fits`, `.fit`, `.fts`) and PNG/JPG (`.png`, `.jpg`, `.jpeg`) are recognised in
-  any letter case. Each file is read as what it is, so formats can mix between bands
-  and inside one: `source_001.fits` beside `source_002.png` is fine. When one band
-  holds both `source_001.fits` and `source_001.png`, the FITS file is the object's stamp.
+* FITS (`.fits`, `.fit`, `.fts`, also gzipped as `.fits.gz` or tile-compressed by
+  fpack as `.fits.fz`) and PNG/JPG (`.png`, `.jpg`, `.jpeg`) are recognised in any
+  letter case; `source_001.fits.gz` is the object `source_001`. Each file is read as
+  what it is, so formats can mix between bands and inside one: `source_001.fits` beside
+  `source_002.png` is fine. When one band holds both `source_001.fits` and
+  `source_001.png`, the FITS file is the object's stamp.
   Hidden files (`.DS_Store`, `._source_001.fits`) are ignored.
 * **An RGB composite is made, per object, from three FITS stamps of the same
   dimensions** — it is computed from pixel values, which a display-ready PNG no longer
